@@ -44,7 +44,10 @@ packages = ["copilot"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "evals"]
+markers = [
+    "llm: requires ANTHROPIC_API_KEY — skipped when absent",
+]
 addopts = "-ra --strict-markers"
 filterwarnings = [
     "error",

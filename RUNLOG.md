@@ -334,3 +334,65 @@ _Empty as of Unit 1 start._ Anticipated future entries:
   Verifier is a library the Poller's downstream will call.
 - Live serve-time re-fetch tests against a running OpenEMR — those go
   into Unit 5 (eval suite) against the seeded fork.
+
+---
+
+## Unit 5 — Eval suite
+
+**Status:** ✅ complete. 93 passed, 2 skipped (LLM-judge cases).
+
+**What shipped**
+- `agent/evals/` — separate pytest tree, discovered alongside
+  `tests/` via `testpaths = ["tests", "evals"]`. Deterministic cases
+  need no API key; LLM cases are `@pytest.mark.llm` and skip
+  automatically when `ANTHROPIC_API_KEY` is absent.
+- `agent/evals/fixtures/__init__.py` — hand-crafted US-Core-shaped
+  FHIR resources mirroring the seed's shape for four patient
+  scenarios: 1015 (overnight critical trop), 1006 (drug-allergy
+  conflict), 1004 (severe sepsis with critical lactate), 1003 (DKA
+  with critical K + glucose).
+- `agent/evals/test_grounding_evals.py` — nine end-to-end cases that
+  run `StubSynthesizer` → `Verifier` and assert what MVP_BUILD_PLAN's
+  eval acceptance calls for:
+  - Pt 1006 PCN allergy + amoxicillin-clavulanate → single critical
+    `allergy_medication_conflict` flag, must_surface, mentions
+    "Amoxicillin".
+  - Pt 1015 HH-flagged troponin → `critical_lab` flag with
+    "critically high", must_surface.
+  - Pt 1004 lactate critical + WBC only warning → 1 critical + 1
+    warning; warning must_surface=False.
+  - Pt 1003 two criticals → two flags, one per lab (Glucose,
+    Potassium).
+  - Fabricated citation (nonexistent resource_id) → `withheld`,
+    attribution_ok=False.
+  - Fabricated number ("2.34 up from 0.99" when 0.99 not in source) →
+    `withheld`, value_match=False with reason naming the missing
+    number.
+  - Precision variance (`2.34` vs `2.340`) → `served`.
+  - Two LLM-entailment cases (guarded): entailed claim → yes,
+    hallucinated claim → no.
+- `.gitlab-ci.yml` — new `agent:tests` job that runs the full
+  agent + eval suite in CI. Triggered on `agent/**/*` changes so the
+  OpenEMR monolith's normal churn doesn't cost CI minutes. Uses uv
+  for dep install with a cache keyed on `pyproject.toml`. Emits
+  JUnit XML.
+
+**Decisions**
+- **Fixtures as code, not JSON files.** Every fixture is a small
+  Python builder so shared helpers (`observation`, `medication_
+  request`, `allergy`) collapse the volume by 10× and make the
+  intent obvious. If we later want recorded FHIR traces, this
+  helper interface stays.
+- **`llm` marker + skipif.** ARCHITECTURE calls for LLM-judge cases;
+  the operator provides the key. Skipping when absent keeps the
+  suite green on a laptop and in CI-without-secrets, while making it
+  a one-liner to switch on with a real key.
+- **CI matches the branch scope.** `rules: changes: agent/**/*`
+  means the CI job only fires when the agent tree actually changed —
+  routine PHP-monolith PRs don't book the Python job.
+
+**Operator-action reminder**
+- To exercise the LLM-judge cases, set the GitLab CI variable
+  `ANTHROPIC_API_KEY` as **masked** (not exposed in logs) and
+  optionally protect it to `main`. Locally: `export
+  ANTHROPIC_API_KEY=...` before `pytest`.

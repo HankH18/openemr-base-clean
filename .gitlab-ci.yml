@@ -1,0 +1,51 @@
+# CI for the copilot agent.
+#
+# The main OpenEMR fork's PHP CI lives elsewhere (upstream inherits its
+# own). This job scopes to the ``agent/`` service: unit tests + eval
+# suite against seeded-style fixtures. Everything runs against
+# in-memory SQLite; no Postgres/OpenEMR needed for these jobs.
+#
+# Secrets NEVER live in this file — ANTHROPIC_API_KEY (needed for the
+# @pytest.mark.llm eval cases) is set as a masked GitLab CI variable.
+# Absent, those cases skip and the suite still passes.
+
+stages:
+  - test
+
+variables:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+  UV_CACHE_DIR: "${CI_PROJECT_DIR}/.uv-cache"
+
+agent:tests:
+  stage: test
+  image: python:3.12-slim
+  needs: []
+  # Only run when agent/ changes — the OpenEMR PHP monolith churns
+  # constantly and doesn't need this job every push.
+  rules:
+    - changes:
+        - agent/**/*
+        - .gitlab-ci.yml
+  cache:
+    key:
+      files: ["agent/pyproject.toml"]
+    paths:
+      - "${UV_CACHE_DIR}"
+      - "agent/.venv"
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates
+    - pip install "uv==0.11.8"
+    - cd agent
+    - test -d .venv || uv venv --python 3.12 .venv
+    - source .venv/bin/activate
+    - uv pip install -e '.[dev]'
+  script:
+    - source .venv/bin/activate
+    - pytest -q --junitxml=../pytest.xml
+  artifacts:
+    when: always
+    reports:
+      junit: pytest.xml
+    expire_in: 7 days
