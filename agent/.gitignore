@@ -1,0 +1,22 @@
+# Python bytecode + type-checker/test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Virtualenv (uv also drops a .gitignore into .venv/ itself)
+.venv/
+venv/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Local env overrides
+.env

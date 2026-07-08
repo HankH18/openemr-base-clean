@@ -108,6 +108,59 @@ services:
       timeout: 5s
       retries: 3
 
+  # ---- Agent-owned Postgres (agent state — NOT OpenEMR data) ----------
+  #
+  # Encrypted-at-rest posture in production comes from the underlying disk
+  # layer (DO block volume encryption). Postgres is not exposed on the host.
+  agent-postgres:
+    image: postgres:16-alpine
+    platform: linux/amd64
+    restart: always
+    environment:
+      POSTGRES_USER: copilot
+      POSTGRES_PASSWORD: ${AGENT_POSTGRES_PASSWORD:?AGENT_POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: copilot
+    volumes:
+      - agent_db:/var/lib/postgresql/data
+    networks:
+      - agent
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copilot -d copilot"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---- copilot-api (Clinical Co-Pilot agent) --------------------------
+  #
+  # Reads OpenEMR **only** via FHIR/REST. Two OAuth actors are configured
+  # via env; secrets injected at runtime (see .env.deploy.example).
+  # Not exposed publicly for MVP — reachable from OpenEMR's `agent`
+  # network; a reverse proxy will front it once the chat UI ships.
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      openemr:
+        condition: service_healthy
+    environment:
+      COPILOT_DATABASE_URL: postgresql+psycopg://copilot:${AGENT_POSTGRES_PASSWORD:?}@agent-postgres:5432/copilot
+      COPILOT_FHIR_BASE_URL: http://openemr/apis/default/fhir
+      COPILOT_OAUTH_TOKEN_URL: http://openemr/oauth2/default/token
+      COPILOT_OAUTH_AUTHORIZE_URL: http://openemr/oauth2/default/authorize
+      COPILOT_SMART_APP_CLIENT_ID: ${SMART_APP_CLIENT_ID:-}
+      COPILOT_BACKEND_SERVICES_CLIENT_ID: ${BACKEND_SERVICES_CLIENT_ID:-}
+      COPILOT_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      COPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      COPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    networks:
+      - agent
+
 networks:
   internal: {}
   agent: {}
@@ -117,3 +170,4 @@ volumes:
   sites: {}
   assets: {}
   logs: {}
+  agent_db: {}
