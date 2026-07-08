@@ -1,0 +1,119 @@
+# AgentForge — single-VM deployment stack for the OpenEMR fork.
+#
+# Slimmed down from docker/development-easy: drops selenium, phpmyadmin,
+# couchdb, openldap, mailpit, xdebug, the composer-token dev affordance,
+# and the source bind-mounts. The baked image supplies the code, and
+# named volumes persist the DB / uploaded documents / logs across
+# restarts.
+#
+# Secrets come from a `.env` file next to this compose file. See
+# `.env.deploy.example` for the required keys; DEPLOY.md walks through
+# the exact steps on a fresh Ubuntu 22.04 DigitalOcean droplet.
+#
+# Port model:
+#   - openemr publishes 80:80 only. TLS/Caddy is a follow-up (Task 6).
+#   - mariadb is NOT published — internal-only, reached via
+#     `docker compose exec mariadb ...`. Publishing 3306 on a public VM
+#     is the exact class of misconfig the audit's security section flags.
+
+services:
+  mariadb:
+    image: mariadb:11.8.8@sha256:be1ef4fe5f14589325c08a41c76334097ce66c86264b75e1d28342c742782a61
+    platform: linux/amd64
+    restart: always
+    command:
+      - mariadbd
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_DATABASE: openemr
+      MYSQL_USER: openemr
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set in .env}
+    volumes:
+      - db:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/healthcheck.sh
+        - --su-mysql
+        - --connect
+        - --innodb_initialized
+      start_period: 1m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+
+  openemr:
+    image: openemr/openemr:flex@sha256:1d2c8345a320cf2985c9d02138951267739ec498559ca724b3d5397e4568482e
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      # 443 intentionally NOT published — no cert baked in. TLS is a
+      # follow-up (Caddy reverse proxy in front, or a managed LB).
+    environment:
+      # HOST_UID/HOST_GID: the entrypoint adopts the host uid for apache.
+      # Defaults to 1000 which matches most fresh Ubuntu VMs (root=0, first
+      # sudo user is 1000). Override in .env if the droplet is unusual.
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+      MYSQL_HOST: mariadb
+      MYSQL_PORT: 3306
+      MYSQL_ROOT_PASS: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_USER: openemr
+      MYSQL_PASS: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set in .env}
+      OE_USER: ${OE_USER:-admin}
+      OE_PASS: ${OE_PASS:?OE_PASS must be set in .env — do NOT ship with the default}
+      # Public URL — must match how users (and OAuth clients) reach the
+      # host. SMART / OAuth redirect-URI validation breaks silently if
+      # this is wrong.
+      OPENEMR_SETTING_site_addr_oath: ${SITE_ADDR_OATH:?SITE_ADDR_OATH must be set (e.g. http://your-droplet-ip)}
+      # API surface required by the agent's data path + the Task 10
+      # keystone smoke test.
+      OPENEMR_SETTING_rest_api: 1
+      OPENEMR_SETTING_rest_fhir_api: 1
+      OPENEMR_SETTING_rest_portal_api: 1
+      OPENEMR_SETTING_rest_system_scopes_api: 1
+      OPENEMR_SETTING_oauth_password_grant: 3
+      OPENEMR_DOCKER_ENV_TAG: deploy-single-vm
+    volumes:
+      - sites:/var/www/localhost/htdocs/openemr/sites
+      - assets:/var/www/localhost/htdocs/openemr/public/assets
+      - logs:/var/log
+    networks:
+      - internal
+      # `agent` is reserved so the Task 7 Python agent can join later
+      # without a compose rewrite.
+      - agent
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/curl
+        - --fail
+        - --insecure
+        - --location
+        - --show-error
+        - --silent
+        - https://localhost/meta/health/readyz
+      start_period: 3m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+
+networks:
+  internal: {}
+  agent: {}
+
+volumes:
+  db: {}
+  sites: {}
+  assets: {}
+  logs: {}
