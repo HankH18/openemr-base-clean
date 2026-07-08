@@ -87,3 +87,69 @@ _Empty as of Unit 1 start._ Anticipated future entries:
   when we wire CI in Unit 5.
 - Live Anthropic + Langfuse pings inside their probes — added when
   Units 3 and 6 wire the real SDKs.
+
+---
+
+## Unit 2 — FHIR client with both OAuth actors
+
+**Status:** ✅ complete. 40 tests pass (17 new).
+
+**What shipped**
+- `copilot/fhir/auth.py`
+  - `OAuthToken` value object with a 30-second-skew `is_fresh()` guard.
+  - `TokenProvider` Protocol so the FHIR client depends on the shape,
+    not any specific flow — makes tests trivial (`StaticTokenProvider`)
+    and lets us slot in different providers per actor.
+  - `SmartAppLaunchTokenProvider` — exchanges the browser-delivered
+    `authorization_code` for a physician-delegated token; refreshes
+    with the refresh_token when available; supports confidential-client
+    secret. This is the chat-path token; every physician read routes
+    through here so OpenEMR enforces which patients they may see.
+  - `BackendServicesTokenProvider` — builds a `private_key_jwt`
+    assertion (RS384/ES384) with `authlib.jose`, POSTs
+    `client_credentials`, and caches the resulting token. Used by the
+    background poller with minimal `system/*.read` scopes.
+- `copilot/fhir/client.py` — `FhirClient`: async httpx client that
+  attaches `Authorization: Bearer …` sourced from a `TokenProvider`,
+  parses raw FHIR JSON (parsing into typed models stays at call sites
+  so verification's re-fetch is trivial), retries once with a forced
+  token refresh on 401, and raises `FhirClientError` on other non-2xx.
+- `count_since(resource_type, patient_id, since)` — the exact
+  `_lastUpdated=gt{ts}&_summary=count` query the poller uses. Returns
+  a bare `int`.
+
+**Decisions**
+- Two provider classes rather than a single "provider that switches
+  behavior by grant_type" — ARCHITECTURE calls out two distinct
+  actors, and keeping them separate makes it impossible to accidentally
+  use one where the other was intended (a real audit finding class).
+- `FhirClient` owns its httpx.AsyncClient by default (context-manager
+  lifecycle) but accepts an injected one so tests + verification's
+  re-fetch can share a pool.
+- 401 → single retry with `force=True` on the provider. Any further
+  401 fails hard rather than looping — protects against revocation
+  storms.
+- `count_since` returns int, not the raw Bundle. That's the only field
+  the poller wants; parsing at the boundary keeps callers honest.
+- Class-level `@pytest.mark.asyncio` used on async-only test classes,
+  not `pytestmark` at module scope, so mixed sync/async modules don't
+  emit the "marked as asyncio but not async" warning.
+
+**Tests (17 new)**
+- `OAuthToken.is_fresh` — fresh when far future, stale inside skew.
+- SMART App Launch: first-call code exchange with right form fields,
+  cache-on-fresh, force=True → refresh_token path with correct
+  grant_type, 401 → `TokenAcquisitionError`.
+- Backend Services: signed JWT assertion (3-segment string), correct
+  `client_assertion_type`, cache reuse, space-separated scopes.
+- FHIR client: bearer header attached, Accept fhir+json, non-2xx →
+  `FhirClientError`, search Bundle returned intact, `count_since`
+  query shape (`patient`, `_lastUpdated=gt…Z`, `_summary=count`) + int
+  return + total-missing raises, 401 retry sends the second request
+  with a forced-refresh token, two consecutive 401s give up.
+
+**Deferred**
+- Live integration test against the running OpenEMR deploy — requires
+  registered OAuth clients (see RUNLOG operator queue). The
+  count-query smoke test from Task 10 in MVP_BUILD_PLAN will use this
+  client once credentials exist.
