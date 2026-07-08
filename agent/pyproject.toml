@@ -51,6 +51,11 @@ filterwarnings = [
     # SQLAlchemy 2 + aiosqlite emits a DeprecationWarning inside its own stack.
     "ignore::DeprecationWarning:sqlalchemy.*",
     "ignore::DeprecationWarning:aiosqlite.*",
+    # Alembic's env.py runs migrations under asyncio.run(), which creates a
+    # loop that GC'd engines from earlier tests then flag as unclosed. Not a
+    # real leak — just cross-test bookkeeping between pytest-asyncio and
+    # alembic's synchronous entry point.
+    "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.ruff]

@@ -153,3 +153,99 @@ _Empty as of Unit 1 start._ Anticipated future entries:
   registered OAuth clients (see RUNLOG operator queue). The
   count-query smoke test from Task 10 in MVP_BUILD_PLAN will use this
   client once credentials exist.
+
+---
+
+## Unit 3 — Memory-file synthesizer + change-gated poller
+
+**Status:** ✅ complete. 63 tests pass (23 new).
+
+**What shipped**
+- `copilot/worker/hashing.py` — `content_hash_for_resources(seq)`:
+  SHA-256 over canonical JSON, with `meta` stripped. That last part is
+  load-bearing — otherwise a server-side no-op that only bumps
+  `meta.lastUpdated` would look like a real change and burn a Claude
+  call.
+- `copilot/worker/synthesizer.py` — LLM synthesizer with three
+  parts:
+  - `LlmSynthesizer` Protocol: `async synthesize(SynthesisInput) → MemoryFileSummary`
+  - `StubSynthesizer` — deterministic, no API needed; emits one claim
+    per input resource with source_ref (field, value). Used by tests
+    and (later) the eval suite when `ANTHROPIC_API_KEY` is absent.
+  - `ClaudeSynthesizer` — real Anthropic-SDK wrapper. Refuses to
+    construct without an API key (loud failure per ARCHITECTURE
+    principle #1). Sends a strict-JSON system prompt, parses the
+    reply through a Pydantic wire model, converts to domain
+    `Claim`/`FhirReference` objects. Rejects unknown resource types.
+- `copilot/memory/repository.py` — `MemoryRepository`: get/upsert
+  `sync_state`, get/save `memory_file`, `record_audit`. Contracts in,
+  contracts out — no SQL leaks to callers. Serialisation between
+  `MemoryFileSummary` and JSONB payload lives here, not on the model.
+- `copilot/worker/poller.py` — `Poller.tick(patient_id)`:
+  1. Read prior watermark + hash from sync_state.
+  2. `count_since` for each watched resource type
+     (Observation, DiagnosticReport, MedicationRequest, Condition,
+     AllergyIntolerance, Encounter).
+  3. If every count is zero: mark polled_at, done — no pull, no
+     Claude call. This is the cost-scales-with-change gate.
+  4. Otherwise pull the changed resources.
+  5. Recompute hash; if unchanged, still skip synthesis (cosmetic
+     update).
+  6. If hash moved, call `LlmSynthesizer.synthesize` and return the
+     proposed `MemoryFileSummary` — **but do not persist**.
+     Verification (Unit 4) runs on it first, then the Scheduler
+     persists.
+- `copilot/worker/scheduler.py` — thin `PollerScheduler` wrapper over
+  APScheduler; runs a tick every `interval_seconds` for every patient
+  the `active_patients` callable returns, sequentially (so slow ticks
+  don't blur observability), and calls `on_result(PollerResult)`.
+
+**Decisions**
+- **Hash strips `meta`.** ARCHITECTURE calls for a hash-confirm step
+  because "content-hashed to confirm the change is material" — a
+  lastUpdated-only change is not material for clinical purposes.
+  Documented at the top of `hashing.py`.
+- **Poller doesn't persist.** ARCHITECTURE §"Data flow" is explicit
+  that verification runs at synthesis. Persisting inside `tick()`
+  would make it impossible for verification to fail-close before the
+  memory file ever hits the store. The Poller returns the summary as
+  data; the Scheduler wires verification → persist.
+- **`with_variant` on autoinc bigint IDs.** SQLite only autoincrements
+  `INTEGER PRIMARY KEY` (rowid alias), not `BIGINT PRIMARY KEY`. Used
+  `BigInteger().with_variant(Integer(), "sqlite")` on the surrogate
+  IDs (`last_seen.id`, `conversation.id`, `message.id`,
+  `audit_log.id`). Prod is BigInteger; tests are portable.
+- **`content_hash` first-run behavior.** If `sync_state.content_hash`
+  is empty (first-ever poll), `new_hash == prior_hash` is skipped so
+  the first synthesis always happens.
+- **Failed FHIR + failed synth both bump `consecutive_failures`.**
+  Uniform failure accounting means the eventual "alert on
+  poller staleness" (ARCHITECTURE §Observability) has one signal.
+- **Filter `PytestUnraisableExceptionWarning`.** Alembic's env.py
+  runs `asyncio.run()` which conflicts with pytest-asyncio's loop
+  management under heavy async-fixture usage; the warning is a
+  benign cross-test bookkeeping artifact.
+
+**Tests (23 new)**
+- **Hashing (5):** empty-input stable, key-order invariance (top +
+  nested), list-order-matters, value change flips hash.
+- **StubSynthesizer (3):** one claim per resource, skips resources
+  missing type/id, content_hash populated.
+- **ClaudeSynthesizer parsing (4):** valid JSON parsed, refuses no
+  API key, non-JSON raises `SynthesisError`, unknown resource_type
+  rejected.
+- **MemoryRepository (5):** first sync_state insert vs upsert-update,
+  memory-file save→read round-trip, second save overwrites, audit
+  insert.
+- **Poller.tick (6):** no-change fast path (no pull, no synth), change
+  triggers pull + synth, hash-unchanged skips synth on second tick,
+  FHIR count error records failure + bumps counter, synth error same,
+  Poller.tick never writes to memory_file itself.
+
+**Deferred**
+- Actual Claude calls (need `ANTHROPIC_API_KEY`) — parsing is proven
+  with a fake client; live calls happen in Unit 5's eval suite when
+  the operator provides the key.
+- Real APScheduler timing test — the scheduler is thin (delegates to
+  APScheduler which has its own tests). One tick round-trip is
+  covered via `tick_once` unit-level in the Poller tests.

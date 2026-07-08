@@ -33,6 +33,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+# BigInteger PK on SQLite doesn't autoincrement (only INTEGER PRIMARY KEY does);
+# BigInteger works fine on Postgres. Use this variant for autoinc surrogate ids.
+AutoIncBigInt = BigInteger().with_variant(Integer(), "sqlite")
+
 from copilot.memory.db import Base, JSONType
 
 
@@ -88,7 +92,7 @@ class LastSeenRow(Base):
     __tablename__ = "last_seen"
     __table_args__ = (UniqueConstraint("clinician_id", "patient_id", name="uq_last_seen_cln_pt"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
     clinician_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     patient_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
@@ -111,7 +115,7 @@ class ConversationRow(Base):
 
     __tablename__ = "conversation"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
     clinician_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     patient_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -127,7 +131,7 @@ class MessageRow(Base):
 
     __tablename__ = "message"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
     conversation_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("conversation.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -143,7 +147,7 @@ class AuditLogRow(Base):
 
     __tablename__ = "audit_log"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     clinician_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     patient_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
