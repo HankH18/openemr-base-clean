@@ -30,6 +30,7 @@ from copilot.domain.contracts import MemoryFileSummary
 from copilot.domain.primitives import PatientId, ResourceType, utcnow
 from copilot.fhir.client import FhirClient, FhirClientError
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import NoopObservability, Observability
 from copilot.worker.hashing import content_hash_for_resources
 from copilot.worker.synthesizer import LlmSynthesizer, SynthesisError, SynthesisInput
 
@@ -75,14 +76,27 @@ class Poller:
         synthesizer: LlmSynthesizer,
         repository: MemoryRepository,
         watched_types: Sequence[ResourceType] = DEFAULT_WATCHED_TYPES,
+        observability: Observability | None = None,
     ) -> None:
         self._fhir = fhir
         self._synth = synthesizer
         self._repo = repository
         self._watched = tuple(watched_types)
+        self._obs: Observability = observability or NoopObservability()
 
     async def tick(self, patient_id: PatientId) -> PollerResult:
         """Run one full change → maybe-synthesize cycle for one patient."""
+        async with self._obs.span("poller.tick", patient_id=patient_id.value) as _span:
+            result = await self._tick_inner(patient_id)
+        self._obs.event(
+            "poller.result",
+            patient_id=patient_id.value,
+            outcome=result.outcome.value,
+            error=result.error,
+        )
+        return result
+
+    async def _tick_inner(self, patient_id: PatientId) -> PollerResult:
         polled_at = utcnow()
         sync = await self._repo.get_sync_state(patient_id)
         prior_watermark: datetime = (

@@ -396,3 +396,102 @@ _Empty as of Unit 1 start._ Anticipated future entries:
   `ANTHROPIC_API_KEY` as **masked** (not exposed in logs) and
   optionally protect it to `main`. Locally: `export
   ANTHROPIC_API_KEY=...` before `pytest`.
+
+---
+
+## Unit 6 — Langfuse observability
+
+**Status:** ✅ complete. 107 passed, 2 skipped.
+
+**What shipped**
+- `copilot/observability/base.py`
+  - `Observability` Protocol: `span(name, **attrs)` async context
+    manager, `event(name, **attrs)`, `record_verification(passed,
+    action, patient_id)`, `record_poller_staleness(patient_id,
+    age_seconds)`, `flush()`.
+  - `NoopObservability` — zero-cost implementation for tests and
+    unwired-Langfuse deployments. Callers never branch on
+    "configured?".
+  - `correlation_id_var: ContextVar[str]` with helpers
+    (`generate_correlation_id`, `current_correlation_id`).
+    Propagates through `asyncio.create_task` because contextvars do
+    (verified by test).
+- `copilot/observability/langfuse_backend.py` — real Langfuse wrapper.
+  - Refuses to construct without all three creds (host + public +
+    secret).
+  - Every SDK call wrapped in a `try/except: pass` — **telemetry
+    never breaks callers** (verified by test with a raising fake
+    client).
+  - Span helper threads `current_correlation_id()` into the trace
+    ID so cross-service traces line up.
+  - Two dashboard events with correlation IDs baked into metadata:
+    `verification.result` (passed/action/patient_id) and
+    `poller.staleness` (patient_id/age_seconds).
+- `copilot/observability/factory.py` — `build_observability(settings)`
+  returns Langfuse when all three creds are set, Noop otherwise.
+- `Poller.__init__` now takes an optional `observability`; wraps each
+  `tick()` in an `obs.span("poller.tick", patient_id=…)` and emits a
+  final `obs.event("poller.result", …)` per call. Defaults to Noop so
+  every existing test still passes with no changes.
+
+**Decisions**
+- **Protocol + Noop, not Optional[Observability].** Callers should
+  never branch. Injection is always a value.
+- **Try/except around every SDK call.** Observability outages take
+  down observability, not the app. Codified in a test.
+- **Correlation ID via ContextVar.** Alternatives (explicit parameter,
+  starlette middleware storage) are worse — one propagates
+  automatically into async tasks, the other requires framework
+  knowledge in every layer.
+- **Two "dashboard events" as first-class methods** rather than
+  callers concatenating attributes on `event()`. ARCHITECTURE calls
+  out verification pass/fail and poller staleness as the two
+  business-metric alerts; naming them at the interface level makes
+  them impossible to forget.
+
+**Tests (14 new)**
+- Correlation ID: unique generation, default empty, ContextVar set/read.
+- Noop: `event`, `record_verification`, `record_poller_staleness`,
+  `span` yields a span with setters, `flush` no-op.
+- Factory: returns Noop when creds missing, Langfuse when all three set,
+  Noop on partial creds.
+- Langfuse with fake client: refuses missing creds, span calls
+  `trace()`+`end()` with correlation ID, `record_verification` and
+  `record_poller_staleness` emit correctly-named events with
+  correlation_id in metadata, span swallows SDK exception → noop span.
+- ContextVar propagates through `asyncio.create_task`.
+
+**Operator-action reminder**
+- Set `COPILOT_LANGFUSE_HOST`, `COPILOT_LANGFUSE_PUBLIC_KEY`,
+  `COPILOT_LANGFUSE_SECRET_KEY` on the agent container (via `.env` in
+  the deploy compose). Without these three, observability is a no-op.
+- Dashboard alerts (p95 latency, error rate, tool-failure rate,
+  poller staleness) are configured inside Langfuse itself — SQL rules
+  or the UI. Docs in ARCHITECTURE §"Observability".
+
+---
+
+## Summary — Early Submission ready
+
+All six units built, tests passing (107 unit/integration + 2
+skipped LLM-judge), each committed and pushed to `gitlab/main`
+with a working GitLab CI job. Nothing deployed; nothing touched on
+the droplet since Task 6.
+
+**Operator-action queue (final)**
+1. **Anthropic API key** — set env `ANTHROPIC_API_KEY` on the agent
+   container to enable synthesis + entailment. Without it the agent
+   scaffold is up but synthesis raises loudly.
+2. **Langfuse credentials** — `LANGFUSE_HOST`,
+   `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`. Without them
+   observability no-ops; the rest of the system runs.
+3. **OpenEMR SMART client registrations** — one SMART App Launch
+   confidential client (chat, physician-delegated) and one Backend
+   Services client (`client_credentials` JWT-assertion,
+   `system/*.read`). Registrations happen in the OpenEMR admin UI.
+   Client IDs go into `SMART_APP_CLIENT_ID` +
+   `BACKEND_SERVICES_CLIENT_ID`. The Backend Services private key
+   goes in a secrets manager and is mounted into the agent
+   container.
+4. **GitLab CI variable** — `ANTHROPIC_API_KEY` (masked, main-
+   protected) to activate the LLM eval cases.
