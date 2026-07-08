@@ -249,3 +249,88 @@ _Empty as of Unit 1 start._ Anticipated future entries:
 - Real APScheduler timing test — the scheduler is thin (delegates to
   APScheduler which has its own tests). One tick round-trip is
   covered via `tick_once` unit-level in the Poller tests.
+
+---
+
+## Unit 4 — Verification layer (fail-closed)
+
+**Status:** ✅ complete. 86 tests pass (23 new).
+
+**What shipped**
+- `copilot/verification/core.py` — `Verifier.verify_memory_file(summary,
+  context)`:
+  - **Attribution**: every claim's `source_ref` must point at a
+    resource present in the context (built from what the poller
+    already pulled at synthesis time; from live FHIR re-fetches at
+    serve time).
+  - **Value match**: extract the value at `source_ref.field` (dotted
+    FHIRPath-ish with `[N]` indexing) — string equal, else numeric
+    equal (`2.34 == 2.340`).  Then pull every numeric literal out of
+    `claim.text` and require each to appear in a flattened text/number
+    view of the source resource.  This catches "the model made up a
+    baseline of 0.02" when only 2.34 is in the record.
+  - **Fail-closed action**: all pass → `served`; none pass → `withheld`
+    (nothing to say we can prove); mixed → `degraded` (passing claims
+    survive; failing dropped).  Empty claim list with domain flags →
+    `served` so the flags still surface.
+- `copilot/verification/rules.py` — two deterministic domain rules:
+  - `allergy_medication_conflict` — matches active AllergyIntolerance
+    against active MedicationRequest.  Small curated class map
+    (penicillins / sulfa / NSAIDs) so "Penicillin allergy" matches
+    "Amoxicillin-clavulanate" (the exact Pt 1006 case in the seed).
+    NKDA/"no known drug allergies" lines are excluded from matching.
+  - `critical_lab` — reads Observation.interpretation coding (US Core
+    `HH`/`LL`) OR OpenEMR-style `abnormal='critical_high'`/`critical_low`
+    fallback.  Non-critical H/L emit a warning-severity flag with
+    `must_surface=False`; criticals are `must_surface=True`.
+- `copilot/verification/entailment.py` — optional `LlmEntailment` pass
+  for narrative-drift catch.  Refuses to construct without an API key.
+  Called after deterministic checks; not a safety control.
+
+**Decisions**
+- **Verifier owns no I/O.** The context (what resources exist) is
+  passed in.  Poller supplies its already-pulled bundle; the chat
+  handler will supply live re-fetches at serve time.  Keeping the
+  Verifier pure makes the tests exhaustive without any FHIR mocking
+  inside them.
+- **Deterministic gate first, LLM entailment second.** ARCHITECTURE
+  principle #1 — the trust-bearing gate is code.  Entailment is a
+  narrative-drift catcher; a claim that fails the gate is withheld
+  regardless of entailment.
+- **Numeric equality via `float()`.** `2.34 == 2.340` is a legit
+  synthesis output; `2.34` vs `0.02` isn't.  String-first then
+  numeric-fallback keeps the check strict without being pedantic.
+- **NKDA line detection.** Real OpenEMR data ships "No known drug
+  allergies" as a row in `lists` — treating it as a normal allergy
+  would fire false positives against every med.
+- **Small curated substance class map** rather than a drug database.
+  Documented in `rules.py` as demo-quality; the production path is
+  OpenEMR's CDR / a First Databank-style terminology service.
+- **Empty-claim-list special case.** A memory file with only domain
+  flags still needs to surface them; withholding on zero-claims-
+  everything-else-empty would swallow the very signal we care about.
+
+**Tests (23 new)**
+- **`extract_field_value` (4)**: dotted path, indexed path, missing
+  key → None, out-of-range → None.
+- **`extract_numbers` (2)**: finds ints + decimals, empty.
+- **Attribution (2)**: pass when both present, fail when source
+  missing from context.
+- **Value match (3)**: source value disagrees, extra number in text
+  not in resource, numeric equivalence 2.34 vs 2.340.
+- **Fail-closed action (2)**: mixed pass/fail → degraded; empty-claim
+  memory file → served (so flags surface).
+- **Allergy/med conflict (5)**: PCN → amox-clav (Pt 1006 case), sulfa →
+  Bactrim, inactive allergy ignored, inactive med ignored, NKDA line
+  produces no flag.
+- **Critical lab (5)**: US Core HH → critical high, LL → critical low,
+  OpenEMR `critical_high` fallback, non-critical H → warning
+  not-must-surface, normal → no flag.
+
+**Deferred**
+- Wiring verification into the Poller/Scheduler and persisting only
+  passed summaries — happens naturally when Unit 6 wires the
+  observability + assembles the full copilot lifecycle.  For now,
+  Verifier is a library the Poller's downstream will call.
+- Live serve-time re-fetch tests against a running OpenEMR — those go
+  into Unit 5 (eval suite) against the seeded fork.
