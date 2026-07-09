@@ -64,3 +64,5 @@ tmp/
 .swarm-loop/history.csv
 .swarm-loop/analysis/
 .swarm-loop/reports/
+# agent local sqlite dbs (dev/live-test)
+agent/*.db
