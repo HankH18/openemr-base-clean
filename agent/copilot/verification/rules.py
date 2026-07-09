@@ -6,7 +6,8 @@ the attribution/value gate — a memory file whose claims all pass may
 still carry a critical-lab flag or an allergy/med conflict that MUST
 be surfaced.
 
-Two rules ship with the MVP:
+The rule set is additive — a memory file whose claims all pass may still
+carry any of these findings:
 
 - ``allergy_medication_conflict`` — flags active AllergyIntolerance /
   active MedicationRequest pairs where the med's substance is in the
@@ -15,6 +16,21 @@ Two rules ship with the MVP:
   ``interpretation`` code (US Core convention: HL7 AbnormalFlags) is
   ``HH``/``LL`` (critical high/low) or whose OpenEMR-side ``abnormal``
   extension is ``critical_high``/``critical_low``.
+- ``reference_range`` — flags Observation resources whose numeric
+  ``valueQuantity.value`` falls outside its ``referenceRange`` **even when
+  no interpretation code is present** — the gap ``critical_lab`` (which
+  keys purely on interpretation codes) structurally misses.  Skips any
+  Observation ``critical_lab``/``abnormal_lab`` already covers, so it never
+  double-flags the same result.
+- ``medication_reconciliation`` — compares the prescribed orders
+  (``MedicationRequest``) against the reported/home list
+  (``MedicationStatement``) and flags divergences: a drug in one store but
+  not the other, or an active/inactive disagreement for the same drug.
+
+All findings are additive: they surface to the physician but never gate the
+served/withheld/degraded action (that is decided purely by claim
+verification in ``core.py``), and they are independent of the deterministic
+acuity ranking (which consumes ``critical_lab`` alone).
 """
 
 from __future__ import annotations
@@ -284,6 +300,226 @@ def critical_lab(context: Any) -> list[VerificationDomainFlag]:
     return flags
 
 
+# --- Reference-range numeric check ----------------------------------------
+
+# The interpretation codes ``critical_lab``/``abnormal_lab`` already act on.
+# An Observation resolving to one of these is skipped by ``reference_range``
+# so the same result is never flagged twice.
+_RECOGNIZED_INTERP = _CRITICAL_HIGH | _CRITICAL_LOW | _ABNORMAL_HIGH | _ABNORMAL_LOW
+
+
+def _obs_numeric_value(res: Mapping[str, Any]) -> float | None:
+    """Return ``valueQuantity.value`` as a float, or None when non-numeric."""
+    q = res.get("valueQuantity")
+    if isinstance(q, Mapping):
+        v = q.get("value")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def _bound_value(node: Any) -> float | None:
+    """Read the numeric ``value`` out of a referenceRange low/high element."""
+    if isinstance(node, Mapping):
+        v = node.get("value")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def _reference_bounds(res: Mapping[str, Any]) -> tuple[float | None, float | None]:
+    """Return ``(low, high)`` from the first ``referenceRange`` — each optional."""
+    ranges = res.get("referenceRange")
+    if not isinstance(ranges, list) or not ranges:
+        return (None, None)
+    first = ranges[0]
+    if not isinstance(first, Mapping):
+        return (None, None)
+    return (_bound_value(first.get("low")), _bound_value(first.get("high")))
+
+
+def _fmt(value: float) -> str:
+    """Trim a whole-number float ('135.0' -> '135'); leave decimals intact."""
+    return str(int(value)) if value == int(value) else str(value)
+
+
+def _format_range(low: float | None, high: float | None) -> str:
+    if low is not None and high is not None:
+        return f"{_fmt(low)}-{_fmt(high)}"
+    if low is not None:
+        return f">= {_fmt(low)}"
+    if high is not None:
+        return f"<= {_fmt(high)}"
+    return "n/a"
+
+
+def reference_range(context: Any) -> list[VerificationDomainFlag]:
+    """Flag Observations whose numeric value is outside its reference range.
+
+    Catches out-of-range results that carry **no** interpretation code — the
+    case the interpretation-driven ``critical_lab`` rule cannot see.  Any
+    Observation that already resolves to a recognized abnormal/critical
+    interpretation is skipped so the same result is never double-flagged.
+    Severity is always ``warning`` (mild): escalation to critical stays the
+    job of ``critical_lab`` via an explicit ``HH``/``LL`` code.
+    """
+    flags: list[VerificationDomainFlag] = []
+    for (rtype, rid), res in context.resources_by_key.items():
+        if rtype != ResourceType.Observation:
+            continue
+        # Don't duplicate a flag critical_lab/abnormal_lab already raises.
+        if _abnormal_flag_of(res) in _RECOGNIZED_INTERP:
+            continue
+        value = _obs_numeric_value(res)
+        if value is None:
+            continue
+        low, high = _reference_bounds(res)
+        if high is not None and value > high:
+            direction = "above the reference range"
+        elif low is not None and value < low:
+            direction = "below the reference range"
+        else:
+            continue
+
+        flags.append(
+            VerificationDomainFlag(
+                rule="reference_range",
+                severity="warning",
+                message=(
+                    f"{_obs_label(res)} is {direction}: "
+                    f"{_obs_value(res)} (ref {_format_range(low, high)})"
+                ).strip(),
+                must_surface=False,
+                evidence=[
+                    FhirReference(
+                        resource_type=ResourceType.Observation,
+                        resource_id=rid,
+                        field="valueQuantity.value",
+                        value=str(value),
+                    )
+                ],
+            )
+        )
+    return flags
+
+
+# --- Medication reconciliation --------------------------------------------
+
+
+def _status_active(res: Mapping[str, Any]) -> bool:
+    """True when a Medication* resource's ``status`` is ``active``."""
+    return str(res.get("status", "")).lower() == "active"
+
+
+def _norm_med_name(name: str) -> str:
+    """Normalize a medication display name for cross-store matching.
+
+    Lower-case and whitespace-collapsed only — deliberately conservative.
+    Production would reconcile on RxNorm codes, not display text.
+    """
+    return " ".join(name.lower().split())
+
+
+def _med_ref(rtype: ResourceType, rid: str, name: str) -> FhirReference:
+    return FhirReference(
+        resource_type=rtype,
+        resource_id=rid,
+        field="medicationCodeableConcept",
+        value=name,
+    )
+
+
+def medication_reconciliation(context: Any) -> list[VerificationDomainFlag]:
+    """Reconcile prescribed orders against the reported medication list.
+
+    Compares ``MedicationRequest`` (orders/prescriptions) against
+    ``MedicationStatement`` (reported/home list) and flags divergences the
+    two stores could not agree on: a drug present in one store but not the
+    other, or an active/inactive disagreement for the same drug.
+
+    Reconciliation only runs when **both** stores are populated — with no
+    reported list there is nothing to reconcile against, so a patient who has
+    prescriptions but no documented home list produces no flags.
+    """
+    orders: dict[str, tuple[bool, str, str]] = {}
+    statements: dict[str, tuple[bool, str, str]] = {}
+    for (rtype, rid), res in context.resources_by_key.items():
+        if rtype == ResourceType.MedicationRequest:
+            name = _display_name(res)
+            if name:
+                orders[_norm_med_name(name)] = (_status_active(res), rid, name)
+        elif rtype == ResourceType.MedicationStatement:
+            name = _display_name(res)
+            if name:
+                statements[_norm_med_name(name)] = (_status_active(res), rid, name)
+
+    if not orders or not statements:
+        return []
+
+    flags: list[VerificationDomainFlag] = []
+    for key in sorted(set(orders) | set(statements)):
+        in_orders = key in orders
+        in_statements = key in statements
+        if in_orders and not in_statements:
+            _active, rid, name = orders[key]
+            flags.append(
+                VerificationDomainFlag(
+                    rule="medication_reconciliation",
+                    severity="warning",
+                    message=(
+                        f"'{name}' is prescribed (MedicationRequest) but absent "
+                        f"from the reported medication list (MedicationStatement)."
+                    ),
+                    must_surface=True,
+                    evidence=[_med_ref(ResourceType.MedicationRequest, rid, name)],
+                )
+            )
+        elif in_statements and not in_orders:
+            _active, rid, name = statements[key]
+            flags.append(
+                VerificationDomainFlag(
+                    rule="medication_reconciliation",
+                    severity="warning",
+                    message=(
+                        f"'{name}' is on the reported medication list "
+                        f"(MedicationStatement) but has no matching order "
+                        f"(MedicationRequest)."
+                    ),
+                    must_surface=True,
+                    evidence=[_med_ref(ResourceType.MedicationStatement, rid, name)],
+                )
+            )
+        else:
+            order_active, order_id, order_name = orders[key]
+            stmt_active, stmt_id, _stmt_name = statements[key]
+            if order_active == stmt_active:
+                continue
+            order_state = "active" if order_active else "inactive"
+            stmt_state = "active" if stmt_active else "inactive"
+            flags.append(
+                VerificationDomainFlag(
+                    rule="medication_reconciliation",
+                    severity="warning",
+                    message=(
+                        f"'{order_name}' status disagrees between stores: "
+                        f"{order_state} order (MedicationRequest) vs {stmt_state} "
+                        f"on the reported list (MedicationStatement)."
+                    ),
+                    must_surface=True,
+                    evidence=[
+                        _med_ref(ResourceType.MedicationRequest, order_id, order_name),
+                        _med_ref(ResourceType.MedicationStatement, stmt_id, order_name),
+                    ],
+                )
+            )
+    return flags
+
+
 def default_rules() -> tuple[DomainRule, ...]:
     """The MVP rule set — extendable but load-bearing today."""
-    return (allergy_medication_conflict, critical_lab)
+    return (
+        allergy_medication_conflict,
+        critical_lab,
+        reference_range,
+        medication_reconciliation,
+    )
