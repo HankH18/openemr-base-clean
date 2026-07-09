@@ -1,0 +1,16 @@
+{
+  "frozen_at": "2026-07-09T01:54:49",
+  "files": {
+    ".swarm-loop/acceptance/_fake_openemr.py": "752e6c6443ea3f39839b681da21126d7ca975d7687563668e3704b808f08411e",
+    ".swarm-loop/acceptance/build_check.py": "ccbf0ad6cf6421c27ba39ac096a9e1fc58b2209e31646eddfdab6d87d70f7384",
+    ".swarm-loop/acceptance/conftest.py": "0702152605cdfe89cab954e5e9cd529b712d8f53e828e086720c8cec2c4f8ec9",
+    ".swarm-loop/acceptance/project_tests.py": "c4fee1d67a96c1dca37fbb38ccec06592bbc2a9be827f566e519c9a2fb174496",
+    ".swarm-loop/acceptance/quality_count.py": "34b0f453b06e71565abd6e72d1210952e2906aac5baec19fe71fad6e95142b08",
+    ".swarm-loop/acceptance/run.py": "8334c1a8865fda9dafcef0a5a02861d0dd34925dd7bdb1c8a378b404dfa76a57",
+    ".swarm-loop/acceptance/background/test_background.py": "86f1e7af993f70d9ff11cd91419c1fe9d293db5adb05a5b76486a7ce84eba45a",
+    ".swarm-loop/acceptance/chat/test_chat.py": "6eb80c3f3b4c80084199bcaedd15bb0fce94c1021b944debda15eaf5748f2e57",
+    ".swarm-loop/acceptance/rounds/test_rounds.py": "935580bf23b09d99ad5fe3e91b681b70407881be53ec14918b4cec97647b5a29",
+    ".swarm-loop/acceptance/authz/test_authz.py": "fdf27d889fd349d5401356e06884a994cd678811833b23d55273d5f4c0624a35",
+    ".swarm-loop/goals.json": "41c416d33aee6b05c7be1cc4376d2abb2f125e792bff90f7bf4120e772a6c1f8"
+  }
+}

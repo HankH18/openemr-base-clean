@@ -1,0 +1,83 @@
+{
+  "frozen": true,
+  "frozen_at": "2026-07-09T01:54:49",
+  "metrics": [
+    {
+      "id": "acceptance_pass_rate",
+      "name": "E2E acceptance pass rate (%)",
+      "kind": "global",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --pass-rate",
+      "target": 100,
+      "direction": "maximize"
+    },
+    {
+      "id": "project_tests",
+      "name": "Project test suite pass rate (%) \u2014 tests/ + evals/",
+      "kind": "global",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/project_tests.py",
+      "target": 100,
+      "direction": "maximize"
+    },
+    {
+      "id": "build_ok",
+      "name": "Service builds + boots (/health) + migrations apply (0/1)",
+      "kind": "global",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/build_check.py",
+      "target": 1,
+      "direction": "maximize"
+    },
+    {
+      "id": "lint_type_errors",
+      "name": "ruff findings + mypy(strict) errors",
+      "kind": "global",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/quality_count.py",
+      "target": 0,
+      "direction": "minimize"
+    },
+    {
+      "id": "coverage",
+      "name": "Line coverage of copilot (%)",
+      "kind": "global",
+      "command": "cd agent && ./.venv/bin/python -m pytest --cov=copilot --cov-report=term -q tests evals 2>/dev/null | awk '/^TOTAL/ {gsub(/%/,\"\",$NF); print $NF}' | tail -1",
+      "target": 85,
+      "direction": "maximize",
+      "tolerance": 3
+    },
+    {
+      "id": "feat_chat",
+      "name": "Chat: grounded drill-down + serve-time verification + history (UC-2, UC-7)",
+      "kind": "feature",
+      "feature_id": "feat_chat",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature chat",
+      "target": 6,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_rounds",
+      "name": "Rounds: cursor + advance + acuity ranking (UC-1, UC-3, UC-4)",
+      "kind": "feature",
+      "feature_id": "feat_rounds",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature rounds",
+      "target": 6,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_authz",
+      "name": "Authorization boundary + no cross-patient leakage (UC-6)",
+      "kind": "feature",
+      "feature_id": "feat_authz",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature authz",
+      "target": 3,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_background",
+      "name": "Poller wiring + memory persistence + deterioration alerts (UC-5)",
+      "kind": "feature",
+      "feature_id": "feat_background",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature background",
+      "target": 5,
+      "direction": "maximize"
+    }
+  ]
+}

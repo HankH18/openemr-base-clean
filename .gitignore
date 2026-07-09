@@ -33,6 +33,9 @@ ccdaservice/node_modules
 
 # testing
 .phpunit.result.cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # dev tool local overrides
 phpcs.xml
@@ -51,3 +54,10 @@ docker/development-easy-redis/docker-compose.override.yml
 compose.override.yml
 tmp/
 .webpack-cache/
+.swarm-loop/worktrees/
+# swarm-loop volatile orchestrator state (kept on disk for resume, out of git so
+# per-cycle report commits don't move HEAD and defeat the no-progress kill switch)
+.swarm-loop/state.json
+.swarm-loop/history.csv
+.swarm-loop/analysis/
+.swarm-loop/reports/
