@@ -4,6 +4,8 @@
 # environment vars
 .env
 .env.local
+# agent local secrets (private keys, etc.) — never commit
+agent/secrets/
 
 # vendor and assets
 node_modules

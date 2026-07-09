@@ -89,7 +89,7 @@ class SmartAppLaunchTokenProvider:
     redirect_uri: str
     authorization_code: str
     client_secret: str | None = None  # confidential clients only
-    http_client_factory: type[httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
@@ -147,7 +147,7 @@ class BackendServicesTokenProvider:
     algorithm: str = "RS384"  # or "ES384"
     scopes: tuple[str, ...] = ("system/Patient.read",)
     audience: str | None = None  # defaults to token_url
-    http_client_factory: type[httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
     jti_factory: Callable[[], str] = field(default=lambda: secrets.token_urlsafe(16))
     now_factory: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)

@@ -10,7 +10,10 @@ rejects it, which is exactly why live reads require the config below).
 from __future__ import annotations
 
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
+
+import httpx
 
 from copilot.config import Settings
 from copilot.domain.primitives import utcnow
@@ -47,6 +50,7 @@ def build_token_provider(settings: Settings) -> TokenProvider:
             private_key_pem=pem,
             scopes=scopes,
             audience=settings.oauth_audience or None,
+            http_client_factory=partial(httpx.AsyncClient, verify=settings.tls_verify),
         )
     stub = OAuthToken(
         access_token="stub-serve-token",
@@ -58,4 +62,6 @@ def build_token_provider(settings: Settings) -> TokenProvider:
 
 def build_fhir_client(settings: Settings) -> FhirClient:
     """FhirClient wired to the environment-appropriate token provider."""
-    return FhirClient(settings.fhir_base_url, build_token_provider(settings))
+    return FhirClient(
+        settings.fhir_base_url, build_token_provider(settings), verify=settings.tls_verify
+    )

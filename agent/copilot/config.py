@@ -51,6 +51,13 @@ class Settings(BaseSettings):
         default="http://openemr/oauth2/default/authorize",
         description="OpenEMR OAuth2 authorization endpoint (SMART App Launch).",
     )
+    tls_verify: bool = Field(
+        default=True,
+        description=(
+            "Verify TLS on outbound OpenEMR calls. Keep True in prod (real cert "
+            "behind the proxy); set False only for a local self-signed dev stack."
+        ),
+    )
 
     # These are IDs, not secrets — the client secret / JWKs live in a
     # secrets manager (see RUNLOG operator queue).

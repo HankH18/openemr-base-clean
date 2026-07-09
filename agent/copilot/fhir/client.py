@@ -44,11 +44,12 @@ class FhirClient:
         *,
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 10.0,
+        verify: bool = True,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider
         self._owns_client = http_client is None
-        self._client = http_client or httpx.AsyncClient(timeout=timeout)
+        self._client = http_client or httpx.AsyncClient(timeout=timeout, verify=verify)
 
     async def __aenter__(self) -> FhirClient:
         return self
