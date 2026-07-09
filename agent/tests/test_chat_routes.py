@@ -152,6 +152,34 @@ def _fake_fhir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ChatService, "_fhir_client", lambda self: _FakeFhir(_COHORT))
 
 
+@pytest.fixture(autouse=True)
+def _authorize_clinician(_db_file: str) -> None:
+    """Seed a rounding cursor so CLIN is authorized for the cohort patients.
+
+    Chat now enforces the rounding-list authorization boundary (UC-6): a clinician
+    may only chat about patients on their established rounding list. These unit
+    tests inject FHIR only into ChatService (not RoundsService), so we authorize by
+    seeding the cursor directly rather than driving ``POST /v1/rounds/start``.
+    """
+    import asyncio
+
+    from copilot.domain.primitives import ClinicianId
+    from copilot.memory.db import get_engine, get_session_factory, session_scope
+    from copilot.memory.repository import MemoryRepository
+
+    async def _seed() -> None:
+        async with session_scope() as session:
+            await MemoryRepository(session).upsert_rounding_cursor(
+                ClinicianId(value=CLIN), [int(pid) for pid in _COHORT], 0, []
+            )
+
+    asyncio.run(_seed())
+    # The seed ran on its own event loop; drop the cached engine so the request
+    # loop (via TestClient) gets a fresh one. _client() also clears these.
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+
 def _client() -> TestClient:
     from copilot.api.app import create_app
     from copilot.config import get_settings
