@@ -13,10 +13,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from copilot.api.middleware import resolve_correlation_id
+from copilot.auth import is_authorized
 from copilot.chat.service import ChatReply, ChatService
 from copilot.config import get_settings
 from copilot.domain.primitives import ClinicianId, PatientId
@@ -58,9 +59,18 @@ async def chat(req: ChatRequest) -> dict[str, Any]:
     # Resolve at the boundary: a valid supplied id is honoured, anything else
     # (missing / malformed) yields a freshly generated one.
     correlation_id = resolve_correlation_id(req.correlation_id)
+    clinician_id = ClinicianId(value=req.clinician_id)
+    patient_id = PatientId(value=req.patient_id)
+
+    # Authorization boundary (UC-6): refuse a patient the clinician has not
+    # established on their rounding list — never answer, never leak.  Generic
+    # reason: no internal detail about who is (or is not) authorized.
+    if not await is_authorized(clinician_id, patient_id):
+        raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
+
     reply = await _service().chat(
-        clinician_id=ClinicianId(value=req.clinician_id),
-        patient_id=PatientId(value=req.patient_id),
+        clinician_id=clinician_id,
+        patient_id=patient_id,
         message=req.message,
         correlation_id=correlation_id,
         conversation_id=req.conversation_id,
