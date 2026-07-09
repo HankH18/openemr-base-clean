@@ -58,6 +58,15 @@ class Settings(BaseSettings):
             "behind the proxy); set False only for a local self-signed dev stack."
         ),
     )
+    fhir_patient_id_template: str = Field(
+        default="",
+        description=(
+            "Optional template mapping the agent's integer patient id to the "
+            "OpenEMR FHIR Patient UUID in search queries, e.g. "
+            "'a1000000-0000-0000-0000-{pid:012d}'. Empty ⇒ use the id verbatim "
+            "(the acceptance fake + tests key by integer id)."
+        ),
+    )
 
     # These are IDs, not secrets — the client secret / JWKs live in a
     # secrets manager (see RUNLOG operator queue).

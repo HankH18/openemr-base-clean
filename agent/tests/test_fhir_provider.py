@@ -5,10 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import httpx
+import respx
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from copilot.config import Settings
+from copilot.domain.primitives import ResourceType
 from copilot.fhir.auth import BackendServicesTokenProvider, StaticTokenProvider
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client, build_token_provider
@@ -71,3 +74,21 @@ def test_explicit_scopes_are_parsed(tmp_path: Path) -> None:
 
 def test_build_fhir_client_returns_client() -> None:
     assert isinstance(build_fhir_client(_settings()), FhirClient)
+
+
+def test_no_template_leaves_patient_param_verbatim() -> None:
+    # Default (no template): the acceptance fake + tests key by integer id.
+    client = build_fhir_client(_settings())
+    assert not isinstance(client, type(build_fhir_client(_settings(fhir_patient_id_template="x{pid}"))))
+
+
+@respx.mock
+async def test_patient_template_maps_search_param() -> None:
+    route = respx.get(url__regex=r"http://openemr/.*/Observation").mock(
+        return_value=httpx.Response(200, json={"resourceType": "Bundle", "total": 0})
+    )
+    client = build_fhir_client(_settings(fhir_patient_id_template="a1000000-0000-0000-0000-{pid:012d}"))
+    async with client as c:
+        await c.search(ResourceType.Observation, {"patient": "1001"})
+    assert route.called
+    assert "patient=a1000000-0000-0000-0000-000000001001" in str(route.calls.last.request.url)

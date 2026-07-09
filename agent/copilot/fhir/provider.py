@@ -9,14 +9,16 @@ rejects it, which is exactly why live reads require the config below).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from copilot.config import Settings
-from copilot.domain.primitives import utcnow
+from copilot.domain.primitives import ResourceType, utcnow
 from copilot.fhir.auth import (
     BackendServicesTokenProvider,
     OAuthToken,
@@ -60,8 +62,43 @@ def build_token_provider(settings: Settings) -> TokenProvider:
     return StaticTokenProvider(token=stub)
 
 
+class _PatientMappedFhirClient(FhirClient):
+    """FhirClient that maps the agent's integer patient id to the OpenEMR FHIR
+    Patient UUID in ``search`` params, via a configured template.
+
+    For local demos against a seed with deterministic UUIDs; a real deployment
+    would resolve the UUID from OpenEMR rather than templating it. Only ``search``
+    is mapped (the poller's ``count_since`` is a separate, off-by-default path).
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        token_provider: TokenProvider,
+        *,
+        patient_id_template: str,
+        verify: bool = True,
+    ) -> None:
+        super().__init__(base_url, token_provider, verify=verify)
+        self._pid_template = patient_id_template
+
+    async def search(
+        self, resource_type: ResourceType, params: Mapping[str, str]
+    ) -> dict[str, Any]:
+        patient = params.get("patient")
+        if patient is not None and patient.isdigit():
+            params = {**params, "patient": self._pid_template.format(pid=int(patient))}
+        return await super().search(resource_type, params)
+
+
 def build_fhir_client(settings: Settings) -> FhirClient:
-    """FhirClient wired to the environment-appropriate token provider."""
-    return FhirClient(
-        settings.fhir_base_url, build_token_provider(settings), verify=settings.tls_verify
-    )
+    """FhirClient wired to the environment-appropriate token provider (+ patient map)."""
+    provider = build_token_provider(settings)
+    if settings.fhir_patient_id_template:
+        return _PatientMappedFhirClient(
+            settings.fhir_base_url,
+            provider,
+            patient_id_template=settings.fhir_patient_id_template,
+            verify=settings.tls_verify,
+        )
+    return FhirClient(settings.fhir_base_url, provider, verify=settings.tls_verify)
