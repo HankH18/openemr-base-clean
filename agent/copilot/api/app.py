@@ -27,7 +27,6 @@ from copilot.config import Settings, get_settings
 from copilot.domain.contracts import HealthResponse, ReadinessDependency, ReadinessResponse
 from copilot.memory.db import get_engine
 
-
 ProbeFactory = Callable[[Settings], Callable[[], Awaitable[ReadinessDependency]]]
 
 

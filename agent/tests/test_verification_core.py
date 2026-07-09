@@ -15,7 +15,6 @@ from copilot.verification.core import (
     extract_numbers,
 )
 
-
 # --- Helpers ---------------------------------------------------------------
 
 
@@ -30,7 +29,9 @@ def _trop_resource(value: str = "2.34", abnormal: str = "HH") -> dict:
     }
 
 
-def _claim(text: str, resource_id: str = "trop-1", field: str = "valueQuantity.value", value: str = "2.34") -> Claim:
+def _claim(
+    text: str, resource_id: str = "trop-1", field: str = "valueQuantity.value", value: str = "2.34"
+) -> Claim:
     return Claim(
         text=text,
         source_ref=FhirReference(
@@ -112,9 +113,7 @@ class TestValueMatch:
     async def test_fails_when_source_value_disagrees(self) -> None:
         ctx = build_context_from_resources([_trop_resource(value="0.02")])
         verifier = Verifier(rules=())
-        summary = _summary(
-            _claim("Troponin 2.34 ng/mL.", value="2.34")
-        )
+        summary = _summary(_claim("Troponin 2.34 ng/mL.", value="2.34"))
         result = await verifier.verify_memory_file(summary, ctx)
         assert result.action == VerificationAction.withheld
         assert result.claims[0].attribution_ok is True

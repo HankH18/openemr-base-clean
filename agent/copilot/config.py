@@ -62,21 +62,26 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(
         default="", description="Set via env; without it, LLM calls raise a documented error."
     )
-    anthropic_model_synthesis: str = Field(default="claude-sonnet-4-6", description="Model for synthesis and chat.")
+    anthropic_model_synthesis: str = Field(
+        default="claude-sonnet-4-6", description="Model for synthesis and chat."
+    )
     anthropic_model_gating: str = Field(
-        default="claude-haiku-4-5-20251001", description="Cheaper model for classification / entailment."
+        default="claude-haiku-4-5-20251001",
+        description="Cheaper model for classification / entailment.",
     )
 
     # --- Observability ----------------------------------------------------
 
-    langfuse_host: str = Field(default="", description="Langfuse endpoint. Empty ⇒ observability no-op.")
+    langfuse_host: str = Field(
+        default="", description="Langfuse endpoint. Empty ⇒ observability no-op."
+    )
     langfuse_public_key: str = Field(default="")
     langfuse_secret_key: str = Field(default="")
 
     # --- Poller -----------------------------------------------------------
 
     poll_interval_seconds: int = Field(
-        default=300, description="Seconds between poller ticks. ARCHITECTURE calls for 5–15 min."
+        default=300, description="Seconds between poller ticks. ARCHITECTURE calls for 5-15 min."
     )
 
 

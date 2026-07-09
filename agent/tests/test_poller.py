@@ -2,28 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from copilot.domain.contracts import Claim, MemoryFileSummary
-from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
-from copilot.fhir.client import FhirClient, FhirClientError
+from copilot.domain.contracts import MemoryFileSummary
+from copilot.domain.primitives import PatientId, ResourceType, utcnow
+from copilot.fhir.client import FhirClientError
 from copilot.memory import Base, MemoryRepository
 from copilot.worker.poller import (
-    DEFAULT_WATCHED_TYPES,
     Poller,
     PollerTickOutcome,
 )
 from copilot.worker.synthesizer import (
-    LlmSynthesizer,
+    StubSynthesizer,
     SynthesisError,
     SynthesisInput,
-    StubSynthesizer,
 )
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,12 +48,12 @@ class FakeFhir:
         self.search_raises = search_raises
         self.searched: list[str] = []
 
-    async def count_since(self, rt: ResourceType, patient_id, since) -> int:  # noqa: ARG002
+    async def count_since(self, rt: ResourceType, patient_id, since) -> int:
         if self.count_raises is not None:
             raise self.count_raises
         return self.counts.get(rt.value, 0)
 
-    async def search(self, rt: ResourceType, params) -> dict:  # noqa: ARG002
+    async def search(self, rt: ResourceType, params) -> dict:
         if self.search_raises is not None:
             raise self.search_raises
         self.searched.append(rt.value)
@@ -79,7 +74,7 @@ class RecordingSynth:
 
 
 class RaisingSynth:
-    async def synthesize(self, inputs: SynthesisInput) -> MemoryFileSummary:  # noqa: ARG002
+    async def synthesize(self, inputs: SynthesisInput) -> MemoryFileSummary:
         raise SynthesisError("boom")
 
 
@@ -97,7 +92,9 @@ async def session() -> AsyncSession:
     await engine.dispose()
 
 
-def _obs(id: str = "90045", value: float = 2.34, last_updated: str = "2026-07-08T03:00:00Z") -> dict:
+def _obs(
+    id: str = "90045", value: float = 2.34, last_updated: str = "2026-07-08T03:00:00Z"
+) -> dict:
     return {
         "resourceType": "Observation",
         "id": id,
@@ -199,17 +196,13 @@ class TestPollerTick:
         assert row is not None
         assert row.consecutive_failures == 1
 
-    async def test_synthesis_error_records_failure_no_persist(
-        self, session: AsyncSession
-    ) -> None:
+    async def test_synthesis_error_records_failure_no_persist(self, session: AsyncSession) -> None:
         fhir = FakeFhir(
             counts={ResourceType.Observation.value: 1},
             bundles={ResourceType.Observation.value: [_obs()]},
         )
         repo = MemoryRepository(session)
-        poller = Poller(
-            fhir=fhir, synthesizer=RaisingSynth(), repository=repo
-        )  # type: ignore[arg-type]
+        poller = Poller(fhir=fhir, synthesizer=RaisingSynth(), repository=repo)  # type: ignore[arg-type]
 
         result = await poller.tick(PatientId(value=1015))
         assert result.outcome == PollerTickOutcome.error
@@ -229,9 +222,7 @@ class TestPollerTick:
             bundles={ResourceType.Observation.value: [_obs()]},
         )
         repo = MemoryRepository(session)
-        poller = Poller(
-            fhir=fhir, synthesizer=StubSynthesizer(), repository=repo
-        )  # type: ignore[arg-type]
+        poller = Poller(fhir=fhir, synthesizer=StubSynthesizer(), repository=repo)  # type: ignore[arg-type]
 
         result = await poller.tick(PatientId(value=1015))
         assert result.outcome == PollerTickOutcome.synthesized

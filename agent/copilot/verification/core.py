@@ -34,8 +34,7 @@ from copilot.domain.contracts import (
     VerificationDomainFlag,
     VerificationResult,
 )
-from copilot.domain.primitives import FhirReference, ResourceType
-
+from copilot.domain.primitives import ResourceType
 
 # Match integers or decimals: 42, 0.02, 2.34, 128, 3.375
 _NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -171,10 +170,7 @@ class Verifier:
                 source_ref=ref,
                 attribution_ok=True,
                 value_match=False,
-                reason=(
-                    f"value mismatch at {ref.field}: "
-                    f"source={extracted!r} claim={ref.value!r}"
-                ),
+                reason=(f"value mismatch at {ref.field}: source={extracted!r} claim={ref.value!r}"),
             )
 
         # Numeric literals in the claim text must appear in the resource.
@@ -186,8 +182,7 @@ class Verifier:
                 attribution_ok=True,
                 value_match=False,
                 reason=(
-                    "numeric literal(s) in claim text absent from source: "
-                    + ", ".join(missing)
+                    "numeric literal(s) in claim text absent from source: " + ", ".join(missing)
                 ),
             )
 
@@ -200,9 +195,7 @@ class Verifier:
             entailment=entailment_ok,
         )
 
-    async def _entailment_check(
-        self, claim: Claim, resource: Mapping[str, Any]
-    ) -> bool | None:
+    async def _entailment_check(self, claim: Claim, resource: Mapping[str, Any]) -> bool | None:
         """Optional LLM entailment.  Returns None when not configured."""
         if self._entailment is None:
             return None
@@ -290,9 +283,7 @@ def _flatten_to_text(node: Any, out: list[str] | None = None) -> str:
     elif isinstance(node, list):
         for v in node:
             _flatten_to_text(v, out)
-    elif isinstance(node, bool):
-        out.append(str(node))
-    elif node is not None:
+    elif isinstance(node, bool) or node is not None:
         out.append(str(node))
     return " ".join(out) if out is not None else ""
 

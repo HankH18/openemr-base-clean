@@ -1,7 +1,7 @@
 """Background poller + memory-file synthesizer.
 
 Ownership per ARCHITECTURE §"Components":
-- 5–15 min detection tick (`Poller`).
+- 5-15 min detection tick (`Poller`).
 - Change-gating (count query, then hash-confirm).
 - Memory-file synthesis via `LlmSynthesizer` (Claude wrapper).
 - Persistence via `MemoryRepository`.
@@ -21,7 +21,6 @@ from copilot.worker.synthesizer import (
 
 __all__ = [
     "ClaudeSynthesizer",
-    "content_hash_for_resources",
     "LlmSynthesizer",
     "Poller",
     "PollerResult",
@@ -29,4 +28,5 @@ __all__ = [
     "StubSynthesizer",
     "SynthesisError",
     "SynthesisInput",
+    "content_hash_for_resources",
 ]

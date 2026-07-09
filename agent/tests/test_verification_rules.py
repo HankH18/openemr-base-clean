@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from copilot.verification.core import build_context_from_resources
 from copilot.verification.rules import allergy_medication_conflict, critical_lab
 
@@ -12,11 +10,7 @@ def _allergy(id: str, name: str, active: bool = True) -> dict:
     return {
         "resourceType": "AllergyIntolerance",
         "id": id,
-        "clinicalStatus": {
-            "coding": [
-                {"code": "active" if active else "inactive"}
-            ]
-        },
+        "clinicalStatus": {"coding": [{"code": "active" if active else "inactive"}]},
         "code": {"text": name, "coding": [{"display": name}]},
     }
 
@@ -98,10 +92,8 @@ class TestAllergyMedicationConflict:
 
 
 class TestCriticalLab:
-    def test_critical_high_from_us_core_HH(self) -> None:
-        ctx = build_context_from_resources(
-            [_obs("obs-1", "Troponin I", 2.34, "ng/mL", "HH")]
-        )
+    def test_critical_high_from_us_core_hh(self) -> None:
+        ctx = build_context_from_resources([_obs("obs-1", "Troponin I", 2.34, "ng/mL", "HH")])
         flags = critical_lab(ctx)
         assert len(flags) == 1
         assert flags[0].rule == "critical_lab"
@@ -110,10 +102,8 @@ class TestCriticalLab:
         assert "Troponin" in flags[0].message
         assert "critically high" in flags[0].message
 
-    def test_critical_low_from_LL(self) -> None:
-        ctx = build_context_from_resources(
-            [_obs("obs-1", "Sodium", 118, "mEq/L", "LL")]
-        )
+    def test_critical_low_from_ll(self) -> None:
+        ctx = build_context_from_resources([_obs("obs-1", "Sodium", 118, "mEq/L", "LL")])
         flags = critical_lab(ctx)
         assert flags[0].severity == "critical"
         assert "critically low" in flags[0].message
@@ -133,9 +123,7 @@ class TestCriticalLab:
         assert flags[0].severity == "critical"
 
     def test_non_critical_abnormal_flagged_as_warning_but_not_must_surface(self) -> None:
-        ctx = build_context_from_resources(
-            [_obs("obs-1", "Creatinine", 1.4, "mg/dL", "H")]
-        )
+        ctx = build_context_from_resources([_obs("obs-1", "Creatinine", 1.4, "mg/dL", "H")])
         flags = critical_lab(ctx)
         assert flags[0].rule == "abnormal_lab"
         assert flags[0].severity == "warning"

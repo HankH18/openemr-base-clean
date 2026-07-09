@@ -19,7 +19,6 @@ from typing import Any
 
 from copilot.domain.contracts import Claim
 
-
 _ENTAILMENT_SYSTEM_PROMPT = """You verify whether a clinical claim is
 entailed (i.e., faithfully supported without additions or inversions) by
 a single FHIR resource.
@@ -37,9 +36,7 @@ class LlmEntailment:
         client: object | None = None,
     ) -> None:
         if not anthropic_api_key:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY not set — LlmEntailment refuses to run."
-            )
+            raise RuntimeError("ANTHROPIC_API_KEY not set — LlmEntailment refuses to run.")
         self._model = model
         if client is not None:
             self._client = client

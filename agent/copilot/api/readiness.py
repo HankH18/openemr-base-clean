@@ -31,7 +31,7 @@ async def probe_postgres(engine: AsyncEngine) -> ReadinessDependency:
             result = await conn.execute(text("SELECT 1"))
             _ = result.scalar_one()
         return ReadinessDependency(name="postgres", ok=True)
-    except Exception as exc:  # noqa: BLE001 — surface any failure to the caller
+    except Exception as exc:
         return ReadinessDependency(name="postgres", ok=False, detail=type(exc).__name__)
 
 
@@ -49,7 +49,7 @@ async def probe_openemr_fhir(
         return ReadinessDependency(
             name="openemr_fhir", ok=False, detail=f"status={resp.status_code}"
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return ReadinessDependency(name="openemr_fhir", ok=False, detail=type(exc).__name__)
 
 

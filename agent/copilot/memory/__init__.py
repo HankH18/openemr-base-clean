@@ -18,11 +18,8 @@ from copilot.memory.models import (
 from copilot.memory.repository import MemoryRepository
 
 __all__ = [
-    "Base",
-    "get_engine",
-    "get_session_factory",
-    "session_scope",
     "AuditLogRow",
+    "Base",
     "ConversationRow",
     "LastSeenRow",
     "MemoryFileRow",
@@ -30,4 +27,7 @@ __all__ = [
     "MessageRow",
     "RoundingCursorRow",
     "SyncStateRow",
+    "get_engine",
+    "get_session_factory",
+    "session_scope",
 ]

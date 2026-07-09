@@ -13,7 +13,7 @@ tried to build a Langfuse backend without the SDK installed.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from copilot.observability.base import Observability, Span, current_correlation_id
@@ -26,16 +26,12 @@ class _LangfuseSpan:
         self._inner = inner
 
     def set_attribute(self, key: str, value: Any) -> None:
-        try:
+        with suppress(Exception):
             self._inner.update(metadata={key: value})
-        except Exception:  # noqa: BLE001 — telemetry never breaks callers
-            pass
 
     def set_output(self, value: Any) -> None:
-        try:
+        with suppress(Exception):
             self._inner.update(output=value)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 class LangfuseObservability(Observability):
@@ -47,9 +43,7 @@ class LangfuseObservability(Observability):
         client: Any | None = None,
     ) -> None:
         if not (host and public_key and secret_key):
-            raise RuntimeError(
-                "LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY all required to run Langfuse."
-            )
+            raise RuntimeError("LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY all required to run Langfuse.")
         if client is not None:
             self._client = client
         else:
@@ -62,7 +56,7 @@ class LangfuseObservability(Observability):
         cid = current_correlation_id()
         try:
             inner = self._client.trace(name=name, id=cid or None, metadata=attributes)
-        except Exception:  # noqa: BLE001 — never fail callers on telemetry
+        except Exception:
             from copilot.observability.base import _NoopSpan
 
             yield _NoopSpan()
@@ -71,16 +65,12 @@ class LangfuseObservability(Observability):
         try:
             yield span
         finally:
-            try:
+            with suppress(Exception):
                 inner.end()
-            except Exception:  # noqa: BLE001
-                pass
 
     def event(self, name: str, **attributes: Any) -> None:
-        try:
+        with suppress(Exception):
             self._client.event(name=name, metadata=attributes)
-        except Exception:  # noqa: BLE001
-            pass
 
     def record_verification(self, *, passed: bool, action: str, patient_id: int) -> None:
         self.event(
@@ -100,7 +90,5 @@ class LangfuseObservability(Observability):
         )
 
     async def flush(self) -> None:
-        try:
+        with suppress(Exception):
             self._client.flush()
-        except Exception:  # noqa: BLE001
-            pass

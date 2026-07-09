@@ -137,7 +137,7 @@ object with EXACTLY this shape (no prose outside the JSON):
       "value": "<the extracted value as a string, verbatim from source>"
     }
   ],
-  "acuity_score": <float 0.0–10.0>,
+  "acuity_score": <float 0.0-10.0>,
   "rank_reason": "<one short sentence explaining acuity_score>"
 }
 
@@ -159,9 +159,7 @@ class ClaudeSynthesizer:
         client: object | None = None,
     ) -> None:
         if not anthropic_api_key:
-            raise SynthesisError(
-                "ANTHROPIC_API_KEY not set — ClaudeSynthesizer refuses to run."
-            )
+            raise SynthesisError("ANTHROPIC_API_KEY not set — ClaudeSynthesizer refuses to run.")
         self._model = model
         if client is not None:
             self._client = client
@@ -188,7 +186,7 @@ class ClaudeSynthesizer:
         text = _extract_text(response)
         try:
             payload = _ClaudeSynthesizerResponse.model_validate_json(text)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise SynthesisError(f"Claude output was not valid JSON: {exc}") from exc
 
         claims: list[Claim] = []

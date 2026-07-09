@@ -5,8 +5,6 @@ code (not JSON files) so the fixtures can share small helpers and stay
 readable — these aren't recorded traces, they're intentional test cases.
 """
 
-from copilot.domain.primitives import ResourceType
-
 
 def observation(
     id: str,
@@ -29,15 +27,17 @@ def observation(
             "coding": [{"system": "http://loinc.org", "code": loinc, "display": label}],
         },
         "valueQuantity": {"value": value, "unit": unit},
-        "interpretation": (
-            [{"coding": [{"code": abnormal}]}] if abnormal else []
-        ),
+        "interpretation": ([{"coding": [{"code": abnormal}]}] if abnormal else []),
         "meta": {"lastUpdated": last_updated},
     }
 
 
 def medication_request(
-    id: str, name: str, patient: str, active: bool = True, last_updated: str = "2026-07-08T00:00:00Z"
+    id: str,
+    name: str,
+    patient: str,
+    active: bool = True,
+    last_updated: str = "2026-07-08T00:00:00Z",
 ) -> dict:
     return {
         "resourceType": "MedicationRequest",
@@ -51,14 +51,16 @@ def medication_request(
 
 
 def allergy(
-    id: str, name: str, patient: str, active: bool = True, last_updated: str = "2026-07-07T00:00:00Z"
+    id: str,
+    name: str,
+    patient: str,
+    active: bool = True,
+    last_updated: str = "2026-07-07T00:00:00Z",
 ) -> dict:
     return {
         "resourceType": "AllergyIntolerance",
         "id": id,
-        "clinicalStatus": {
-            "coding": [{"code": "active" if active else "inactive"}]
-        },
+        "clinicalStatus": {"coding": [{"code": "active" if active else "inactive"}]},
         "code": {"text": name, "coding": [{"display": name}]},
         "patient": {"reference": f"Patient/{patient}"},
         "meta": {"lastUpdated": last_updated},

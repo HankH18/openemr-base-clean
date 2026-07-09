@@ -4,6 +4,17 @@ Every value that crosses a service boundary is a typed object here.  See
 `ARCHITECTURE.md` §"Interfaces & contracts" — these are the source of truth.
 """
 
+from copilot.domain.contracts import (
+    Claim,
+    LabResult,
+    MedicationList,
+    MedListItem,
+    MemoryFileSummary,
+    PatientCard,
+    VerificationClaimResult,
+    VerificationDomainFlag,
+    VerificationResult,
+)
 from copilot.domain.primitives import (
     ClinicianId,
     CorrelationId,
@@ -12,32 +23,21 @@ from copilot.domain.primitives import (
     ResourceType,
     utcnow,
 )
-from copilot.domain.contracts import (
-    Claim,
-    LabResult,
-    MedListItem,
-    MedicationList,
-    MemoryFileSummary,
-    PatientCard,
-    VerificationClaimResult,
-    VerificationDomainFlag,
-    VerificationResult,
-)
 
 __all__ = [
+    "Claim",
     "ClinicianId",
     "CorrelationId",
     "FhirReference",
-    "PatientId",
-    "ResourceType",
-    "utcnow",
-    "Claim",
     "LabResult",
     "MedListItem",
     "MedicationList",
     "MemoryFileSummary",
     "PatientCard",
+    "PatientId",
+    "ResourceType",
     "VerificationClaimResult",
     "VerificationDomainFlag",
     "VerificationResult",
+    "utcnow",
 ]

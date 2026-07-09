@@ -19,11 +19,11 @@ Two rules ship with the MVP:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import Any, Protocol
 
-from copilot.domain.primitives import FhirReference, ResourceType
 from copilot.domain.contracts import VerificationDomainFlag
+from copilot.domain.primitives import FhirReference, ResourceType
 
 
 class DomainRule(Protocol):

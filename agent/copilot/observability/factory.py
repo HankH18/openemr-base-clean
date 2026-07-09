@@ -13,9 +13,7 @@ from copilot.observability.base import NoopObservability, Observability
 
 def build_observability(settings: Settings) -> Observability:
     if not (
-        settings.langfuse_host
-        and settings.langfuse_public_key
-        and settings.langfuse_secret_key
+        settings.langfuse_host and settings.langfuse_public_key and settings.langfuse_secret_key
     ):
         return NoopObservability()
     from copilot.observability.langfuse_backend import LangfuseObservability

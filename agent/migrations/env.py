@@ -15,8 +15,10 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from copilot.config import get_settings
-from copilot.memory import Base  # noqa: F401 — imports all models via package init
-from copilot.memory import models  # noqa: F401 — force registration on Base.metadata
+from copilot.memory import (
+    Base,
+    models,  # noqa: F401 — force registration on Base.metadata
+)
 
 config = context.config
 if config.config_file_name is not None:

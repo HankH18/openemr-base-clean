@@ -90,18 +90,18 @@ class TestLangfuseBackendWithFakeClient:
         calls = {"traces": [], "events": [], "ended": 0}
 
         class FakeTraceObj:
-            def update(self, **kwargs):  # noqa: ANN003
+            def update(self, **kwargs):
                 calls.setdefault("updates", []).append(kwargs)
 
             def end(self) -> None:
                 calls["ended"] += 1
 
         class FakeClient:
-            def trace(self, **kwargs):  # noqa: ANN003
+            def trace(self, **kwargs):
                 calls["traces"].append(kwargs)
                 return FakeTraceObj()
 
-            def event(self, **kwargs):  # noqa: ANN003
+            def event(self, **kwargs):
                 calls["events"].append(kwargs)
 
             def flush(self) -> None:
@@ -129,7 +129,7 @@ class TestLangfuseBackendWithFakeClient:
         emitted: list[dict] = []
 
         class FakeClient:
-            def event(self, **kwargs):  # noqa: ANN003
+            def event(self, **kwargs):
                 emitted.append(kwargs)
 
         obs = LangfuseObservability(
@@ -153,10 +153,10 @@ class TestLangfuseBackendWithFakeClient:
         """Telemetry MUST NOT break the caller."""
 
         class BadClient:
-            def trace(self, **_):  # noqa: ANN003
+            def trace(self, **_):
                 raise RuntimeError("langfuse down")
 
-            def event(self, **_):  # noqa: ANN003
+            def event(self, **_):
                 pass
 
             def flush(self) -> None:

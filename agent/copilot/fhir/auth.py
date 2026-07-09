@@ -67,7 +67,7 @@ class StaticTokenProvider:
 
     token: OAuthToken
 
-    async def get_token(self, force: bool = False) -> OAuthToken:  # noqa: ARG002
+    async def get_token(self, force: bool = False) -> OAuthToken:
         return self.token
 
 
@@ -191,9 +191,7 @@ class TokenAcquisitionError(Exception):
 
 def _parse_token_response(resp: httpx.Response) -> OAuthToken:
     if resp.status_code >= 400:
-        raise TokenAcquisitionError(
-            f"token endpoint returned status={resp.status_code}"
-        )
+        raise TokenAcquisitionError(f"token endpoint returned status={resp.status_code}")
     body = resp.json()
     if not isinstance(body, dict) or "access_token" not in body:
         raise TokenAcquisitionError("token response missing access_token")

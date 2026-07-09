@@ -33,16 +33,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from copilot.memory.db import Base, JSONType
+
 # BigInteger PK on SQLite doesn't autoincrement (only INTEGER PRIMARY KEY does);
 # BigInteger works fine on Postgres. Use this variant for autoinc surrogate ids.
 AutoIncBigInt = BigInteger().with_variant(Integer(), "sqlite")
 
-from copilot.memory.db import Base, JSONType
-
 
 def _utc_default() -> datetime:
     """Server-agnostic UTC default (naive-in-DB but always UTC in Python)."""
-    from datetime import UTC, datetime as _dt
+    from datetime import UTC
+    from datetime import datetime as _dt
 
     return _dt.now(UTC).replace(tzinfo=None)
 
@@ -121,7 +122,7 @@ class ConversationRow(Base):
     correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
 
-    messages: Mapped[list["MessageRow"]] = relationship(
+    messages: Mapped[list[MessageRow]] = relationship(
         back_populates="conversation", cascade="all, delete-orphan"
     )
 

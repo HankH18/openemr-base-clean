@@ -17,7 +17,6 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any, Protocol
 
-
 correlation_id_var: ContextVar[str] = ContextVar("copilot_correlation_id", default="")
 
 
@@ -61,10 +60,10 @@ class Observability(Protocol):
 
 
 class _NoopSpan:
-    def set_attribute(self, key: str, value: Any) -> None:  # noqa: ARG002
+    def set_attribute(self, key: str, value: Any) -> None:
         return
 
-    def set_output(self, value: Any) -> None:  # noqa: ARG002
+    def set_output(self, value: Any) -> None:
         return
 
 
@@ -72,16 +71,16 @@ class NoopObservability:
     """Zero-cost placeholder — safe to inject when Langfuse is not wired."""
 
     @asynccontextmanager
-    async def span(self, name: str, **attributes: Any) -> AsyncIterator[Span]:  # noqa: ARG002
+    async def span(self, name: str, **attributes: Any) -> AsyncIterator[Span]:
         yield _NoopSpan()
 
-    def event(self, name: str, **attributes: Any) -> None:  # noqa: ARG002
+    def event(self, name: str, **attributes: Any) -> None:
         return
 
-    def record_verification(self, *, passed: bool, action: str, patient_id: int) -> None:  # noqa: ARG002
+    def record_verification(self, *, passed: bool, action: str, patient_id: int) -> None:
         return
 
-    def record_poller_staleness(self, *, patient_id: int, age_seconds: int) -> None:  # noqa: ARG002
+    def record_poller_staleness(self, *, patient_id: int, age_seconds: int) -> None:
         return
 
     async def flush(self) -> None:

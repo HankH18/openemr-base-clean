@@ -74,10 +74,20 @@ class TestSyncState:
         pid = PatientId(value=1015)
         polled = datetime(2026, 7, 8, tzinfo=UTC).replace(tzinfo=None)
         await repo.upsert_sync_state(
-            pid, polled_at=polled, success_at=polled, watermark=polled, content_hash="a", consecutive_failures=0
+            pid,
+            polled_at=polled,
+            success_at=polled,
+            watermark=polled,
+            content_hash="a",
+            consecutive_failures=0,
         )
         await repo.upsert_sync_state(
-            pid, polled_at=polled, success_at=None, watermark=None, content_hash="b", consecutive_failures=3
+            pid,
+            polled_at=polled,
+            success_at=None,
+            watermark=None,
+            content_hash="b",
+            consecutive_failures=3,
         )
         row = await repo.get_sync_state(pid)
         assert row is not None

@@ -32,12 +32,18 @@ def _rsa_pem() -> str:
 
 class TestOAuthTokenFreshness:
     def test_fresh_when_expires_far_in_future(self) -> None:
-        t = OAuthToken(access_token="x", token_type="Bearer", expires_at=datetime.now(UTC) + timedelta(hours=1))
+        t = OAuthToken(
+            access_token="x", token_type="Bearer", expires_at=datetime.now(UTC) + timedelta(hours=1)
+        )
         assert t.is_fresh() is True
 
     def test_stale_when_inside_skew_window(self) -> None:
         # 10 seconds from now, but skew is 30s ⇒ treated as stale
-        t = OAuthToken(access_token="x", token_type="Bearer", expires_at=datetime.now(UTC) + timedelta(seconds=10))
+        t = OAuthToken(
+            access_token="x",
+            token_type="Bearer",
+            expires_at=datetime.now(UTC) + timedelta(seconds=10),
+        )
         assert t.is_fresh() is False
 
 
@@ -135,7 +141,9 @@ class TestSmartAppLaunch:
 
     @respx.mock
     async def test_raises_on_401(self) -> None:
-        respx.post("https://openemr.test/token").mock(return_value=Response(401, json={"error": "bad_code"}))
+        respx.post("https://openemr.test/token").mock(
+            return_value=Response(401, json={"error": "bad_code"})
+        )
         provider = SmartAppLaunchTokenProvider(
             token_url="https://openemr.test/token",
             client_id="chat",
@@ -157,7 +165,12 @@ class TestBackendServices:
         route = respx.post("https://openemr.test/token").mock(
             return_value=Response(
                 200,
-                json={"access_token": "sys-1", "token_type": "Bearer", "expires_in": 300, "scope": "system/Patient.read"},
+                json={
+                    "access_token": "sys-1",
+                    "token_type": "Bearer",
+                    "expires_in": 300,
+                    "scope": "system/Patient.read",
+                },
             )
         )
         provider = BackendServicesTokenProvider(

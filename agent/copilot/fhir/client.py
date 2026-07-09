@@ -45,7 +45,7 @@ class FhirClient:
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=timeout)
 
-    async def __aenter__(self) -> "FhirClient":
+    async def __aenter__(self) -> FhirClient:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -78,9 +78,7 @@ class FhirClient:
         body = await self.search(resource_type, params)
         total = body.get("total")
         if not isinstance(total, int):
-            raise FhirClientError(
-                f"missing/invalid 'total' in count response: {body!r}"
-            )
+            raise FhirClientError(f"missing/invalid 'total' in count response: {body!r}")
         return total
 
     async def _request(
@@ -106,10 +104,8 @@ class FhirClient:
                 raise FhirClientError(f"token refresh failed after 401: {exc}") from exc
 
         if resp.status_code >= 400:
-            raise FhirClientError(
-                f"FHIR {method} {path} returned status={resp.status_code}"
-            )
+            raise FhirClientError(f"FHIR {method} {path} returned status={resp.status_code}")
         try:
             return resp.json()
-        except Exception as exc:  # noqa: BLE001 — malformed JSON from FHIR is FhirClientError
+        except Exception as exc:
             raise FhirClientError(f"FHIR response was not JSON: {exc}") from exc

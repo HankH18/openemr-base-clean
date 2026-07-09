@@ -41,7 +41,7 @@ class PatientId(BaseModel):
 
     value: int = Field(gt=0)
 
-    def __str__(self) -> str:  # noqa: D401 - convention: id-like objects stringify
+    def __str__(self) -> str:
         return str(self.value)
 
 
@@ -58,7 +58,9 @@ class ClinicianId(BaseModel):
 
 CorrelationId = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$"),
+    StringConstraints(
+        strip_whitespace=True, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$"
+    ),
 ]
 """Per-request/tick trace ID. Threaded through logs + Langfuse."""
 

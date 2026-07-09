@@ -21,7 +21,6 @@ from copilot.worker.synthesizer import (
     SynthesisInput,
 )
 
-
 pytestmark = pytest.mark.asyncio
 
 
@@ -94,7 +93,7 @@ class TestClaudeSynthesizerParsing:
         )
 
         class FakeMessages:
-            async def create(self, **_kwargs) -> object:  # noqa: ANN003
+            async def create(self, **_kwargs) -> object:
                 return fake_response
 
         class FakeClient:
@@ -122,7 +121,7 @@ class TestClaudeSynthesizerParsing:
 
     async def test_raises_on_non_json_output(self) -> None:
         class FakeMessages:
-            async def create(self, **_kwargs) -> object:  # noqa: ANN003
+            async def create(self, **_kwargs) -> object:
                 return SimpleNamespace(content=[SimpleNamespace(text="Sorry, I cannot.")])
 
         class FakeClient:
@@ -165,7 +164,7 @@ class TestClaudeSynthesizerParsing:
         )
 
         class FakeMessages:
-            async def create(self, **_kwargs) -> object:  # noqa: ANN003
+            async def create(self, **_kwargs) -> object:
                 return fake_response
 
         class FakeClient:

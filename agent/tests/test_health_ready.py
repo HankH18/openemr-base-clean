@@ -55,7 +55,9 @@ def test_ready_returns_200_when_all_probes_ok() -> None:
 
 
 def test_ready_returns_503_when_any_probe_fails() -> None:
-    client = _build_app(_ok("postgres"), _fail("openemr_fhir", "connection refused"), _ok("llm"), _ok("langfuse"))
+    client = _build_app(
+        _ok("postgres"), _fail("openemr_fhir", "connection refused"), _ok("llm"), _ok("langfuse")
+    )
     resp = client.get("/ready")
     assert resp.status_code == 503
     body = resp.json()
