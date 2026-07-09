@@ -118,7 +118,7 @@ def _is_active(res: Mapping[str, Any], resource_type: ResourceType) -> bool:
             if isinstance(first, Mapping):
                 return str(first.get("code", "")).lower() == "active"
         # Fallback for OpenEMR bundle: 'activity' == 1 or missing
-        return res.get("activity", 1) == 1
+        return bool(res.get("activity", 1) == 1)
     return True
 
 
@@ -231,7 +231,8 @@ def _obs_label(res: Mapping[str, Any]) -> str:
         text = code.get("text")
         if isinstance(text, str) and text:
             return text
-    return res.get("id", "?")
+    obs_id = res.get("id")
+    return obs_id if isinstance(obs_id, str) else "?"
 
 
 def _obs_value(res: Mapping[str, Any]) -> str:

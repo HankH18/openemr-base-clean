@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.schedulers.asyncio import (  # type: ignore[import-untyped]  # apscheduler ships no stubs
+    AsyncIOScheduler,
+)
 
 from copilot.domain.primitives import PatientId
 from copilot.worker.poller import Poller, PollerResult

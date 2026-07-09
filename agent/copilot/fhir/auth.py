@@ -23,12 +23,13 @@ ARCHITECTURE §Security).
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 import httpx
-from authlib.jose import jwt as jose_jwt
+from authlib.jose import jwt as jose_jwt  # type: ignore[import-untyped]  # authlib ships no stubs
 
 # 30-second skew guard on token expiry — refresh a bit before the clock says.
 _EXPIRY_SKEW = timedelta(seconds=30)
@@ -147,8 +148,8 @@ class BackendServicesTokenProvider:
     scopes: tuple[str, ...] = ("system/Patient.read",)
     audience: str | None = None  # defaults to token_url
     http_client_factory: type[httpx.AsyncClient] = field(default=httpx.AsyncClient)
-    jti_factory: callable = field(default=lambda: secrets.token_urlsafe(16))  # type: ignore[assignment]
-    now_factory: callable = field(default=lambda: datetime.now(UTC))  # type: ignore[assignment]
+    jti_factory: Callable[[], str] = field(default=lambda: secrets.token_urlsafe(16))
+    now_factory: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
@@ -179,7 +180,7 @@ class BackendServicesTokenProvider:
             "exp": int((now + timedelta(minutes=5)).timestamp()),
             "iat": int(now.timestamp()),
         }
-        return jose_jwt.encode(header, payload, self.private_key_pem).decode("ascii")
+        return cast("str", jose_jwt.encode(header, payload, self.private_key_pem).decode("ascii"))
 
 
 # --- helpers ----------------------------------------------------------------

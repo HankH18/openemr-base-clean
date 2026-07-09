@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -106,6 +106,6 @@ class FhirClient:
         if resp.status_code >= 400:
             raise FhirClientError(f"FHIR {method} {path} returned status={resp.status_code}")
         try:
-            return resp.json()
+            return cast("dict[str, Any]", resp.json())
         except Exception as exc:
             raise FhirClientError(f"FHIR response was not JSON: {exc}") from exc

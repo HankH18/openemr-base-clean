@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from copilot.domain.contracts import (
     Claim,
@@ -199,7 +199,9 @@ class Verifier:
         """Optional LLM entailment.  Returns None when not configured."""
         if self._entailment is None:
             return None
-        return await self._entailment.entails(claim, resource)
+        # `_entailment` is typed `Any` (loose, to keep the collaborator optional);
+        # its `entails` contract returns bool. Cast the parsed result precisely.
+        return cast("bool", await self._entailment.entails(claim, resource))
 
 
 # --- helpers ---------------------------------------------------------------

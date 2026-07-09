@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from typing import Any
 
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -20,16 +22,16 @@ from sqlalchemy.types import TypeDecorator, TypeEngine
 from copilot.config import get_settings
 
 
-class JSONType(TypeDecorator[dict]):
+class JSONType(TypeDecorator[dict[str, Any]]):
     """JSONB on Postgres, JSON on SQLite — same interface for tests + prod."""
 
     impl = JSON
     cache_ok = True
 
-    def load_dialect_impl(self, dialect: object) -> TypeEngine[dict]:  # type: ignore[override]
-        if getattr(dialect, "name", "") == "postgresql":
-            return dialect.type_descriptor(JSONB())  # type: ignore[attr-defined]
-        return dialect.type_descriptor(JSON())  # type: ignore[attr-defined]
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(JSONB())
+        return dialect.type_descriptor(JSON())
 
 
 class Base(DeclarativeBase):
