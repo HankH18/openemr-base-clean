@@ -26,6 +26,8 @@ SET @T_MINUS_3D = DATE_SUB(@NOW, INTERVAL 3 DAY);
 -- -----------------------------------------------------------------------------
 -- 0. Wipe prior seed rows (marker: external_id='SEED') so this is re-runnable.
 -- -----------------------------------------------------------------------------
+-- order_code first, while the SEED orders it references still exist.
+DELETE FROM procedure_order_code WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED');
 DELETE FROM procedure_result WHERE procedure_report_id IN (
   SELECT procedure_report_id FROM procedure_report
    WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED')
@@ -546,6 +548,24 @@ VALUES
   (@T_MINUS_2H,
    'RN NOTE @ 04:12 — pt reports recurrent substernal chest pressure, 6/10, radiating to L arm. Diaphoretic. BP 148/94, HR 112, SpO2 95% on RA. STAT EKG obtained, troponin drawn. MD notified.',
    1015, 'dr_chen', 'Default', 1, 1, 'RN progress note — chest pain recurrence', 'dr_chen', 0, 'New');
+
+-- -----------------------------------------------------------------------------
+-- procedure_order_code: FHIR lab Observations only export when each order carries
+-- an order-code row — OpenEMR's lab query joins report<->result THROUGH this table
+-- on (procedure_order_id, procedure_order_seq). One row per SEED order (seq 1),
+-- with a representative code/name derived from its results.
+-- -----------------------------------------------------------------------------
+INSERT INTO procedure_order_code
+  (procedure_order_id, procedure_order_seq, procedure_code, procedure_name, procedure_source, do_not_send, procedure_order_title)
+SELECT po.procedure_order_id, 1,
+       COALESCE(MIN(res.result_code), 'LOINC:UNK'),
+       COALESCE(MIN(res.result_text), 'Lab panel'),
+       '1', 0, COALESCE(MIN(res.result_text), 'Lab panel')
+FROM procedure_order po
+JOIN procedure_report rep ON rep.procedure_order_id = po.procedure_order_id
+JOIN procedure_result res ON res.procedure_report_id = rep.procedure_report_id
+WHERE po.external_id = 'SEED'
+GROUP BY po.procedure_order_id;
 
 -- -----------------------------------------------------------------------------
 -- Done.  Summary:
