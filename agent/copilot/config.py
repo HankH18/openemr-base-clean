@@ -84,6 +84,16 @@ class Settings(BaseSettings):
         default=300, description="Seconds between poller ticks. ARCHITECTURE calls for 5-15 min."
     )
 
+    # --- Alerting ---------------------------------------------------------
+
+    acuity_alert_threshold: float = Field(
+        default=7.0,
+        description=(
+            "Acuity score at or above which the deterioration-alert feature "
+            "raises an alert. Consumed by the alerting path added later."
+        ),
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

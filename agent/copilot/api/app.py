@@ -15,19 +15,39 @@ skeleton only for now (Unit 1 acceptance).
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
 from collections.abc import Awaitable, Callable
 from functools import partial
 
-from fastapi import FastAPI, Response
+from fastapi import APIRouter, FastAPI, Response
 from fastapi.responses import JSONResponse
 
 from copilot import __version__
-from copilot.api import readiness
+from copilot.api import readiness, routes
+from copilot.api.middleware import CorrelationIdMiddleware
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import HealthResponse, ReadinessDependency, ReadinessResponse
 from copilot.memory.db import get_engine
+from copilot.observability import build_observability
 
 ProbeFactory = Callable[[Settings], Callable[[], Awaitable[ReadinessDependency]]]
+
+
+def register_routers(app: FastAPI) -> None:
+    """Auto-discover and mount feature routers.
+
+    Every module under ``copilot.api.routes`` is imported; any that exposes a
+    module-level ``router`` (a FastAPI ``APIRouter``) is mounted via
+    ``include_router``. Modules with no ``router`` attribute are skipped;
+    genuine import errors propagate rather than being swallowed, so a broken
+    route module surfaces loudly at startup instead of silently vanishing.
+    """
+    for module_info in pkgutil.iter_modules(routes.__path__):
+        module = importlib.import_module(f"{routes.__name__}.{module_info.name}")
+        router = getattr(module, "router", None)
+        if isinstance(router, APIRouter):
+            app.include_router(router)
 
 
 def _default_probe_factories() -> list[ProbeFactory]:
@@ -46,7 +66,11 @@ def create_app(
 ) -> FastAPI:
     """Build the app.  All I/O collaborators are injectable."""
     settings = settings or get_settings()
-    probe_factories = probe_factories or _default_probe_factories()
+    # Distinguish "not supplied" (None -> wire real probes) from an explicit
+    # empty list (caller wants no probes, e.g. tests). `or` would coerce [] to
+    # the defaults; `is None` preserves the caller's empty list.
+    if probe_factories is None:
+        probe_factories = _default_probe_factories()
 
     app = FastAPI(
         title="Clinical Co-Pilot",
@@ -55,6 +79,14 @@ def create_app(
         docs_url="/docs",
         openapi_url="/openapi.json",
     )
+
+    # Observability backend (Langfuse when creds present, else no-op) lives on
+    # app.state so request handlers and background tasks share one instance.
+    app.state.observability = build_observability(settings)
+
+    # Every request gets a correlation ID published to the ContextVar and
+    # echoed on the X-Correlation-ID response header.
+    app.add_middleware(CorrelationIdMiddleware)
 
     @app.get(
         "/health",
@@ -78,6 +110,9 @@ def create_app(
             status_code=payload.to_status_code(),
             content=payload.model_dump(mode="json"),
         )
+
+    # Feature routes (rounds, chat, …) mount themselves without edits here.
+    register_routers(app)
 
     return app
 
