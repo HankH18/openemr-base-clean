@@ -154,10 +154,27 @@ services:
       COPILOT_OAUTH_AUTHORIZE_URL: http://openemr/oauth2/default/authorize
       COPILOT_SMART_APP_CLIENT_ID: ${SMART_APP_CLIENT_ID:-}
       COPILOT_BACKEND_SERVICES_CLIENT_ID: ${BACKEND_SERVICES_CLIENT_ID:-}
+      COPILOT_BACKEND_SERVICES_SCOPES: ${BACKEND_SERVICES_SCOPES:-}
+      COPILOT_BACKEND_SERVICES_PRIVATE_KEY_PATH: /run/secrets/backend-key.pem
+      # The JWT-assertion audience must be the issuer OpenEMR advertises — i.e.
+      # SITE_ADDR_OATH's token endpoint — NOT the internal http://openemr URL the
+      # agent actually POSTs to. A mismatch yields invalid_client.
+      COPILOT_OAUTH_AUDIENCE: ${SITE_ADDR_OATH:?}/oauth2/default/token
+      # Maps the agent's integer patient ids to OpenEMR FHIR Patient UUIDs; set to
+      # the seed's scheme when demoing on seeded data, else leave empty.
+      COPILOT_FHIR_PATIENT_ID_TEMPLATE: ${FHIR_PATIENT_ID_TEMPLATE:-}
       COPILOT_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COPILOT_ANTHROPIC_MODEL_SYNTHESIS: ${ANTHROPIC_MODEL_SYNTHESIS:-claude-sonnet-5}
+      COPILOT_ANTHROPIC_MODEL_GATING: ${ANTHROPIC_MODEL_GATING:-claude-haiku-4-5-20251001}
+      COPILOT_POLLER_ENABLED: ${POLLER_ENABLED:-false}
       COPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       COPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       COPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+    volumes:
+      # Backend Services client private key (PEM). Create it BEFORE `up`-ing the
+      # agent (see DEPLOY.md §10): scripts/register_backend_client.py writes it to
+      # ./secrets/backend-key.pem. Never bake into the image or commit it.
+      - ${BACKEND_KEY_PATH:-./secrets/backend-key.pem}:/run/secrets/backend-key.pem:ro
     networks:
       - agent
 
