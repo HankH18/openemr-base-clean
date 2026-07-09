@@ -495,3 +495,40 @@ the droplet since Task 6.
    container.
 4. **GitLab CI variable** — `ANTHROPIC_API_KEY` (masked, main-
    protected) to activate the LLM eval cases.
+
+---
+
+## Swarm-loop continuation — interactive rounds+chat layer + UI
+
+Driven by the `swarm-loop` skill: a finite, metric-gated loop that decomposed the
+remaining work into atomic tasks, dispatched them to parallel subagents in isolated
+git worktrees, integrated the branches, and measured each cycle against 9 goals
+(frozen up front as 20 black-box acceptance tests + quality metrics). Full detail in
+`.swarm-loop/reports/`.
+
+**Cycle 1** — Wave 0: lint/format/mypy cleanup (93 issues → 0). Wave 1 (4 parallel
+enablers): `copilot/agent/` (runtime `build_agent` factory + deterministic StubAgent +
+ClaudeAgent tool-loop); serve-time `verify_answer()` (live re-fetch, fail-closed);
+MemoryRepository conversation/message/cursor/last_seen methods; correlation-ID
+middleware + observability injection + dynamic route auto-registration. Wave 2:
+rounding session (`/v1/rounds/start|current|advance`) + deterministic acuity ranking.
+
+**Cycle 2** — grounded chat (`/v1/chat` + `/v1/conversations/{id}`, fail-closed,
+multi-turn) ‖ background loop (`/v1/rounds/refresh` verify+persist, `/v1/rounds/alerts`
+deterioration preempt); then the UC-6 authorization boundary. **All 9 goals met at
+cycle 2/7** — acceptance 0→100% (20/20), 107→183 tests, lint 93→0, coverage 89%.
+
+**Post-loop:** background poller wired into the app lifespan (gated off by default);
+FHIR Bundle pagination; domain-rule enrichment (reference-range + med reconciliation).
+
+**UI** — `agent/web/`: a React 18 + Vite + TypeScript **Rounds Co-Pilot** panel on
+**React Aria Components** (headless, bespoke "chart-ledger" identity; Newsreader +
+Schibsted Grotesk + Spline Sans Mono; light + dark). Grounded cards with footnote-style
+provenance chips, cited chat with distinct served/degraded/withheld states, and the
+deterioration alert. Self-contained (mock adapter over the seeded cohort; live API via
+`VITE_API_BASE_URL`); clean `tsc --noEmit` + `vite build`. Built by a Fable agent.
+
+**Operator-action queue (unchanged + UI):** `ANTHROPIC_API_KEY` swaps the deterministic
+stub agent for live Claude; SMART client registrations; Langfuse creds; deploy. The web
+UI ships demoable on mock data with no backend; point it at the live service via
+`VITE_API_BASE_URL`.

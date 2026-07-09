@@ -1,3 +1,48 @@
+<!-- ────────────────────────────────────────────────────────────────────── -->
+
+# AgentForge Clinical Co-Pilot
+
+A conversational agent that helps a **hospitalist** prep and round on their patients —
+opening on the **most acute** patient first, giving a grounded, source-cited chart summary
+and "what changed overnight," answering follow-ups where every claim traces to a record
+(and **withholding** rather than guessing when it can't), and proactively flagging a
+not-yet-seen patient who deteriorates. Built as a **separate Python service** that reads
+patient data **only** through OpenEMR's FHIR/REST API — no read path bypasses OpenEMR's
+authorization.
+
+- **Agent service** — `agent/` (Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy/Postgres ·
+  Anthropic). Chat, rounds, background poller, deterministic fail-closed verification, memory
+  with provenance. 183+ tests; 20/20 E2E acceptance.
+- **Web UI** — `agent/web/` (React 18 · Vite · TypeScript · React Aria Components). The
+  "Rounds Co-Pilot" panel: grounded cards with provenance chips, cited chat with
+  served/withheld/degraded states, deterioration alerts. Light + dark.
+- **Docs** — [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`AUDIT.md`](AUDIT.md) ·
+  [`USERS.md`](USERS.md) · [`NOTES.md`](NOTES.md) · [`demo/SCRIPT.md`](demo/SCRIPT.md) ·
+  build log [`RUNLOG.md`](RUNLOG.md).
+
+## Quick start
+
+```bash
+# OpenEMR fork (system of record) — admin/pass, ports 8300/9300
+cd docker/development-easy && docker compose up --detach --wait
+
+# Agent service (Python 3.12)
+cd agent && uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e '.[dev]'
+pytest -q                                   # 183+ passing, deterministic (no key/server needed)
+uvicorn copilot.api.app:app --port 8000     # /health, /ready, /v1/rounds/*, /v1/chat
+
+# Rounds Co-Pilot UI (runs standalone on the seeded demo cohort — no backend needed)
+cd agent/web && npm install && npm run dev
+# point it at the live service: set VITE_API_BASE_URL (see agent/web/README.md)
+```
+
+**Operator actions to go fully live** (need credentials; intentionally not committed):
+`ANTHROPIC_API_KEY` (swaps the deterministic stub agent for live Claude), SMART client
+registrations (chat + backend-services poller), Langfuse creds, and deploy. **Demo data only —
+never real PHI.**  _Deployed URL: **paste on deploy**._
+
+<!-- ────────────────────────────────────────────────────────────────────── -->
+
 [![Syntax Status](https://github.com/openemr/openemr/actions/workflows/syntax.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/syntax.yml)
 [![Styling Status](https://github.com/openemr/openemr/actions/workflows/styling.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/styling.yml)
 [![Testing Status](https://github.com/openemr/openemr/actions/workflows/test.yml/badge.svg)](https://github.com/openemr/openemr/actions/workflows/test.yml)
