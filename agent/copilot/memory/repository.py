@@ -14,8 +14,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from copilot.domain.contracts import Claim, MemoryFileSummary
-from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
-from copilot.memory.models import AuditLogRow, MemoryFileRow, SyncStateRow
+from copilot.domain.primitives import (
+    ClinicianId,
+    FhirReference,
+    PatientId,
+    ResourceType,
+    utcnow,
+)
+from copilot.memory.models import (
+    AuditLogRow,
+    ConversationRow,
+    LastSeenRow,
+    MemoryFileRow,
+    MessageRow,
+    RoundingCursorRow,
+    SyncStateRow,
+)
+from copilot.memory.records import ConversationMessage, RoundingCursor
 
 
 class MemoryRepository:
@@ -107,6 +122,108 @@ class MemoryRepository:
             )
         )
         await self._session.flush()
+
+    # --- conversations / messages ----------------------------------------
+
+    async def create_conversation(
+        self, clinician_id: ClinicianId, patient_id: PatientId, correlation_id: str
+    ) -> int:
+        """Open a new patient-scoped chat session; return its new id."""
+        row = ConversationRow(
+            clinician_id=clinician_id.value,
+            patient_id=patient_id.value,
+            correlation_id=correlation_id,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row.id
+
+    async def append_message(self, conversation_id: int, role: str, content: str) -> None:
+        """Append one turn to a conversation."""
+        self._session.add(MessageRow(conversation_id=conversation_id, role=role, content=content))
+        await self._session.flush()
+
+    async def get_conversation_messages(self, conversation_id: int) -> list[ConversationMessage]:
+        """Read back a conversation's turns, oldest first (created_at, then id)."""
+        result = await self._session.execute(
+            select(MessageRow)
+            .where(MessageRow.conversation_id == conversation_id)
+            .order_by(MessageRow.created_at, MessageRow.id)
+        )
+        return [
+            ConversationMessage(role=row.role, content=row.content, created_at=row.created_at)
+            for row in result.scalars().all()
+        ]
+
+    # --- rounding_cursor --------------------------------------------------
+
+    async def get_rounding_cursor(self, clinician_id: ClinicianId) -> RoundingCursor | None:
+        result = await self._session.execute(
+            select(RoundingCursorRow).where(RoundingCursorRow.clinician_id == clinician_id.value)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return RoundingCursor(
+            clinician_id=clinician_id,
+            ordered_patient_ids=list(row.ordered_patient_ids),
+            current_index=row.current_index,
+            completed_ids=list(row.completed_ids),
+        )
+
+    async def upsert_rounding_cursor(
+        self,
+        clinician_id: ClinicianId,
+        ordered_patient_ids: list[int],
+        current_index: int,
+        completed_ids: list[int],
+    ) -> None:
+        result = await self._session.execute(
+            select(RoundingCursorRow).where(RoundingCursorRow.clinician_id == clinician_id.value)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            row = RoundingCursorRow(clinician_id=clinician_id.value)
+            self._session.add(row)
+        row.ordered_patient_ids = ordered_patient_ids
+        row.current_index = current_index
+        row.completed_ids = completed_ids
+        row.updated_at = utcnow().replace(tzinfo=None)
+        await self._session.flush()
+
+    # --- last_seen --------------------------------------------------------
+
+    async def set_last_seen(
+        self,
+        clinician_id: ClinicianId,
+        patient_id: PatientId,
+        seen_at: datetime | None = None,
+    ) -> None:
+        """Mark (clinician, patient) as seen; upsert on the unique pair."""
+        when = (seen_at if seen_at is not None else utcnow()).replace(tzinfo=None)
+        result = await self._session.execute(
+            select(LastSeenRow).where(
+                LastSeenRow.clinician_id == clinician_id.value,
+                LastSeenRow.patient_id == patient_id.value,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            row = LastSeenRow(clinician_id=clinician_id.value, patient_id=patient_id.value)
+            self._session.add(row)
+        row.seen_at = when
+        await self._session.flush()
+
+    async def get_last_seen(
+        self, clinician_id: ClinicianId, patient_id: PatientId
+    ) -> datetime | None:
+        result = await self._session.execute(
+            select(LastSeenRow.seen_at).where(
+                LastSeenRow.clinician_id == clinician_id.value,
+                LastSeenRow.patient_id == patient_id.value,
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 # --- (de)serialization ------------------------------------------------------
