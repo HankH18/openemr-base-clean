@@ -80,6 +80,15 @@ class Settings(BaseSettings):
 
     # --- Poller -----------------------------------------------------------
 
+    poller_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the background poller. Defaults OFF so the "
+            "service boots identically in every environment that has not "
+            "opted in; set COPILOT_POLLER_ENABLED=true to run the change-gated "
+            "poll loop in the app lifespan."
+        ),
+    )
     poll_interval_seconds: int = Field(
         default=300, description="Seconds between poller ticks. ARCHITECTURE calls for 5-15 min."
     )

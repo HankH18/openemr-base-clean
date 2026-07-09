@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from functools import partial
 
 from fastapi import APIRouter, FastAPI, Response
@@ -80,12 +81,37 @@ def create_app(
     if probe_factories is None:
         probe_factories = _default_probe_factories()
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Run the background poller for the app's lifetime — gated OFF.
+
+        When ``settings.poller_enabled`` is false (the default), this is a
+        pure no-op: nothing is imported, no scheduler starts, and the app
+        boots exactly as before with no dependency on Postgres/OpenEMR. Only
+        when explicitly enabled do we assemble and start the poll loop, and
+        stop it cleanly on shutdown.
+        """
+        if not settings.poller_enabled:
+            yield
+            return
+        # Imported lazily so the poller's collaborators are never loaded when
+        # the feature is off.
+        from copilot.worker.runtime import build_poller_scheduler
+
+        scheduler = build_poller_scheduler(settings)
+        scheduler.start()
+        try:
+            yield
+        finally:
+            scheduler.shutdown()
+
     app = FastAPI(
         title="Clinical Co-Pilot",
         version=__version__,
         # OpenAPI is the "runnable API collection" ARCHITECTURE.md calls for.
         docs_url="/docs",
         openapi_url="/openapi.json",
+        lifespan=lifespan,
     )
 
     # Observability backend (Langfuse when creds present, else no-op) lives on
