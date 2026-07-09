@@ -42,12 +42,20 @@ def register_routers(app: FastAPI) -> None:
     ``include_router``. Modules with no ``router`` attribute are skipped;
     genuine import errors propagate rather than being swallowed, so a broken
     route module surfaces loudly at startup instead of silently vanishing.
+
+    Idempotent: a router module already mounted on this app is skipped on any
+    repeat call, so calling this twice never double-registers routes.
     """
+    registered: set[str] = getattr(app.state, "_registered_route_modules", set())
     for module_info in pkgutil.iter_modules(routes.__path__):
+        if module_info.name in registered:
+            continue
         module = importlib.import_module(f"{routes.__name__}.{module_info.name}")
         router = getattr(module, "router", None)
         if isinstance(router, APIRouter):
             app.include_router(router)
+            registered.add(module_info.name)
+    app.state._registered_route_modules = registered
 
 
 def _default_probe_factories() -> list[ProbeFactory]:
