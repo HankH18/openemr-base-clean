@@ -364,8 +364,8 @@ VALUES
 -- 10. Lab orders + reports + results.
 --     Each patient gets a same-morning CBC + BMP. High-acuity pts get extra.
 --     Ranges + abnormal flags populated on every numeric result.
---     Abnormal flag values: '' = normal, 'high', 'low', 'critical_high',
---     'critical_low' (OpenEMR-style).
+--     Abnormal flag values: '' = normal, 'high', 'low', 'vhigh',
+--     'vlow' (OpenEMR-style).
 -- -----------------------------------------------------------------------------
 -- Reusable macro-ish pattern implemented as one big insert set.
 -- Order IDs 7xxx, Report IDs 8xxx, Result IDs 9xxxxx.
@@ -462,9 +462,9 @@ VALUES
   (90015, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090015','-','')), 8005, 'S', 'LOINC:600-7',  'Blood culture aerobic', @T_MINUS_2D, '', 'No growth to date', 'No growth', '', 'preliminary','48hr pending'),
   -- 8006 = pt1003 BMP (DKA — critical K high, high glucose, low bicarb via note)
   (90016, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090016','-','')), 8006, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_2H, 'mEq/L', '128',  '135-145',    'low',           'final', ''),
-  (90017, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090017','-','')), 8006, 'N', 'LOINC:2823-3', 'Potassium',  @T_MINUS_2H, 'mEq/L', '5.7',  '3.5-5.0',    'critical_high', 'final', 'On insulin drip'),
-  (90018, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090018','-','')), 8006, 'N', 'LOINC:2345-7', 'Glucose',    @T_MINUS_2H, 'mg/dL', '386',  '70-99',      'critical_high', 'final', 'DKA'),
-  (90019, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090019','-','')), 8006, 'N', 'LOINC:1963-8', 'Bicarbonate',@T_MINUS_2H, 'mEq/L', '12',   '22-29',      'critical_low',  'final', 'AG met acidosis'),
+  (90017, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090017','-','')), 8006, 'N', 'LOINC:2823-3', 'Potassium',  @T_MINUS_2H, 'mEq/L', '5.7',  '3.5-5.0',    'vhigh', 'final', 'On insulin drip'),
+  (90018, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090018','-','')), 8006, 'N', 'LOINC:2345-7', 'Glucose',    @T_MINUS_2H, 'mg/dL', '386',  '70-99',      'vhigh', 'final', 'DKA'),
+  (90019, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090019','-','')), 8006, 'N', 'LOINC:1963-8', 'Bicarbonate',@T_MINUS_2H, 'mEq/L', '12',   '22-29',      'vlow',  'final', 'AG met acidosis'),
   -- 8007 = pt1004 CBC (sepsis)
   (90020, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090020','-','')), 8007, 'N', 'LOINC:6690-2', 'WBC',        @T_MINUS_1D, 'K/uL',  '18.6', '4.5-11.0',   'high',          'final', 'With bands'),
   (90021, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090021','-','')), 8007, 'N', 'LOINC:718-7',  'Hemoglobin', @T_MINUS_1D, 'g/dL',  '10.4', '12.0-16.0',  'low',           'final', ''),
@@ -473,10 +473,10 @@ VALUES
   (90023, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090023','-','')), 8008, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '2.1',  '0.6-1.3',    'high',          'final', ''),
   (90024, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090024','-','')), 8008, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_1D, 'mEq/L', '141',  '135-145',    '',              'final', ''),
   -- 8009 = pt1004 lactate (elevated for sepsis)
-  (90025, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090025','-','')), 8009, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_1D, 'mmol/L','4.2',  '0.5-2.2',    'critical_high', 'final', '>4 = severe sepsis marker'),
+  (90025, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090025','-','')), 8009, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_1D, 'mmol/L','4.2',  '0.5-2.2',    'vhigh', 'final', '>4 = severe sepsis marker'),
   -- 8010 = pt1005 BMP
   (90026, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090026','-','')), 8010, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '1.0',  '0.6-1.3',    '',              'final', ''),
-  (90027, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090027','-','')), 8010, 'N', 'LOINC:3040-3', 'Lipase',     @T_MINUS_1D, 'U/L',   '842',  '10-190',     'critical_high', 'final', ''),
+  (90027, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090027','-','')), 8010, 'N', 'LOINC:3040-3', 'Lipase',     @T_MINUS_1D, 'U/L',   '842',  '10-190',     'vhigh', 'final', ''),
   -- 8011 = pt1006 CBC
   (90028, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090028','-','')), 8011, 'N', 'LOINC:6690-2', 'WBC',        @T_MINUS_1D, 'K/uL',  '12.4', '4.5-11.0',   'high',          'final', ''),
   (90029, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090029','-','')), 8011, 'N', 'LOINC:718-7',  'Hemoglobin', @T_MINUS_1D, 'g/dL',  '13.1', '12.0-16.0',  '',              'final', ''),
@@ -501,11 +501,11 @@ VALUES
   (90041, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090041','-','')), 8018, 'N', 'LOINC:2823-3', 'Potassium',  @T_MINUS_1D, 'mEq/L', '3.3',  '3.5-5.0',    'low',           'final', 'Replete'),
   (90042, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090042','-','')), 8018, 'N', 'LOINC:2777-1', 'Magnesium',  @T_MINUS_1D, 'mg/dL', '1.5',  '1.7-2.2',    'low',           'final', 'Replete'),
   -- 8019 = pt1014 BMP (Na trend correction)
-  (90043, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090043','-','')), 8019, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_1D, 'mEq/L', '124',  '135-145',    'critical_low',  'final', 'Down from 118 on admit'),
+  (90043, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090043','-','')), 8019, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_1D, 'mEq/L', '124',  '135-145',    'vlow',  'final', 'Down from 118 on admit'),
   -- 8020 = pt1015 baseline troponin (yesterday, normal)
   (90044, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090044','-','')), 8020, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_1D, 'ng/mL', '0.02', '<0.04',      '',              'final', 'Baseline negative'),
   -- 8021 = pt1015 OVERNIGHT CHANGE (last 2h) — critical trop
-  (90045, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090045','-','')), 8021, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_2H, 'ng/mL', '2.34', '<0.04',      'critical_high', 'final', '*** OVERNIGHT: rise from 0.02 -> 2.34 with recurrent chest pressure ***');
+  (90045, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090045','-','')), 8021, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_2H, 'ng/mL', '2.34', '<0.04',      'vhigh', 'final', '*** OVERNIGHT: rise from 0.02 -> 2.34 with recurrent chest pressure ***');
 
 INSERT INTO uuid_registry (uuid, table_name, table_id, table_vertical, couchdb, document_drive, mapped, created)
 SELECT uuid, 'procedure_order',  CAST(procedure_order_id AS CHAR),  '', '', 0, 0, NOW() FROM procedure_order  WHERE external_id='SEED';
@@ -581,6 +581,6 @@ SELECT 'meds (prescriptions)', COUNT(*)      FROM prescriptions  WHERE external_
 SELECT 'lab orders',           COUNT(*)      FROM procedure_order WHERE external_id='SEED' UNION ALL
 SELECT 'lab reports',          COUNT(*)      FROM procedure_report WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED') UNION ALL
 SELECT 'lab results',          COUNT(*)      FROM procedure_result WHERE procedure_report_id IN (SELECT procedure_report_id FROM procedure_report WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED')) UNION ALL
-SELECT 'critical results',     COUNT(*)      FROM procedure_result WHERE abnormal LIKE 'critical%' AND procedure_report_id IN (SELECT procedure_report_id FROM procedure_report WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED')) UNION ALL
+SELECT 'critical results',     COUNT(*)      FROM procedure_result WHERE abnormal IN ('vhigh','vlow') AND procedure_report_id IN (SELECT procedure_report_id FROM procedure_report WHERE procedure_order_id IN (SELECT procedure_order_id FROM procedure_order WHERE external_id='SEED')) UNION ALL
 SELECT 'soap notes',           COUNT(*)      FROM form_soap      WHERE pid BETWEEN 1001 AND 1015 UNION ALL
 SELECT 'pnotes',               COUNT(*)      FROM pnotes         WHERE pid BETWEEN 1001 AND 1015;
