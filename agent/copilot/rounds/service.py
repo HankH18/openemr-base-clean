@@ -21,8 +21,8 @@ from pydantic import BaseModel, ConfigDict
 from copilot.config import Settings
 from copilot.domain.contracts import MemoryFileSummary, PatientCard, PatientCardFreshness
 from copilot.domain.primitives import ClinicianId, PatientId, ResourceType, utcnow
-from copilot.fhir.auth import OAuthToken, StaticTokenProvider
 from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.rounds.ranking import AcuityAssessment, assess_patient, rank
@@ -131,18 +131,10 @@ class RoundsService:
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a rounding synthesis.
 
-        A static bearer is used deliberately: the acceptance fake accepts any
-        token, and the real backend-services credential (a signed-JWT private
-        key) is operator-injected, not carried in ``Settings``. Swapping in
-        ``BackendServicesTokenProvider`` is a wiring change once that secret
-        lands — see the RUNLOG operator queue.
+        Real Backend Services token when configured, else a stub bearer — see
+        ``copilot.fhir.provider.build_token_provider``.
         """
-        token = OAuthToken(
-            access_token="rounds-serve-token",
-            token_type="Bearer",
-            expires_at=utcnow() + timedelta(hours=1),
-        )
-        return FhirClient(self._settings.fhir_base_url, StaticTokenProvider(token=token))
+        return build_fhir_client(self._settings)
 
 
 # --- module helpers --------------------------------------------------------

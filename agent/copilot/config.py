@@ -56,6 +56,22 @@ class Settings(BaseSettings):
     # secrets manager (see RUNLOG operator queue).
     smart_app_client_id: str = Field(default="", description="SMART App Launch client_id.")
     backend_services_client_id: str = Field(default="", description="Backend Services client_id.")
+    backend_services_private_key_path: str = Field(
+        default="",
+        description=(
+            "Path to the Backend Services client private key (PEM). With a "
+            "client_id, this activates the real client_credentials + "
+            "private_key_jwt flow. Empty ⇒ stub bearer (offline/tests)."
+        ),
+    )
+    backend_services_scopes: str = Field(
+        default="",
+        description="Space-separated system/*.read scopes for the poller client. Empty ⇒ a default read set.",
+    )
+    oauth_audience: str = Field(
+        default="",
+        description="Audience claim for the JWT assertion. Empty ⇒ the token URL.",
+    )
 
     # --- LLM --------------------------------------------------------------
 
@@ -63,7 +79,7 @@ class Settings(BaseSettings):
         default="", description="Set via env; without it, LLM calls raise a documented error."
     )
     anthropic_model_synthesis: str = Field(
-        default="claude-sonnet-4-6", description="Model for synthesis and chat."
+        default="claude-sonnet-5", description="Model for synthesis and chat."
     )
     anthropic_model_gating: str = Field(
         default="claude-haiku-4-5-20251001",

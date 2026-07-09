@@ -3,6 +3,7 @@
 
 # environment vars
 .env
+.env.local
 
 # vendor and assets
 node_modules

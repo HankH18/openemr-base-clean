@@ -18,17 +18,15 @@ reply.
 
 from __future__ import annotations
 
-from datetime import timedelta
-
 from pydantic import BaseModel, ConfigDict
 
 from copilot.agent.base import ConversationTurn
 from copilot.agent.factory import build_agent
 from copilot.config import Settings
 from copilot.domain.contracts import Claim, VerificationAction, VerificationResult
-from copilot.domain.primitives import ClinicianId, PatientId, utcnow
-from copilot.fhir.auth import OAuthToken, StaticTokenProvider
+from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
@@ -132,18 +130,11 @@ class ChatService:
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a chat turn.
 
-        A static bearer is used deliberately: the acceptance fake accepts any
-        token, and the physician-delegated SMART credential is operator-injected
-        rather than carried in ``Settings`` (mirrors ``RoundsService``).  Both
-        the agent's reads and the serve-time verifier's re-fetch share this one
-        client for the turn's lifetime.
+        Real Backend Services token when configured, else a stub bearer — see
+        ``copilot.fhir.provider.build_token_provider``. Both the agent's reads
+        and the serve-time verifier's re-fetch share this client for the turn.
         """
-        token = OAuthToken(
-            access_token="chat-serve-token",
-            token_type="Bearer",
-            expires_at=utcnow() + timedelta(hours=1),
-        )
-        return FhirClient(self._settings.fhir_base_url, StaticTokenProvider(token=token))
+        return build_fhir_client(self._settings)
 
 
 # --- module helpers --------------------------------------------------------
