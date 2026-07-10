@@ -1,15 +1,15 @@
 """Real Claude chat agent — Anthropic tool-use loop over the FHIR client.
 
 ``ClaudeAgent`` runs an agentic loop: Claude may call ``get_labs`` /
-``get_medications`` (which read the patient's resources through the
-injected ``FhirClient``), then must return a JSON object whose every claim
-cites a ``source_ref``.  The parsed claims flow into the same verification
-gate as everything else, so a fabricated citation is dropped downstream.
+``get_medications`` (which read the patient's resources through the injected
+``FhirClient``), then returns JSON naming, per clinical claim, the *resource it
+came from*. The code — not the model — then builds each ``source_ref`` from the
+actual fetched resource (via ``copilot.agent.grounding``), so every emitted claim
+is grounded in real data and survives the deterministic value-match gate. Claude's
+prose ``answer`` is kept as the narrative; the claims are the audited evidence.
 
-It refuses to construct without an API key (like ``ClaudeSynthesizer``).
-It is *not* exercised in the keyless test path — the deterministic
-``StubAgent`` carries correctness there — but it must import cleanly,
-type-check, and construct with a key.
+Refuses to construct without an API key. Not exercised in the keyless test path
+(``StubAgent`` carries correctness there), but must import + type-check cleanly.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from copilot.agent.base import AgentAnswer, ConversationTurn
+from copilot.agent.grounding import claim_text, describe_resource
 from copilot.config import Settings
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
@@ -31,30 +32,29 @@ _MAX_TOKENS = 2048
 _SYSTEM_PROMPT = """You are a clinical chat assistant for a hospitalist, \
 answering questions about a single patient.
 
-You have tools to read the patient's labs and medications from the record. \
-Use them before answering any question that depends on clinical data.
+You have tools to read the patient's labs and medications from the record. Use \
+them before answering any question that depends on clinical data.
 
-Return your final message as a single JSON object with EXACTLY this shape \
-(no prose outside the JSON, no code fences):
+Return your final message as a single JSON object with EXACTLY this shape (no \
+prose outside the JSON, no code fences):
 
 {
-  "answer": "<a direct, factual answer to the question>",
+  "answer": "<a direct, factual clinical answer to the question>",
   "claims": [
     {
-      "text": "<one factual sentence naming the resource and its value>",
-      "resource_type": "<FHIR resource type, e.g. Observation>",
-      "resource_id": "<id of that resource>",
-      "field": "<FHIRPath-like field the value came from>",
-      "value": "<the value as a string, verbatim from the record>"
+      "resource_type": "<FHIR resource type of a resource a tool returned, e.g. Observation>",
+      "resource_id": "<the id of that exact resource>"
     }
   ]
 }
 
 Rules:
-- Every claim MUST cite a resource returned by a tool call.
-- Every number, dose, and medication name in a claim MUST match the record verbatim.
-- If the record does not support the question, say so plainly and return "claims": [].
-- Never invent a resource, value, or citation."""
+- List one claim per resource that backs your answer; cite ONLY resources a tool
+  actually returned, by their exact id. Do not invent ids.
+- The system fills in the precise field/value from the cited resource — you only
+  name which resource supports each point, and write the prose answer.
+- If the record does not support the question, say so plainly in "answer" and
+  return "claims": []."""
 
 _TOOLS: list[dict[str, Any]] = [
     {
@@ -80,13 +80,10 @@ class AgentError(Exception):
 
 
 class _ClaudeClaim(BaseModel):
-    """Narrow wire shape Claude emits per claim."""
+    """Narrow wire shape Claude emits per claim — just a pointer to a resource."""
 
-    text: str
     resource_type: str
     resource_id: str
-    field: str
-    value: str
 
 
 class _ClaudeAnswer(BaseModel):
@@ -127,6 +124,10 @@ class ClaudeAgent:
         ]
         messages.append({"role": "user", "content": message})
 
+        # Cache every resource the tools return, keyed by (resourceType, id), so
+        # claims can be grounded against the exact fetched record.
+        fetched: dict[tuple[str, str], dict[str, Any]] = {}
+
         response: Any = None
         for _ in range(_MAX_TOOL_ITERATIONS):
             response = await self._client.messages.create(
@@ -140,13 +141,15 @@ class ClaudeAgent:
                 break
             messages.append({"role": "assistant", "content": response.content})
             messages.append(
-                {"role": "user", "content": await self._run_tools(response, patient_id)}
+                {"role": "user", "content": await self._run_tools(response, patient_id, fetched)}
             )
 
-        return self._parse(_extract_text(response))
+        return self._build_answer(_extract_text(response), fetched)
 
-    async def _run_tools(self, response: Any, patient_id: PatientId) -> list[dict[str, Any]]:
-        """Execute every tool_use block and return the tool_result blocks."""
+    async def _run_tools(
+        self, response: Any, patient_id: PatientId, fetched: dict[tuple[str, str], dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Execute every tool_use block, cache the resources, return tool_results."""
         results: list[dict[str, Any]] = []
         for block in getattr(response, "content", []) or []:
             if getattr(block, "type", None) != "tool_use":
@@ -157,13 +160,16 @@ class ClaudeAgent:
             else:
                 try:
                     bundle = await self._fhir.search(resource_type, {"patient": str(patient_id)})
+                    _cache_bundle(bundle, fetched)
                     content = json.dumps(bundle, ensure_ascii=False)
                 except Exception:
                     content = f"Failed to fetch {resource_type.value} resources."
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
         return results
 
-    def _parse(self, text: str) -> AgentAnswer:
+    def _build_answer(
+        self, text: str, fetched: dict[tuple[str, str], dict[str, Any]]
+    ) -> AgentAnswer:
         try:
             payload = _ClaudeAnswer.model_validate_json(text)
         except Exception as exc:
@@ -171,22 +177,43 @@ class ClaudeAgent:
 
         claims: list[Claim] = []
         for c in payload.claims:
+            resource = fetched.get((c.resource_type, c.resource_id))
+            if resource is None:
+                continue  # cited a resource no tool returned — drop it (fail closed)
+            described = describe_resource(resource)
+            if described is None:
+                continue
+            display, field, value = described
             try:
                 rtype = ResourceType(c.resource_type)
-            except ValueError as exc:
-                raise AgentError(f"unknown FHIR resource type: {c.resource_type}") from exc
+            except ValueError:
+                continue
             claims.append(
                 Claim(
-                    text=c.text,
+                    text=claim_text(c.resource_type, display, value),
                     source_ref=FhirReference(
-                        resource_type=rtype,
-                        resource_id=c.resource_id,
-                        field=c.field,
-                        value=c.value,
+                        resource_type=rtype, resource_id=c.resource_id, field=field, value=value
                     ),
                 )
             )
         return AgentAnswer(answer=payload.answer, claims=claims)
+
+
+def _cache_bundle(bundle: dict[str, Any], fetched: dict[tuple[str, str], dict[str, Any]]) -> None:
+    """Index a search Bundle's resources by (resourceType, id)."""
+    entries = bundle.get("entry")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        res = entry.get("resource")
+        if not isinstance(res, dict):
+            continue
+        rtype = res.get("resourceType")
+        rid = res.get("id")
+        if isinstance(rtype, str) and isinstance(rid, str):
+            fetched[(rtype, rid)] = res
 
 
 def _extract_text(response: Any) -> str:

@@ -7,6 +7,7 @@ client returns canned bundles — no network.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -165,3 +166,71 @@ class TestStubAgent:
         history = [ConversationTurn(role="user", content="hello")]
         result = await agent.answer(_PID, "troponin?", history=history)
         assert len(result.claims) == 1
+
+
+# --- ClaudeAgent (fake Anthropic client — no network, no key) --------------
+
+
+class _Block:
+    def __init__(self, **kw: Any) -> None:
+        self.__dict__.update(kw)
+
+
+class _Resp:
+    def __init__(self, content: list[Any], stop_reason: str) -> None:
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+class _FakeAnthropic:
+    def __init__(self, responses: list[_Resp]) -> None:
+        self._responses = responses
+        self._i = 0
+        self.messages = self
+
+    async def create(self, **_kw: Any) -> _Resp:
+        resp = self._responses[self._i]
+        self._i += 1
+        return resp
+
+
+class TestClaudeAgent:
+    async def test_builds_grounded_claims_from_fetched_resource(self) -> None:
+        # Round 1: Claude calls get_labs. Round 2: returns JSON citing obs-1
+        # (real) + a ghost id that was never fetched (must be dropped).
+        tool_resp = _Resp([_Block(type="tool_use", id="t1", name="get_labs", input={})], "tool_use")
+        final = json.dumps(
+            {
+                "answer": "Troponin is critically elevated at 2.34 ng/mL.",
+                "claims": [
+                    {"resource_type": "Observation", "resource_id": "obs-1"},
+                    {"resource_type": "Observation", "resource_id": "ghost"},
+                ],
+            }
+        )
+        final_resp = _Resp([_Block(type="text", text=final)], "end_turn")
+        agent = ClaudeAgent(
+            Settings(anthropic_api_key="sk-testing"),
+            _full_client(),  # type: ignore[arg-type]
+            client=_FakeAnthropic([tool_resp, final_resp]),
+        )
+
+        result = await agent.answer(_PID, "What is the troponin?")
+
+        assert result.answer == "Troponin is critically elevated at 2.34 ng/mL."
+        # Ghost dropped; obs-1 grounded from the FETCHED resource, not the model.
+        assert len(result.claims) == 1
+        claim = result.claims[0]
+        assert claim.source_ref.resource_id == "obs-1"
+        assert claim.source_ref.field == "valueQuantity.value"
+        assert claim.source_ref.value == "2.34"
+
+    async def test_unsupported_question_yields_no_claims(self) -> None:
+        final = json.dumps({"answer": "I can't confirm that from the record.", "claims": []})
+        agent = ClaudeAgent(
+            Settings(anthropic_api_key="sk-testing"),
+            _full_client(),  # type: ignore[arg-type]
+            client=_FakeAnthropic([_Resp([_Block(type="text", text=final)], "end_turn")]),
+        )
+        result = await agent.answer(_PID, "What did the MRI show?")
+        assert result.claims == []

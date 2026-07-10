@@ -6,10 +6,9 @@
 question is a generic summary request.  If nothing matches, it says so and
 emits zero claims — it never fabricates.
 
-Every ``(field, value)`` pair it emits is extracted with the *same*
-function the verification layer uses (``extract_field_value``), so a claim
-this agent produces is guaranteed to survive the deterministic value-match
-gate.
+Every ``(field, value)`` pair it emits is extracted with the *same* function
+the verification layer uses (via ``copilot.agent.grounding``), so a claim this
+agent produces is guaranteed to survive the deterministic value-match gate.
 """
 
 from __future__ import annotations
@@ -19,10 +18,10 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from copilot.agent.base import AgentAnswer, ConversationTurn
+from copilot.agent.grounding import claim_text, describe_resource
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
-from copilot.verification.core import extract_field_value
 
 # The resource types the stub pulls for one patient.  Order here is only
 # the fetch order; emission is re-sorted by resource id for determinism.
@@ -34,14 +33,6 @@ _SEARCH_TYPES: tuple[ResourceType, ...] = (
     ResourceType.Encounter,
     ResourceType.DiagnosticReport,
 )
-
-# Display + (field, value) source for the "code.text"-style resources.
-_CODE_TEXT_TYPES: dict[str, str] = {
-    "Condition": "code.text",
-    "DiagnosticReport": "code.text",
-    "AllergyIntolerance": "code.text",
-    "MedicationRequest": "medicationCodeableConcept.text",
-}
 
 # A message containing any of these is treated as "tell me everything".
 _SUMMARY_KEYWORDS: tuple[str, ...] = ("summar", "overview", "everything", "all")
@@ -73,7 +64,7 @@ class StubAgent:
 
         claims: list[Claim] = []
         for res in resources:
-            described = _describe(res)
+            described = describe_resource(res)
             if described is None:
                 continue
             display, field, value = described
@@ -88,7 +79,7 @@ class StubAgent:
                 continue
             claims.append(
                 Claim(
-                    text=_claim_text(rtype, display, value),
+                    text=claim_text(rtype, display, value),
                     source_ref=FhirReference(
                         resource_type=ResourceType(rtype),
                         resource_id=rid,
@@ -125,52 +116,3 @@ class StubAgent:
                 if isinstance(res, dict) and res.get("id") is not None:
                     resources.append(cast("dict[str, Any]", res))
         return resources
-
-
-def _describe(resource: Mapping[str, Any]) -> tuple[str, str, str] | None:
-    """Return ``(display, field, value)`` for a resource, or None to skip.
-
-    ``display`` drives question-scoped matching; ``(field, value)`` is the
-    verbatim source pointer for the emitted claim.  ``value`` is read with
-    the verification layer's own extractor, so it is guaranteed to match a
-    live re-fetch.
-    """
-    rtype = resource.get("resourceType")
-    if not isinstance(rtype, str):
-        return None
-
-    if rtype == "Observation":
-        display = extract_field_value(resource, "code.text")
-        value = extract_field_value(resource, "valueQuantity.value")
-        if display is None or value is None:
-            return None
-        return (display, "valueQuantity.value", value)
-
-    if rtype in _CODE_TEXT_TYPES:
-        field = _CODE_TEXT_TYPES[rtype]
-        display = extract_field_value(resource, field)
-        if display is None:
-            return None
-        return (display, field, display)
-
-    if rtype == "Encounter":
-        # Encounter has no code.text; fall back to the first sensible surface
-        # field so a summary request can still cite it verbatim.
-        for field in ("type[0].text", "class.code", "status"):
-            value = extract_field_value(resource, field)
-            if value is not None:
-                return (value, field, value)
-
-    return None
-
-
-def _claim_text(resource_type: str, display: str, value: str) -> str:
-    """A short factual sentence naming the resource and its value.
-
-    Any numeric literal here is copied from ``display``/``value``, both of
-    which came verbatim from the resource — so the verification numeric
-    check always finds them in the source.
-    """
-    if resource_type == "Observation":
-        return f"{resource_type} {display}: {value}."
-    return f"{resource_type}: {display}."

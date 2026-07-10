@@ -79,7 +79,9 @@ def test_build_fhir_client_returns_client() -> None:
 def test_no_template_leaves_patient_param_verbatim() -> None:
     # Default (no template): the acceptance fake + tests key by integer id.
     client = build_fhir_client(_settings())
-    assert not isinstance(client, type(build_fhir_client(_settings(fhir_patient_id_template="x{pid}"))))
+    assert not isinstance(
+        client, type(build_fhir_client(_settings(fhir_patient_id_template="x{pid}")))
+    )
 
 
 @respx.mock
@@ -87,7 +89,9 @@ async def test_patient_template_maps_search_param() -> None:
     route = respx.get(url__regex=r"http://openemr/.*/Observation").mock(
         return_value=httpx.Response(200, json={"resourceType": "Bundle", "total": 0})
     )
-    client = build_fhir_client(_settings(fhir_patient_id_template="a1000000-0000-0000-0000-{pid:012d}"))
+    client = build_fhir_client(
+        _settings(fhir_patient_id_template="a1000000-0000-0000-0000-{pid:012d}")
+    )
     async with client as c:
         await c.search(ResourceType.Observation, {"patient": "1001"})
     assert route.called
