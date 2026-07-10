@@ -74,14 +74,14 @@ export function createHttpApi(base: string): CopilotApi {
       return normalizeAlerts(raw);
     },
 
-    async jumpTo(clinicianId, patientId, unseenIds) {
-      // No dedicated endpoint: re-establish the round over the unseen list.
-      // The server ranks by acuity; the alerted (highest-acuity) patient
-      // comes back on top.
-      const ids = [patientId, ...unseenIds.filter((id) => id !== patientId)];
-      const raw = await post('/v1/rounds/start', {
+    async jumpTo(clinicianId, patientId) {
+      // Reposition the durable cursor to the requested patient, reusing the
+      // summaries synthesized at start. Instant and exact — it lands on the
+      // patient asked for (unlike re-ranking, where an equal-acuity tie could
+      // surface someone else), so the "Jump to" offer always works.
+      const raw = await post('/v1/rounds/jump', {
         clinician_id: clinicianId,
-        patient_ids: ids,
+        patient_id: patientId,
       });
       return normalizeRoundView(raw);
     },

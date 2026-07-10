@@ -126,6 +126,32 @@ class RoundsService:
             )
             return await _view_at(repo, cursor.ordered_patient_ids, next_index)
 
+    async def jump(self, clinician_id: ClinicianId, target: PatientId) -> RoundView:
+        """Move the cursor to ``target`` (already on the list); return its card.
+
+        A jump reuses the summaries synthesized at ``start`` — it only
+        repositions the durable cursor, so it is instant and lands exactly on
+        the requested patient (no re-ranking, no re-synthesis). Raises
+        :class:`NoActiveRoundError` when there is no session or the patient is
+        not on the established list.
+        """
+        async with session_scope() as session:
+            repo = MemoryRepository(session)
+            cursor = await repo.get_rounding_cursor(clinician_id)
+            if cursor is None or not cursor.ordered_patient_ids:
+                raise NoActiveRoundError
+            ordered = list(cursor.ordered_patient_ids)
+            if target.value not in ordered:
+                raise NoActiveRoundError
+            index = ordered.index(target.value)
+            await repo.upsert_rounding_cursor(
+                clinician_id, ordered, index, list(cursor.completed_ids)
+            )
+            view = await _view_at(repo, ordered, index)
+        if view is None:
+            raise NoActiveRoundError
+        return view
+
     # --- collaborators ----------------------------------------------------
 
     def _fhir_client(self) -> FhirClient:

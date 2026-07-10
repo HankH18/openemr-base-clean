@@ -39,6 +39,13 @@ class AdvanceRequest(BaseModel):
     completed_patient_id: int = Field(gt=0)
 
 
+class JumpRequest(BaseModel):
+    """Reposition the round's cursor to a patient already on the list."""
+
+    clinician_id: int = Field(gt=0)
+    patient_id: int = Field(gt=0)
+
+
 def _service() -> RoundsService:
     return RoundsService(get_settings())
 
@@ -82,4 +89,17 @@ async def advance(req: AdvanceRequest, request: Request) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="No active rounding session") from None
     if view is None:
         return {"done": True}
+    return _view_body(view)
+
+
+@router.post("/jump", summary="Jump the cursor to a patient already on the round")
+async def jump(req: JumpRequest, request: Request) -> dict[str, Any]:
+    obs: Observability = request.app.state.observability
+    async with obs.span("rounds.jump", clinician_id=req.clinician_id):
+        try:
+            view = await _service().jump(
+                ClinicianId(value=req.clinician_id), PatientId(value=req.patient_id)
+            )
+        except NoActiveRoundError:
+            raise HTTPException(status_code=404, detail="No active rounding session") from None
     return _view_body(view)

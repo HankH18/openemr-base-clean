@@ -75,23 +75,35 @@ class StubSynthesizer:
     """
 
     async def synthesize(self, inputs: SynthesisInput) -> MemoryFileSummary:
+        # Human-readable claim text via the same grounding the chat agents use,
+        # so a card reads "Observation Potassium: 5.7", not "Observation/<uuid>
+        # → valueQuantity.value=5.7". Falls back to the raw pointer only when a
+        # resource has no groundable concept/value.
+        from copilot.agent.grounding import claim_text, describe_resource
+
         claims: list[Claim] = []
         for res in inputs.resources:
             rtype = res.get("resourceType")
             rid = res.get("id")
             if rtype is None or rid is None:
                 continue
-            field, value = _extract_stub_field(res)
+            described = describe_resource(res)
+            if described is not None:
+                display, field, value = described
+                text = claim_text(str(rtype), display, str(value))
+            else:
+                field, value = _extract_stub_field(res)
+                text = f"{rtype}/{rid} → {field}={value}"
             claims.append(
                 Claim(
-                    text=f"{rtype}/{rid} → {field}={value}",
+                    text=text,
                     source_ref=FhirReference(
                         resource_type=ResourceType(rtype)
                         if rtype in ResourceType.__members__
                         else ResourceType.Observation,
                         resource_id=str(rid),
                         field=field,
-                        value=value,
+                        value=str(value),
                     ),
                 )
             )

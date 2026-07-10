@@ -218,6 +218,28 @@ class TestRoundsLoop:
         assert r.status_code == 200
         assert r.json()["current"]["patient_id"]["value"] == 2002
 
+    def test_jump_lands_on_target_not_the_sickest(self, _db_file: str) -> None:
+        """Jump repositions to the requested patient even though 2001 ranks first."""
+        client = _client()
+        _start(client, [2003, 2002, 2001])  # ranks 2001 top
+        r = client.post("/v1/rounds/jump", json={"clinician_id": CLIN, "patient_id": 2003})
+        assert r.status_code == 200
+        assert r.json()["current"]["patient_id"]["value"] == 2003
+        # and the cursor persists there
+        c = client.get("/v1/rounds/current", params={"clinician_id": CLIN})
+        assert c.json()["current"]["patient_id"]["value"] == 2003
+
+    def test_jump_without_session_is_404(self, _db_file: str) -> None:
+        client = _client()
+        r = client.post("/v1/rounds/jump", json={"clinician_id": 4242, "patient_id": 2001})
+        assert r.status_code == 404
+
+    def test_jump_to_patient_not_on_list_is_404(self, _db_file: str) -> None:
+        client = _client()
+        _start(client, [2003, 2002, 2001])
+        r = client.post("/v1/rounds/jump", json={"clinician_id": CLIN, "patient_id": 9999})
+        assert r.status_code == 404
+
     def test_advance_without_session_is_404(self, _db_file: str) -> None:
         client = _client()
         r = client.post(

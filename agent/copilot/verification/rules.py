@@ -242,11 +242,25 @@ def _abnormal_flag_of(res: Mapping[str, Any]) -> str:
 
 
 def _obs_label(res: Mapping[str, Any]) -> str:
-    code = res.get("code") or {}
+    """Human label for an Observation.
+
+    OpenEMR's FHIR often leaves ``code.text`` empty and carries the analyte name
+    in ``coding[0].display`` (e.g. "Potassium"), with the LOINC in ``coding[0].code``.
+    Prefer text, then display, then code, and only fall back to the raw resource id
+    when nothing human-readable exists — so a critical-lab reason reads "Potassium is
+    critically high", never a bare UUID.
+    """
+    code = res.get("code")
     if isinstance(code, Mapping):
         text = code.get("text")
-        if isinstance(text, str) and text:
+        if isinstance(text, str) and text.strip():
             return text
+        coding = code.get("coding")
+        if isinstance(coding, list) and coding and isinstance(coding[0], Mapping):
+            for key in ("display", "code"):
+                value = coding[0].get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
     obs_id = res.get("id")
     return obs_id if isinstance(obs_id, str) else "?"
 
