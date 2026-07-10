@@ -42,12 +42,21 @@ class AgentAnswer(BaseModel):
     grounded evidence behind it.  An empty ``claims`` list with an honest
     ``answer`` is the correct response when nothing in the record supports
     the question — never fabricate.
+
+    ``input_tokens``/``output_tokens`` carry the LLM usage the agent spent
+    producing this answer, and ``tool_calls`` how many tool invocations it
+    made.  They are optional so a deterministic, keyless agent (``StubAgent``)
+    can leave them unset: ``None`` counts mean "no LLM ran", which the chat
+    service reads as "nothing to cost".
     """
 
     model_config = ConfigDict(frozen=True)
 
     answer: str
     claims: list[Claim]
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_calls: int = 0
 
 
 class ChatAgent(Protocol):

@@ -22,7 +22,7 @@ import logging
 
 from pydantic import BaseModel, ConfigDict
 
-from copilot.agent.base import ConversationTurn
+from copilot.agent.base import AgentAnswer, ConversationTurn
 from copilot.agent.factory import build_agent
 from copilot.config import Settings
 from copilot.domain.contracts import Claim, VerificationAction, VerificationResult
@@ -32,7 +32,8 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
-from copilot.observability import NoopObservability, Observability, current_correlation_id
+from copilot.observability import NoopObservability, Observability, Span, current_correlation_id
+from copilot.observability.pricing import cost_usd
 from copilot.verification.serve import verify_answer
 
 _logger = logging.getLogger(__name__)
@@ -112,6 +113,9 @@ class ChatService:
             self._obs.record_verification(
                 passed=passed, action=action.value, patient_id=patient_id.value
             )
+            # Token usage + computed USD cost onto the same span, so the trace
+            # answers "how many tokens, at what cost". LLM path only.
+            self._record_token_usage(span, agent_answer)
             span.set_output({"action": action.value, "passed": passed, "claims": len(claims)})
 
         async with session_scope() as session:
@@ -132,6 +136,33 @@ class ChatService:
         )
 
     # --- collaborators ----------------------------------------------------
+
+    def _record_token_usage(self, span: Span, answer: AgentAnswer) -> None:
+        """Record LLM token usage + computed USD cost onto the chat span.
+
+        Only the LLM path reports usage; the deterministic stub agent leaves the
+        counts unset (``None``), in which case there is nothing to cost and we
+        record nothing. Both a span attribute and a one-off event are emitted so
+        the trace and the flat event stream each answer "how many tokens, at
+        what cost".
+        """
+        if answer.input_tokens is None or answer.output_tokens is None:
+            return
+        model = self._settings.anthropic_model_synthesis
+        cost = cost_usd(model, answer.input_tokens, answer.output_tokens)
+        span.set_attribute("input_tokens", answer.input_tokens)
+        span.set_attribute("output_tokens", answer.output_tokens)
+        span.set_attribute("cost_usd", cost)
+        span.set_attribute("tool_calls", answer.tool_calls)
+        self._obs.event(
+            "llm.usage",
+            model=model,
+            input_tokens=answer.input_tokens,
+            output_tokens=answer.output_tokens,
+            cost_usd=cost,
+            tool_calls=answer.tool_calls,
+            correlation_id=current_correlation_id(),
+        )
 
     async def _record_read_audit(
         self, clinician_id: ClinicianId, patient_id: PatientId, claims: list[Claim]

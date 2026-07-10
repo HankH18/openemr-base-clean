@@ -128,6 +128,13 @@ class ClaudeAgent:
         # claims can be grounded against the exact fetched record.
         fetched: dict[tuple[str, str], dict[str, Any]] = {}
 
+        # Accumulate usage across every model turn in the tool-use loop, so the
+        # cost reported downstream is the whole turn's spend, not just the last
+        # call. ``tool_calls`` counts the tool invocations the model made.
+        input_tokens = 0
+        output_tokens = 0
+        tool_calls = 0
+
         response: Any = None
         for _ in range(_MAX_TOOL_ITERATIONS):
             response = await self._client.messages.create(
@@ -137,14 +144,22 @@ class ClaudeAgent:
                 tools=_TOOLS,
                 messages=messages,
             )
+            input_tokens += _usage_tokens(response, "input_tokens")
+            output_tokens += _usage_tokens(response, "output_tokens")
             if getattr(response, "stop_reason", None) != "tool_use":
                 break
             messages.append({"role": "assistant", "content": response.content})
-            messages.append(
-                {"role": "user", "content": await self._run_tools(response, patient_id, fetched)}
-            )
+            tool_results = await self._run_tools(response, patient_id, fetched)
+            tool_calls += len(tool_results)
+            messages.append({"role": "user", "content": tool_results})
 
-        return self._build_answer(_extract_text(response), fetched)
+        return self._build_answer(
+            _extract_text(response),
+            fetched,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            tool_calls=tool_calls,
+        )
 
     async def _run_tools(
         self, response: Any, patient_id: PatientId, fetched: dict[tuple[str, str], dict[str, Any]]
@@ -168,15 +183,29 @@ class ClaudeAgent:
         return results
 
     def _build_answer(
-        self, text: str, fetched: dict[tuple[str, str], dict[str, Any]]
+        self,
+        text: str,
+        fetched: dict[tuple[str, str], dict[str, Any]],
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        tool_calls: int,
     ) -> AgentAnswer:
+        # Usage is reported regardless of parse outcome — the tokens were spent
+        # even when the model's reply couldn't be parsed into claims.
         payload = _parse_answer(text)
         if payload is None:
             # The model didn't return parseable JSON — markdown fences, or a prose
             # refusal to an out-of-scope question. Fail closed: no claims means the
             # chat service withholds with an honest message. A chat turn must never
             # 500 on a model formatting quirk.
-            return AgentAnswer(answer="", claims=[])
+            return AgentAnswer(
+                answer="",
+                claims=[],
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                tool_calls=tool_calls,
+            )
 
         claims: list[Claim] = []
         for c in payload.claims:
@@ -199,7 +228,13 @@ class ClaudeAgent:
                     ),
                 )
             )
-        return AgentAnswer(answer=payload.answer, claims=claims)
+        return AgentAnswer(
+            answer=payload.answer,
+            claims=claims,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            tool_calls=tool_calls,
+        )
 
 
 def _cache_bundle(bundle: dict[str, Any], fetched: dict[tuple[str, str], dict[str, Any]]) -> None:
@@ -241,6 +276,17 @@ def _json_object_slice(text: str) -> str | None:
     if start == -1 or end == -1 or end <= start:
         return None
     return text[start : end + 1]
+
+
+def _usage_tokens(response: Any, field: str) -> int:
+    """Read one integer counter off an Anthropic response's ``usage``.
+
+    Defensive: a response with no ``usage`` (or a non-int counter) contributes
+    zero, so a fake client or a partial response never breaks the token tally.
+    """
+    usage = getattr(response, "usage", None)
+    value = getattr(usage, field, None)
+    return value if isinstance(value, int) else 0
 
 
 def _extract_text(response: Any) -> str:

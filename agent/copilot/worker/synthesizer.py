@@ -16,6 +16,7 @@ LLM fabricates never lands in the store.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +26,9 @@ from pydantic import BaseModel
 
 from copilot.domain.contracts import Claim, MemoryFileSummary
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
+from copilot.observability.pricing import cost_usd
+
+_logger = logging.getLogger(__name__)
 
 
 class SynthesisError(Exception):
@@ -183,6 +187,7 @@ class ClaudeSynthesizer:
             system=_SYNTHESIS_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
+        self._log_usage(response, inputs.patient_id)
         text = _extract_text(response)
         try:
             payload = _ClaudeSynthesizerResponse.model_validate_json(text)
@@ -217,6 +222,40 @@ class ClaudeSynthesizer:
             source_watermark=inputs.source_watermark,
             content_hash=content_hash_for_resources(list(inputs.resources)),
         )
+
+    def _log_usage(self, response: Any, patient_id: PatientId) -> None:
+        """Record synthesis token usage + computed USD cost to the logs.
+
+        The synthesizer has no observability handle (it runs deep inside the
+        poller tick), so its spend is surfaced as a structured log line rather
+        than a span — enough to answer "how much did background synthesis cost".
+        A response with no ``usage`` contributes zero and logs nothing.
+        """
+        input_tokens = _usage_tokens(response, "input_tokens")
+        output_tokens = _usage_tokens(response, "output_tokens")
+        if input_tokens == 0 and output_tokens == 0:
+            return
+        _logger.info(
+            "synthesis LLM usage",
+            extra={
+                "model": self._model,
+                "patient_id": patient_id.value,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd(self._model, input_tokens, output_tokens),
+            },
+        )
+
+
+def _usage_tokens(response: Any, field: str) -> int:
+    """Read one integer counter off an Anthropic response's ``usage``.
+
+    Defensive: a response with no ``usage`` (or a non-int counter) contributes
+    zero, so a fake client or a partial response never breaks the tally.
+    """
+    usage = getattr(response, "usage", None)
+    value = getattr(usage, field, None)
+    return value if isinstance(value, int) else 0
 
 
 def _extract_text(response: Any) -> str:
