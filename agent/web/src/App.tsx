@@ -22,13 +22,15 @@ const EXIT_MS = 190;
  * Demo affordance. The deterioration detector is a change-gated poller (a
  * pub/sub-style loop) that is impractical to drive live for a recording, so
  * "Re-check charts" deterministically raises the high-urgency alert the poller
- * would otherwise surface. Client-side only — mirrors the mock cohort's 1005
- * (Lillian Cho) critical-lactate event so live and demo look identical.
+ * would otherwise surface. Client-side only. Targets June Okafor (1004), whose
+ * LIVE card actually carries the cited critical lactate, so jumping to the
+ * alert lands on a card that corroborates it — the round opens on Marcus (1003,
+ * DKA), so she is always unseen and not current when the alert fires.
  */
 const DEMO_ALERT: DeteriorationAlert = {
-  patient_id: 1005,
+  patient_id: 1004,
   reason:
-    'New lactate 5.0 mmol/L — critical high (reference 0.5–2.0), resulted 06:58. Acuity 4.2 → 9.3.',
+    'New lactate 4.2 mmol/L — critical high (reference 0.5–2.0). Concern for septic shock — acuity now 9.3.',
 };
 
 function prefersReducedMotion(): boolean {
