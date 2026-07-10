@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from copilot.rounds.summary import build_summary_claims
+from copilot.rounds.summary import build_change_claims, build_summary_claims
 
 
 def _obs(rid: str, name: str, value: float, when: str, unit: str = "/min") -> dict[str, Any]:
@@ -69,3 +69,94 @@ def test_non_observation_passes_through_once() -> None:
 def test_valueless_observation_is_skipped() -> None:
     panel = {"resourceType": "Observation", "id": "p1", "code": {"text": "Vitals panel"}}
     assert build_summary_claims([panel]) == []
+
+
+# --- build_change_claims ("Since you last saw …", ~12h window) --------------
+
+
+def _obs_abn(rid: str, name: str, value: float, when: str, code: str) -> dict[str, Any]:
+    obs = _obs(rid, name, value, when)
+    obs["interpretation"] = [{"coding": [{"code": code}]}]
+    return obs
+
+
+def test_change_includes_recent_abnormal_single_reading() -> None:
+    obs = _obs_abn("k1", "Potassium", 5.7, "2026-07-10T05:00:00Z", "HH")
+    claims = build_change_claims([obs])
+    assert len(claims) == 1
+    assert claims[0].text.startswith("Potassium: 5.7")
+
+
+def test_change_includes_recent_changed_metric() -> None:
+    resources = [
+        _obs("hr-2", "Heart rate", 104, "2026-07-10T00:00:00Z"),
+        _obs("hr-1", "Heart rate", 92, "2026-07-10T05:00:00Z"),  # 5h later, moved
+    ]
+    claims = build_change_claims(resources)
+    assert len(claims) == 1
+    assert "↓12" in claims[0].text
+
+
+def test_change_excludes_stale_and_unchanged_normal() -> None:
+    resources = [
+        _obs_abn("glu", "Glucose", 386, "2026-07-10T05:00:00Z", "HH"),  # recent + abnormal
+        _obs("ht2", "Body height", 71, "2026-07-10T00:00:00Z"),  # recent but unchanged/normal
+        _obs("ht1", "Body height", 71, "2026-07-10T05:00:00Z"),
+        _obs("wt", "Body weight", 180, "2026-07-08T05:00:00Z"),  # >12h before reference: stale
+    ]
+    labels = [c.text.split(":")[0] for c in build_change_claims(resources)]
+    assert labels == ["Glucose"]
+
+
+def test_change_empty_without_timestamps() -> None:
+    obs = {
+        "resourceType": "Observation",
+        "id": "x",
+        "code": {"coding": [{"display": "WBC"}]},
+        "valueQuantity": {"value": 15.2, "unit": "K/uL"},
+        "interpretation": [{"coding": [{"code": "H"}]}],
+    }
+    assert build_change_claims([obs]) == []
+
+
+def test_memory_file_round_trips_changes() -> None:
+    from datetime import datetime
+
+    from copilot.domain.contracts import Claim, MemoryFileSummary
+    from copilot.domain.primitives import FhirReference, PatientId, ResourceType
+    from copilot.memory.models import MemoryFileRow
+    from copilot.memory.repository import _row_to_summary, _summary_to_json
+
+    claim = Claim(
+        text="Potassium: 5.7 mEq/L",
+        source_ref=FhirReference(
+            resource_type=ResourceType.Observation,
+            resource_id="k1",
+            field="valueQuantity.value",
+            value="5.7",
+        ),
+    )
+    when = datetime(2026, 7, 10, 5, 0, 0)
+    summary = MemoryFileSummary(
+        patient_id=PatientId(value=1003),
+        claims=[claim],
+        changes=[claim],
+        acuity_score=9.0,
+        rank_reason="Critical: Potassium is critically high",
+        synthesized_at=when,
+        source_watermark=when,
+        content_hash="a" * 64,
+    )
+    row = MemoryFileRow(
+        patient_id=1003,
+        summary=_summary_to_json(summary),
+        acuity_score=summary.acuity_score,
+        rank_reason=summary.rank_reason,
+        synthesized_at=summary.synthesized_at,
+        source_watermark=summary.source_watermark,
+        content_hash=summary.content_hash,
+    )
+    back = _row_to_summary(row)
+    assert len(back.changes) == 1
+    assert back.changes[0].text == "Potassium: 5.7 mEq/L"
+    assert back.changes[0].source_ref.resource_id == "k1"

@@ -26,7 +26,7 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.rounds.ranking import AcuityAssessment, assess_patient, rank
-from copilot.rounds.summary import build_summary_claims
+from copilot.rounds.summary import build_change_claims, build_summary_claims
 from copilot.worker.synthesizer import StubSynthesizer, SynthesisInput
 
 # Resource types pulled to ground each card. Observations drive acuity; the
@@ -215,6 +215,8 @@ async def _synthesize(
             # One row per metric (latest reading + trend), not a dateless list
             # of every reading — see copilot.rounds.summary.
             "claims": build_summary_claims(resources),
+            # What moved/turned abnormal since the last (~12h ago) visit.
+            "changes": build_change_claims(resources),
         }
     )
 
@@ -239,7 +241,7 @@ def _card_from_summary(summary: MemoryFileSummary) -> PatientCard:
     return PatientCard(
         patient_id=summary.patient_id,
         summary_claims=summary.claims,
-        changes_since_last_seen=[],
+        changes_since_last_seen=summary.changes,
         acuity_score=summary.acuity_score,
         rank_reason=summary.rank_reason,
         freshness=PatientCardFreshness(

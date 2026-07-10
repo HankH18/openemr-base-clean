@@ -17,9 +17,10 @@ from fastapi.testclient import TestClient
 
 from copilot.domain.primitives import PatientId, ResourceType
 from copilot.rounds.ranking import (
-    CRITICAL_SCORE,
+    CRITICAL_BASE,
     NORMAL_SCORE,
-    WARNING_SCORE,
+    WARNING_BASE,
+    WARNING_SPAN,
     assess_patient,
     rank,
 )
@@ -84,8 +85,10 @@ class TestRanking:
         crit = assess_patient(PatientId(value=1), _COHORT["2001"]["Observation"])
         warn = assess_patient(PatientId(value=2), _COHORT["2002"]["Observation"])
         norm = assess_patient(PatientId(value=3), _COHORT["2003"]["Observation"])
-        assert crit.acuity_score == CRITICAL_SCORE
-        assert warn.acuity_score == WARNING_SCORE
+        # Scores are granular within each band, so assert band membership +
+        # strict separation rather than fixed constants.
+        assert CRITICAL_BASE <= crit.acuity_score <= 10.0
+        assert WARNING_BASE <= warn.acuity_score <= WARNING_BASE + WARNING_SPAN
         assert norm.acuity_score == NORMAL_SCORE
         assert crit.acuity_score > warn.acuity_score > norm.acuity_score
 

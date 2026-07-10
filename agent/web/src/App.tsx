@@ -189,6 +189,8 @@ export function App(): JSX.Element {
             seen={rounds.seen}
             currentId={currentId}
             alertIds={alertIds}
+            onSelect={handleJump}
+            busy={rounds.busy}
           />
           <main className="stage">
             <div className={leaving ? 'visit visit--leaving' : 'visit'} key={card.patient_id}>

@@ -229,47 +229,50 @@ class MemoryRepository:
 # --- (de)serialization ------------------------------------------------------
 
 
+def _claim_to_json(c: Claim) -> dict[str, Any]:
+    return {
+        "text": c.text,
+        "source_ref": {
+            "resource_type": c.source_ref.resource_type.value,
+            "resource_id": c.source_ref.resource_id,
+            "field": c.source_ref.field,
+            "value": c.source_ref.value,
+            "last_updated": c.source_ref.last_updated.isoformat()
+            if c.source_ref.last_updated
+            else None,
+        },
+    }
+
+
+def _claim_from_json(c: dict[str, Any]) -> Claim:
+    ref = c["source_ref"]
+    last_upd = ref.get("last_updated")
+    return Claim(
+        text=c["text"],
+        source_ref=FhirReference(
+            resource_type=ResourceType(ref["resource_type"]),
+            resource_id=ref["resource_id"],
+            field=ref["field"],
+            value=ref["value"],
+            last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
+        ),
+    )
+
+
 def _summary_to_json(s: MemoryFileSummary) -> dict[str, Any]:
     return {
         "patient_id": s.patient_id.value,
-        "claims": [
-            {
-                "text": c.text,
-                "source_ref": {
-                    "resource_type": c.source_ref.resource_type.value,
-                    "resource_id": c.source_ref.resource_id,
-                    "field": c.source_ref.field,
-                    "value": c.source_ref.value,
-                    "last_updated": c.source_ref.last_updated.isoformat()
-                    if c.source_ref.last_updated
-                    else None,
-                },
-            }
-            for c in s.claims
-        ],
+        "claims": [_claim_to_json(c) for c in s.claims],
+        "changes": [_claim_to_json(c) for c in s.changes],
     }
 
 
 def _row_to_summary(row: MemoryFileRow) -> MemoryFileSummary:
-    claims: list[Claim] = []
-    for c in row.summary.get("claims", []):
-        ref = c["source_ref"]
-        last_upd = ref.get("last_updated")
-        claims.append(
-            Claim(
-                text=c["text"],
-                source_ref=FhirReference(
-                    resource_type=ResourceType(ref["resource_type"]),
-                    resource_id=ref["resource_id"],
-                    field=ref["field"],
-                    value=ref["value"],
-                    last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
-                ),
-            )
-        )
     return MemoryFileSummary(
         patient_id=PatientId(value=row.patient_id),
-        claims=claims,
+        claims=[_claim_from_json(c) for c in row.summary.get("claims", [])],
+        # Older rows predate `changes`; default to none.
+        changes=[_claim_from_json(c) for c in row.summary.get("changes", [])],
         acuity_score=row.acuity_score,
         rank_reason=row.rank_reason,
         synthesized_at=row.synthesized_at,

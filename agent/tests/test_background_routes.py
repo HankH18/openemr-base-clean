@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
 from copilot.domain.primitives import ResourceType
-from copilot.rounds.ranking import CRITICAL_SCORE, NORMAL_SCORE
+from copilot.rounds.ranking import CRITICAL_BASE, NORMAL_SCORE
 from copilot.rounds.service import RoundsService
 from copilot.worker.pipeline import RefreshPipeline
 
@@ -168,7 +168,7 @@ class TestRefresh:
         assert claims
         for claim in claims:
             assert {"resource_type", "resource_id", "field", "value"} <= set(claim["source_ref"])
-        assert card["acuity_score"] == CRITICAL_SCORE
+        assert card["acuity_score"] >= CRITICAL_BASE
 
     def test_is_change_gated_idempotent(self, _db_file: str) -> None:
         client = _client()
@@ -197,7 +197,7 @@ class TestAlerts:
         assert r.status_code == 200
         alerted = {a["patient_id"]["value"] for a in r.json()["alerts"]}
         assert alerted == {5001}
-        assert NORMAL_SCORE < CRITICAL_SCORE  # sanity: 5002 stays below threshold
+        assert NORMAL_SCORE < CRITICAL_BASE  # sanity: 5002 stays below threshold
 
     def test_carries_grounded_reason(self, _db_file: str) -> None:
         client = _client()

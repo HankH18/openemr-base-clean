@@ -1,3 +1,4 @@
+import { Button } from 'react-aria-components';
 import { censusEntry } from '../census';
 
 type RowState = 'seen' | 'now' | 'up' | 'alert';
@@ -32,17 +33,24 @@ const STATUS_LABEL: Record<RowState, string> = {
  * numerals are shown because the queue genuinely is a sequence; per-patient
  * acuity numbers are not invented here — they come only from cards the
  * service has issued.
+ *
+ * Each row is a button: selecting a patient jumps the round to them. The
+ * current patient's row is inert (you are already there).
  */
 export function QueueRail({
   order,
   seen,
   currentId,
   alertIds,
+  onSelect,
+  busy,
 }: {
   order: number[];
   seen: number[];
   currentId: number | null;
   alertIds: ReadonlySet<number>;
+  onSelect: (patientId: number) => void;
+  busy?: boolean;
 }): JSX.Element {
   return (
     <aside className="rail" aria-label="Rounding order">
@@ -56,20 +64,28 @@ export function QueueRail({
         {order.map((id, index) => {
           const entry = censusEntry(id);
           const state = rowState(id, currentId, seen, alertIds);
+          const name = entry?.name ?? `Patient ${id}`;
           return (
             <li
               key={id}
               className={`q-row q-row--${state}`}
               aria-current={state === 'now' ? 'true' : undefined}
             >
-              <span className="q-rank">{String(index + 1).padStart(2, '0')}</span>
-              <span className="q-body">
-                <span className="q-name">{entry?.name ?? `Patient ${id}`}</span>
-                <span className="q-meta">
-                  {entry ? `Bed ${entry.bed} · ${entry.service}` : `MRN ${id}`}
+              <Button
+                className="q-row-btn"
+                isDisabled={Boolean(busy) || state === 'now'}
+                onPress={() => onSelect(id)}
+                aria-label={state === 'now' ? `${name} — current patient` : `Go to ${name}`}
+              >
+                <span className="q-rank">{String(index + 1).padStart(2, '0')}</span>
+                <span className="q-body">
+                  <span className="q-name">{name}</span>
+                  <span className="q-meta">
+                    {entry ? `Bed ${entry.bed} · ${entry.service}` : `MRN ${id}`}
+                  </span>
                 </span>
-              </span>
-              <span className={`q-status q-status--${state}`}>{STATUS_LABEL[state]}</span>
+                <span className={`q-status q-status--${state}`}>{STATUS_LABEL[state]}</span>
+              </Button>
             </li>
           );
         })}

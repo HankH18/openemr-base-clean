@@ -89,6 +89,7 @@ class MemoryFileSummary(BaseModel):
 
     patient_id: PatientId
     claims: list[Claim]
+    changes: list[Claim] = Field(default_factory=list)
     acuity_score: float = Field(ge=0.0, le=10.0)
     rank_reason: str
     synthesized_at: datetime
