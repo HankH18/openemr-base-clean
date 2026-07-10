@@ -401,7 +401,12 @@
   color: var(--ink-faint);
 }
 
-.q-status--up {
+.q-status--next {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.q-status--upcoming {
   color: var(--ink-faint);
 }
 

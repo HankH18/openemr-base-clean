@@ -50,9 +50,17 @@ export function useRounds(api: CopilotApi, clinicianId: number, patientIds: numb
     (view: RoundView) => {
       cardRef.current = view.current;
       setCard(view.current);
-      const seenIds = seenRef.current;
-      const upcoming = view.order.filter((id) => !seenIds.includes(id));
-      setOrder([...seenIds, ...upcoming]);
+      const currentId = view.current.patient_id;
+      // Display order: patients already seen (in visit order), then the current
+      // patient, then the rest (in the service's rank order). Anchoring the
+      // current patient right after the seen block keeps the rail reading as a
+      // coherent progression — the service may return `current` from anywhere
+      // in `order` (e.g. after a jump), which otherwise stranded "Now" mid-list.
+      const seenIds = seenRef.current.filter((id) => id !== currentId);
+      const upcoming = view.order.filter(
+        (id) => !seenIds.includes(id) && id !== currentId,
+      );
+      setOrder([...seenIds, currentId, ...upcoming]);
       setNotice(null);
     },
     [],

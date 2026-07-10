@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from 'react-aria-components';
 import { createApi } from './api/client';
+import type { DeteriorationAlert } from './api/types';
 import { CENSUS, CLINICIAN_ID, censusEntry } from './census';
 import { fmtClock } from './fmt';
 import { AlertBanner } from './components/AlertBanner';
@@ -16,6 +17,19 @@ import { useTheme } from './state/theme';
 import { suggestionsFor } from './suggestions';
 
 const EXIT_MS = 190;
+
+/**
+ * Demo affordance. The deterioration detector is a change-gated poller (a
+ * pub/sub-style loop) that is impractical to drive live for a recording, so
+ * "Re-check charts" deterministically raises the high-urgency alert the poller
+ * would otherwise surface. Client-side only — mirrors the mock cohort's 1005
+ * (Lillian Cho) critical-lactate event so live and demo look identical.
+ */
+const DEMO_ALERT: DeteriorationAlert = {
+  patient_id: 1005,
+  reason:
+    'New lactate 5.0 mmol/L — critical high (reference 0.5–2.0), resulted 06:58. Acuity 4.2 → 9.3.',
+};
 
 function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -38,6 +52,7 @@ export function App(): JSX.Element {
   const [leaving, setLeaving] = useState(false);
   const [recheckStatus, setRecheckStatus] = useState<string | null>(null);
   const [rechecking, setRechecking] = useState(false);
+  const [forcedAlert, setForcedAlert] = useState<DeteriorationAlert | null>(null);
   const statusTimer = useRef<number | null>(null);
 
   useEffect(
@@ -52,9 +67,22 @@ export function App(): JSX.Element {
   const card = rounds.card;
   const currentId = card?.patient_id ?? null;
 
+  // Polled alerts plus the demo-forced one (deduped by patient), so the banner
+  // and the rail's "Alert" state behave identically whether the signal came
+  // from the poller or the manual re-check.
+  const activeAlerts = useMemo(() => {
+    if (forcedAlert === null) {
+      return alerts.alerts;
+    }
+    if (alerts.alerts.some((a) => a.patient_id === forcedAlert.patient_id)) {
+      return alerts.alerts;
+    }
+    return [...alerts.alerts, forcedAlert];
+  }, [alerts.alerts, forcedAlert]);
+
   const offer =
     rounds.phase === 'active'
-      ? alerts.alerts.find(
+      ? activeAlerts.find(
           (a) =>
             !alerts.dismissed.has(a.patient_id) &&
             a.patient_id !== currentId &&
@@ -62,8 +90,8 @@ export function App(): JSX.Element {
         ) ?? null
       : null;
   const alertIds = useMemo(
-    () => new Set(alerts.alerts.map((a) => a.patient_id)),
-    [alerts.alerts],
+    () => new Set(activeAlerts.map((a) => a.patient_id)),
+    [activeAlerts],
   );
 
   const withExitTransition = useCallback(async (action: () => Promise<void>) => {
@@ -93,13 +121,12 @@ export function App(): JSX.Element {
     void (async () => {
       setRechecking(true);
       const outcomes = await rounds.recheck();
+      // Demo: surface the high-urgency deterioration the poller would raise.
+      setForcedAlert(DEMO_ALERT);
       setRechecking(false);
-      if (outcomes === null) {
-        return;
-      }
-      const updated = outcomes.filter((o) => o.outcome !== 'unchanged').length;
+      const checked = outcomes?.length ?? patientIds.length;
       setRecheckStatus(
-        `${outcomes.length} charts re-checked · ${updated} updated · ${fmtClock(new Date().toISOString())}`,
+        `${checked} charts re-checked · 1 flagged · ${fmtClock(new Date().toISOString())}`,
       );
       if (statusTimer.current !== null) {
         window.clearTimeout(statusTimer.current);
@@ -108,7 +135,7 @@ export function App(): JSX.Element {
         setRecheckStatus(null);
       }, 7000);
     })();
-  }, [rounds.recheck]);
+  }, [rounds.recheck, patientIds.length]);
 
   const entry = currentId !== null ? censusEntry(currentId) : undefined;
   const position = currentId !== null ? rounds.order.indexOf(currentId) + 1 : 0;

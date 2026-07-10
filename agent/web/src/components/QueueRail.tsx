@@ -1,13 +1,14 @@
 import { Button } from 'react-aria-components';
 import { censusEntry } from '../census';
 
-type RowState = 'seen' | 'now' | 'up' | 'alert';
+type RowState = 'seen' | 'now' | 'alert' | 'next' | 'upcoming';
 
 function rowState(
   id: number,
   currentId: number | null,
   seen: number[],
   alertIds: ReadonlySet<number>,
+  nextId: number | null,
 ): RowState {
   if (seen.includes(id)) {
     return 'seen';
@@ -18,14 +19,21 @@ function rowState(
   if (alertIds.has(id)) {
     return 'alert';
   }
-  return 'up';
+  // Only the single patient the physician visits next is "Up next"; the rest
+  // of the unseen list is "Upcoming". (Previously every unseen row read
+  // "Up next", which said nothing about order.)
+  if (id === nextId) {
+    return 'next';
+  }
+  return 'upcoming';
 }
 
 const STATUS_LABEL: Record<RowState, string> = {
   seen: 'Seen',
   now: 'Now',
-  up: 'Up next',
   alert: 'Alert',
+  next: 'Up next',
+  upcoming: 'Upcoming',
 };
 
 /**
@@ -52,6 +60,13 @@ export function QueueRail({
   onSelect: (patientId: number) => void;
   busy?: boolean;
 }): JSX.Element {
+  // The next patient to visit: the first unseen patient after the current one
+  // in the visiting order. Exactly one row is labelled "Up next".
+  const currentIdx = currentId === null ? -1 : order.indexOf(currentId);
+  const nextId =
+    currentIdx >= 0
+      ? order.slice(currentIdx + 1).find((id) => !seen.includes(id)) ?? null
+      : order.find((id) => !seen.includes(id)) ?? null;
   return (
     <aside className="rail" aria-label="Rounding order">
       <div className="rail-head">
@@ -63,7 +78,7 @@ export function QueueRail({
       <ol className="queue">
         {order.map((id, index) => {
           const entry = censusEntry(id);
-          const state = rowState(id, currentId, seen, alertIds);
+          const state = rowState(id, currentId, seen, alertIds, nextId);
           const name = entry?.name ?? `Patient ${id}`;
           return (
             <li
