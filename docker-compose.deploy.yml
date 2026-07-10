@@ -54,10 +54,13 @@ services:
     depends_on:
       mariadb:
         condition: service_healthy
-    ports:
-      - "80:80"
-      # 443 intentionally NOT published — no cert baked in. TLS is a
-      # follow-up (Caddy reverse proxy in front, or a managed LB).
+    # Ports intentionally NOT published — the `caddy` service is the sole
+    # public ingress on :80 and reverse-proxies the agent. OpenEMR stays
+    # reachable to the agent over the internal `agent` network (the agent
+    # calls http://openemr), so nothing needs OpenEMR published. Publishing
+    # :80 here would collide with Caddy. (443 was never published — no cert.)
+    # ports:
+    #   - "80:80"
     environment:
       # HOST_UID/HOST_GID: the entrypoint adopts the host uid for apache.
       # Defaults to 1000 which matches most fresh Ubuntu VMs (root=0, first
@@ -178,6 +181,31 @@ services:
     networks:
       - agent
 
+  # ---- caddy (public ingress) -----------------------------------------
+  #
+  # Sole public entrypoint on :80. Serves the built React SPA (mounted from
+  # ./agent/web/dist) and reverse-proxies the agent's API (/v1/*, /health,
+  # /ready, /docs) to the internal agent:8000. Plain HTTP for a bare-IP demo;
+  # point a domain at it for Caddy auto-HTTPS. A site-wide basic_auth guard
+  # (see ./Caddyfile) keeps the chat API — which spends the Anthropic budget —
+  # off the open internet.
+  caddy:
+    image: caddy:2-alpine
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      agent:
+        condition: service_started
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./agent/web/dist:/srv/dist:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - agent
+
 networks:
   internal: {}
   agent: {}
@@ -188,3 +216,5 @@ volumes:
   assets: {}
   logs: {}
   agent_db: {}
+  caddy_data: {}
+  caddy_config: {}

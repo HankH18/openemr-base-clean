@@ -1,0 +1,31 @@
+# Public ingress for the AgentForge demo.
+#
+# Copy to `Caddyfile` (gitignored — it holds a credential hash) next to
+# docker-compose.deploy.yml, generate a password hash, and paste it below:
+#
+#   docker run --rm caddy caddy hash-password --plaintext 'YOUR-PASSWORD'
+#
+# Serves the built React SPA (mounted at /srv/dist) and reverse-proxies the
+# agent API behind a site-wide basic_auth guard. Plain HTTP for a bare-IP
+# demo; replace `:80` with your domain for automatic HTTPS.
+
+:80 {
+	basic_auth {
+		demo $2a$14$REPLACE_WITH_OUTPUT_OF_CADDY_HASH_PASSWORD
+	}
+
+	# Agent API → internal agent service (same-origin; the SPA calls /v1/*)
+	@api {
+		path /v1/* /health /ready /openapi.json /docs /docs/*
+	}
+	handle @api {
+		reverse_proxy agent:8000
+	}
+
+	# Everything else → the SPA, with client-side routing fallback
+	handle {
+		root * /srv/dist
+		try_files {path} /index.html
+		file_server
+	}
+}
