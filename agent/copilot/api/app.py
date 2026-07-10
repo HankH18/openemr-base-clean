@@ -122,6 +122,18 @@ def create_app(
     # echoed on the X-Correlation-ID response header.
     app.add_middleware(CorrelationIdMiddleware)
 
+    # Optional CORS — for a split-origin UI or a local browser demo. Off unless
+    # origins are configured; the same-origin (reverse-proxy) deploy needs none.
+    if settings.cors_allow_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
     @app.get(
         "/health",
         response_model=HealthResponse,

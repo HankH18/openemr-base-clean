@@ -67,6 +67,14 @@ class Settings(BaseSettings):
             "(the acceptance fake + tests key by integer id)."
         ),
     )
+    cors_allow_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated allowed CORS origins for a split-origin UI (or a "
+            "local browser demo). Empty ⇒ no CORS middleware; the same-origin "
+            "proxy deploy needs none."
+        ),
+    )
 
     # These are IDs, not secrets — the client secret / JWKs live in a
     # secrets manager (see RUNLOG operator queue).
