@@ -48,7 +48,13 @@ export function App(): JSX.Element {
   const patientIds = useMemo(() => CENSUS.map((entry) => entry.id), []);
   const { theme, toggle } = useTheme();
   const rounds = useRounds(api, CLINICIAN_ID, patientIds);
-  const alerts = useAlerts(api, CLINICIAN_ID, rounds.phase === 'active');
+  // Polling is disabled: the backend /alerts feed flags every not-yet-seen
+  // patient at/above the acuity threshold, which fires on first paint for
+  // statically-critical patients — but criticality is the queue RANKING's job,
+  // not a deterioration banner. A deterioration is a *change* during the round,
+  // surfaced deterministically by "Re-check charts" (see handleRecheck). We keep
+  // the hook only for its dismiss/dismissed state.
+  const alerts = useAlerts(api, CLINICIAN_ID, false);
   const chat = useChat(api, CLINICIAN_ID);
 
   const [leaving, setLeaving] = useState(false);
@@ -69,18 +75,13 @@ export function App(): JSX.Element {
   const card = rounds.card;
   const currentId = card?.patient_id ?? null;
 
-  // Polled alerts plus the demo-forced one (deduped by patient), so the banner
-  // and the rail's "Alert" state behave identically whether the signal came
-  // from the poller or the manual re-check.
-  const activeAlerts = useMemo(() => {
-    if (forcedAlert === null) {
-      return alerts.alerts;
-    }
-    if (alerts.alerts.some((a) => a.patient_id === forcedAlert.patient_id)) {
-      return alerts.alerts;
-    }
-    return [...alerts.alerts, forcedAlert];
-  }, [alerts.alerts, forcedAlert]);
+  // The only deterioration surfaced is the one raised by "Re-check charts" — a
+  // genuine mid-round change, not a standing "this patient is critical" (that is
+  // what the ranking conveys). Empty until the physician re-checks.
+  const activeAlerts = useMemo(
+    () => (forcedAlert === null ? [] : [forcedAlert]),
+    [forcedAlert],
+  );
 
   const offer =
     rounds.phase === 'active'
