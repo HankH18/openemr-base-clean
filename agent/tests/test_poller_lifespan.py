@@ -44,7 +44,7 @@ def test_disabled_by_default_never_builds_a_scheduler(monkeypatch: pytest.Monkey
     """The default settings must not touch the poller at all."""
     builder_calls: list[Settings] = []
 
-    def _tracking_builder(settings: Settings) -> _SpyScheduler:
+    def _tracking_builder(settings: Settings, observability: Any = None) -> _SpyScheduler:
         builder_calls.append(settings)
         return _SpyScheduler()
 
@@ -71,7 +71,9 @@ def test_disabled_by_default_never_builds_a_scheduler(monkeypatch: pytest.Monkey
 def test_enabled_starts_and_stops_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
     """When switched on, the lifespan starts a scheduler and stops it on exit."""
     spy = _SpyScheduler()
-    monkeypatch.setattr("copilot.worker.runtime.build_poller_scheduler", lambda _settings: spy)
+    monkeypatch.setattr(
+        "copilot.worker.runtime.build_poller_scheduler", lambda _settings, _obs=None: spy
+    )
 
     settings = Settings(poller_enabled=True)
 

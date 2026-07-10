@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from copilot.config import get_settings
 from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.observability import Observability
 from copilot.rounds.service import NoActiveRoundError, RoundsService, RoundView
 
 router = APIRouter(prefix="/v1/rounds", tags=["rounds"])
@@ -47,32 +48,38 @@ def _view_body(view: RoundView) -> dict[str, Any]:
 
 
 @router.post("/start", summary="Begin a round; returns the sickest patient's card")
-async def start(req: StartRequest) -> dict[str, Any]:
-    view = await _service().start(
-        ClinicianId(value=req.clinician_id),
-        [PatientId(value=pid) for pid in req.patient_ids],
-    )
+async def start(req: StartRequest, request: Request) -> dict[str, Any]:
+    obs: Observability = request.app.state.observability
+    async with obs.span("rounds.start", clinician_id=req.clinician_id):
+        view = await _service().start(
+            ClinicianId(value=req.clinician_id),
+            [PatientId(value=pid) for pid in req.patient_ids],
+        )
     return _view_body(view)
 
 
 @router.get("/current", summary="The current patient card for this clinician")
-async def current(clinician_id: Annotated[int, Query(gt=0)]) -> dict[str, Any]:
-    try:
-        view = await _service().current(ClinicianId(value=clinician_id))
-    except NoActiveRoundError:
-        raise HTTPException(status_code=404, detail="No active rounding session") from None
+async def current(clinician_id: Annotated[int, Query(gt=0)], request: Request) -> dict[str, Any]:
+    obs: Observability = request.app.state.observability
+    async with obs.span("rounds.current", clinician_id=clinician_id):
+        try:
+            view = await _service().current(ClinicianId(value=clinician_id))
+        except NoActiveRoundError:
+            raise HTTPException(status_code=404, detail="No active rounding session") from None
     return _view_body(view)
 
 
 @router.post("/advance", summary="Mark current patient done; return the next card")
-async def advance(req: AdvanceRequest) -> dict[str, Any]:
-    try:
-        view = await _service().advance(
-            ClinicianId(value=req.clinician_id),
-            PatientId(value=req.completed_patient_id),
-        )
-    except NoActiveRoundError:
-        raise HTTPException(status_code=404, detail="No active rounding session") from None
+async def advance(req: AdvanceRequest, request: Request) -> dict[str, Any]:
+    obs: Observability = request.app.state.observability
+    async with obs.span("rounds.advance", clinician_id=req.clinician_id):
+        try:
+            view = await _service().advance(
+                ClinicianId(value=req.clinician_id),
+                PatientId(value=req.completed_patient_id),
+            )
+        except NoActiveRoundError:
+            raise HTTPException(status_code=404, detail="No active rounding session") from None
     if view is None:
         return {"done": True}
     return _view_body(view)

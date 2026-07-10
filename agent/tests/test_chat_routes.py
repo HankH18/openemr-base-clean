@@ -14,7 +14,8 @@ answer whose cited value no longer matches the live record is withheld.
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -116,6 +117,58 @@ class _FakeFhir:
         if res is None:
             raise RuntimeError(f"no such resource {rtype.value}/{rid}")
         return res
+
+
+# --- observability spy -----------------------------------------------------
+
+
+class _RecordingSpan:
+    """Span double — ignores attributes/output; we only assert span names."""
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        return None
+
+    def set_output(self, value: Any) -> None:
+        return None
+
+
+class _RecordingObservability:
+    """Records the spans opened and the verification results emitted."""
+
+    def __init__(self) -> None:
+        self.spans: list[str] = []
+        self.verifications: list[dict[str, Any]] = []
+        self.flushed = False
+
+    @asynccontextmanager
+    async def span(self, name: str, **attributes: Any) -> AsyncIterator[_RecordingSpan]:
+        self.spans.append(name)
+        yield _RecordingSpan()
+
+    def event(self, name: str, **attributes: Any) -> None:
+        return None
+
+    def record_verification(self, *, passed: bool, action: str, patient_id: int) -> None:
+        self.verifications.append({"passed": passed, "action": action, "patient_id": patient_id})
+
+    def record_poller_staleness(self, *, patient_id: int, age_seconds: int) -> None:
+        return None
+
+    async def flush(self) -> None:
+        self.flushed = True
+
+
+def _client_with_observability(spy: _RecordingObservability) -> TestClient:
+    """A client whose app publishes ``spy`` as its observability backend."""
+    from copilot.api.app import create_app
+    from copilot.config import get_settings
+    from copilot.memory.db import get_engine, get_session_factory
+
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+    app = create_app(get_settings(), probe_factories=[])
+    app.state.observability = spy
+    return TestClient(app)
 
 
 # --- fixtures --------------------------------------------------------------
@@ -294,3 +347,20 @@ class TestChat:
         r = client.get("/v1/conversations/999999")
         assert r.status_code == 200
         assert r.json() == {"messages": []}
+
+    def test_served_chat_emits_span_and_verification(self, _db_file: str) -> None:
+        spy = _RecordingObservability()
+        client = _client_with_observability(spy)
+        r = _chat(client, "What is the latest troponin value?")
+        assert r.status_code == 200
+        assert r.json()["verification"]["action"] == "served"
+        assert "chat" in spy.spans
+        assert spy.verifications == [{"passed": True, "action": "served", "patient_id": SICK}]
+
+    def test_withheld_chat_records_failed_verification(self, _db_file: str) -> None:
+        spy = _RecordingObservability()
+        client = _client_with_observability(spy)
+        r = _chat(client, "What did the patient's MRI brain show?")
+        assert r.status_code == 200
+        assert r.json()["verification"]["action"] == "withheld"
+        assert spy.verifications == [{"passed": False, "action": "withheld", "patient_id": SICK}]

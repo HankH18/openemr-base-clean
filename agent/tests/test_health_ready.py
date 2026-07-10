@@ -63,7 +63,9 @@ def test_ready_returns_503_when_any_probe_fails() -> None:
     body = resp.json()
     assert body["ready"] is False
     failing = [d for d in body["dependencies"] if not d["ok"]]
-    assert failing == [{"name": "openemr_fhir", "ok": False, "detail": "connection refused"}]
+    assert failing == [
+        {"name": "openemr_fhir", "ok": False, "detail": "connection refused", "advisory": False}
+    ]
 
 
 def test_ready_preserves_probe_order() -> None:
@@ -72,3 +74,23 @@ def test_ready_preserves_probe_order() -> None:
     resp = client.get("/ready")
     names = [d["name"] for d in resp.json()["dependencies"]]
     assert names == ["a", "b", "c", "d"]
+
+
+def test_advisory_dependency_failure_does_not_block_readiness() -> None:
+    """A failing *advisory* dep is reported but never turns /ready into 503."""
+
+    def _advisory_fail(name: str) -> Callable[[], Awaitable[ReadinessDependency]]:
+        async def probe() -> ReadinessDependency:
+            return ReadinessDependency(name=name, ok=False, detail="down", advisory=True)
+
+        return probe
+
+    client = _build_app(
+        _ok("postgres"), _ok("openemr_fhir"), _ok("llm"), _advisory_fail("langfuse")
+    )
+    resp = client.get("/ready")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    langfuse = next(d for d in body["dependencies"] if d["name"] == "langfuse")
+    assert langfuse == {"name": "langfuse", "ok": False, "detail": "down", "advisory": True}

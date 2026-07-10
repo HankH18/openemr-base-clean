@@ -178,6 +178,13 @@ class ReadinessDependency(BaseModel):
     name: str
     ok: bool
     detail: str = ""
+    advisory: bool = Field(
+        default=False,
+        description=(
+            "Advisory dependencies are reported for visibility but do not gate "
+            "readiness — a failing advisory dep never turns /ready into 503."
+        ),
+    )
 
 
 class ReadinessResponse(BaseModel):
@@ -185,6 +192,17 @@ class ReadinessResponse(BaseModel):
 
     ready: bool
     dependencies: list[ReadinessDependency]
+
+    @classmethod
+    def from_dependencies(cls, dependencies: list[ReadinessDependency]) -> ReadinessResponse:
+        """Aggregate dependency results into a response.
+
+        Readiness is the conjunction of every *gating* dependency; advisory
+        dependencies (e.g. observability) are surfaced in the payload but never
+        block readiness.
+        """
+        ready = all(d.ok for d in dependencies if not d.advisory)
+        return cls(ready=ready, dependencies=dependencies)
 
     def to_status_code(self) -> int:
         return 200 if self.ready else 503

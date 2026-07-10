@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from copilot.api.middleware import resolve_correlation_id
@@ -23,6 +23,7 @@ from copilot.config import get_settings
 from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import Observability
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -37,8 +38,8 @@ class ChatRequest(BaseModel):
     correlation_id: str | None = None
 
 
-def _service() -> ChatService:
-    return ChatService(get_settings())
+def _service(observability: Observability) -> ChatService:
+    return ChatService(get_settings(), observability)
 
 
 def _reply_body(reply: ChatReply) -> dict[str, Any]:
@@ -55,7 +56,7 @@ def _reply_body(reply: ChatReply) -> dict[str, Any]:
 
 
 @router.post("/chat", summary="Answer a grounded question about a patient")
-async def chat(req: ChatRequest) -> dict[str, Any]:
+async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     # Resolve at the boundary: a valid supplied id is honoured, anything else
     # (missing / malformed) yields a freshly generated one.
     correlation_id = resolve_correlation_id(req.correlation_id)
@@ -68,7 +69,7 @@ async def chat(req: ChatRequest) -> dict[str, Any]:
     if not await is_authorized(clinician_id, patient_id):
         raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
 
-    reply = await _service().chat(
+    reply = await _service(request.app.state.observability).chat(
         clinician_id=clinician_id,
         patient_id=patient_id,
         message=req.message,

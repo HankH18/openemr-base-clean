@@ -30,6 +30,7 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import NoopObservability, Observability
 from copilot.verification.serve import verify_answer
 
 # Shown whenever nothing groundable backs the answer — the honest,
@@ -53,8 +54,9 @@ class ChatReply(BaseModel):
 class ChatService:
     """Serve-time orchestration for a single grounded chat turn."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, observability: Observability | None = None) -> None:
         self._settings = settings
+        self._obs: Observability = observability or NoopObservability()
 
     async def chat(
         self,
@@ -77,26 +79,36 @@ class ChatService:
             )
             history = _to_turns(await repo.get_conversation_messages(resolved_id))
 
-        async with self._fhir_client() as fhir:
-            agent = build_agent(self._settings, fhir)
-            agent_answer = await agent.answer(patient_id, message, history)
-            result = await verify_answer(agent_answer.claims, patient_id, fhir)
+        async with self._obs.span(
+            "chat", patient_id=patient_id.value, clinician_id=clinician_id.value
+        ) as span:
+            async with self._fhir_client() as fhir:
+                agent = build_agent(self._settings, fhir)
+                agent_answer = await agent.answer(patient_id, message, history)
+                result = await verify_answer(agent_answer.claims, patient_id, fhir)
 
-        # Fail-closed: an answer that grounded nothing is withheld, never served,
-        # regardless of the verifier's empty-claims convenience.
-        if not agent_answer.claims:
-            action = VerificationAction.withheld
-            passed = False
-        else:
-            action = result.action
-            passed = result.passed
+            # Fail-closed: an answer that grounded nothing is withheld, never
+            # served, regardless of the verifier's empty-claims convenience.
+            if not agent_answer.claims:
+                action = VerificationAction.withheld
+                passed = False
+            else:
+                action = result.action
+                passed = result.passed
 
-        if action == VerificationAction.withheld:
-            answer = _WITHHELD_ANSWER
-            claims: list[Claim] = []
-        else:
-            answer = agent_answer.answer
-            claims = _passed_claims(result)
+            if action == VerificationAction.withheld:
+                answer = _WITHHELD_ANSWER
+                claims: list[Claim] = []
+            else:
+                answer = agent_answer.answer
+                claims = _passed_claims(result)
+
+            # One verification event per served/withheld decision — the
+            # fail-closed metric the observability dashboard tracks.
+            self._obs.record_verification(
+                passed=passed, action=action.value, patient_id=patient_id.value
+            )
+            span.set_output({"action": action.value, "passed": passed, "claims": len(claims)})
 
         async with session_scope() as session:
             repo = MemoryRepository(session)

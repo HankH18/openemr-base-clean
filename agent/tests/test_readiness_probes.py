@@ -92,8 +92,10 @@ async def test_probe_langfuse_requires_all_three_env_vars() -> None:
         )
     )
     assert ok.ok is True
+    assert ok.advisory is True  # observability is reported but never gates readiness
 
     partial = await readiness.probe_langfuse(
         Settings(langfuse_host="https://cloud.langfuse.com", langfuse_public_key="pk")
     )
     assert partial.ok is False
+    assert partial.advisory is True

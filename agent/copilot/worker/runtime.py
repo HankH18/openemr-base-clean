@@ -31,6 +31,7 @@ from copilot.domain.primitives import PatientId
 from copilot.memory.db import session_scope
 from copilot.memory.models import RoundingCursorRow
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import NoopObservability, Observability
 from copilot.verification.core import Verifier
 from copilot.verification.rules import default_rules
 from copilot.worker.pipeline import RefreshPipeline
@@ -50,18 +51,26 @@ class _RuntimePoller(Poller):
     :class:`Poller`, so the real tick logic runs unchanged.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, observability: Observability | None = None) -> None:
         self._settings = settings
         self._pipeline = RefreshPipeline(settings)
+        self._obs: Observability = observability or NoopObservability()
 
     async def tick(self, patient_id: PatientId) -> PollerResult:
         async with session_scope() as session, self._pipeline._fhir_client() as fhir:
             repo = MemoryRepository(session)
-            inner = Poller(fhir=fhir, synthesizer=StubSynthesizer(), repository=repo)
+            inner = Poller(
+                fhir=fhir,
+                synthesizer=StubSynthesizer(),
+                repository=repo,
+                observability=self._obs,
+            )
             return await inner.tick(patient_id)
 
 
-def build_poller_scheduler(settings: Settings) -> PollerScheduler:
+def build_poller_scheduler(
+    settings: Settings, observability: Observability | None = None
+) -> PollerScheduler:
     """Assemble the deployable :class:`PollerScheduler` from ``settings``.
 
     Wires the three collaborators described in the module docstring. The
@@ -101,7 +110,7 @@ def build_poller_scheduler(settings: Settings) -> PollerScheduler:
             await pipeline._persist(result.patient_id, grounded, repo)
 
     return PollerScheduler(
-        poller=_RuntimePoller(settings),
+        poller=_RuntimePoller(settings, observability),
         active_patients=active_patients,
         on_result=on_result,
         interval_seconds=settings.poll_interval_seconds,

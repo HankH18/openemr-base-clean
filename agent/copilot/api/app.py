@@ -82,28 +82,31 @@ def create_app(
         probe_factories = _default_probe_factories()
 
     @asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Run the background poller for the app's lifetime — gated OFF.
+    async def lifespan(app_: FastAPI) -> AsyncIterator[None]:
+        """Run the background poller (when enabled) and flush observability.
 
-        When ``settings.poller_enabled`` is false (the default), this is a
-        pure no-op: nothing is imported, no scheduler starts, and the app
-        boots exactly as before with no dependency on Postgres/OpenEMR. Only
-        when explicitly enabled do we assemble and start the poll loop, and
-        stop it cleanly on shutdown.
+        The poller is gated OFF by default: when ``settings.poller_enabled`` is
+        false nothing is imported and no scheduler starts, and the app boots
+        exactly as before with no dependency on Postgres/OpenEMR. Independently
+        of the poller, buffered observability events are flushed on shutdown so
+        a Langfuse backend delivers everything before the process exits.
         """
-        if not settings.poller_enabled:
-            yield
-            return
-        # Imported lazily so the poller's collaborators are never loaded when
-        # the feature is off.
-        from copilot.worker.runtime import build_poller_scheduler
-
-        scheduler = build_poller_scheduler(settings)
-        scheduler.start()
         try:
-            yield
+            if settings.poller_enabled:
+                # Imported lazily so the poller's collaborators are never
+                # loaded when the feature is off.
+                from copilot.worker.runtime import build_poller_scheduler
+
+                scheduler = build_poller_scheduler(settings, app_.state.observability)
+                scheduler.start()
+                try:
+                    yield
+                finally:
+                    scheduler.shutdown()
+            else:
+                yield
         finally:
-            scheduler.shutdown()
+            await app_.state.observability.flush()
 
     app = FastAPI(
         title="Clinical Co-Pilot",
@@ -151,7 +154,7 @@ def create_app(
     async def ready() -> Response:
         probes = [factory(settings) for factory in probe_factories]
         deps = await readiness.run_all(probes)
-        payload = ReadinessResponse(ready=all(d.ok for d in deps), dependencies=deps)
+        payload = ReadinessResponse.from_dependencies(deps)
         return JSONResponse(
             status_code=payload.to_status_code(),
             content=payload.model_dump(mode="json"),

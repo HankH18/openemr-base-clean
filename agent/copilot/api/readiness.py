@@ -66,14 +66,22 @@ async def probe_llm(settings: Settings) -> ReadinessDependency:
 
 
 async def probe_langfuse(settings: Settings) -> ReadinessDependency:
-    """Langfuse readiness — same posture as LLM.
+    """Langfuse readiness — advisory, never gating.
 
-    Observability is a hard dependency for the production posture in
-    ARCHITECTURE.md; refuse ready until it's configured.
+    Observability is valuable but must not pull the service out of rotation: a
+    missing Langfuse config should not turn `/ready` into 503, because chat and
+    rounds do not depend on it. Its state is still reported for visibility, but
+    flagged ``advisory`` so it never blocks readiness.
     """
-    if settings.langfuse_host and settings.langfuse_public_key and settings.langfuse_secret_key:
-        return ReadinessDependency(name="langfuse", ok=True, detail="creds present")
-    return ReadinessDependency(name="langfuse", ok=False, detail="langfuse credentials not set")
+    configured = bool(
+        settings.langfuse_host and settings.langfuse_public_key and settings.langfuse_secret_key
+    )
+    return ReadinessDependency(
+        name="langfuse",
+        ok=configured,
+        detail="creds present" if configured else "not configured (advisory)",
+        advisory=True,
+    )
 
 
 async def run_all(
