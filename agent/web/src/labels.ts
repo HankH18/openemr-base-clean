@@ -25,16 +25,20 @@ export function humanizeLabel(label: string): string {
   if (mapped) {
     return mapped;
   }
-  const spaced = label
+  // Split snake_case into words and title-case ordinary lowercase words. A word
+  // with an internal uppercase letter is an acronym / mixed-case abbreviation
+  // (WBC, BUN, aPTT) and is left verbatim. charAt(0) over [0] keeps the result a
+  // `string` under noUncheckedIndexedAccess.
+  return label
     .trim()
     .replace(/_/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-  // Capitalize the FIRST letter of each word, PRESERVE the rest (so
-  // acronyms like WBC, BUN stay intact). charAt(0) is used over [0] so the
-  // result stays a `string` under noUncheckedIndexedAccess.
-  return spaced
     .split(/\s+/)
-    .map((w) => (w.length > 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .map((w) => {
+      if (w.length === 0) {
+        return w;
+      }
+      return /[A-Z]/.test(w.slice(1)) ? w : w.charAt(0).toUpperCase() + w.slice(1);
+    })
     .join(' ');
 }
 

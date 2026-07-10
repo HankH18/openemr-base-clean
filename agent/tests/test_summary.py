@@ -26,7 +26,7 @@ def test_collapses_to_one_per_metric_with_trend() -> None:
     claims = build_summary_claims(resources)
     assert len(claims) == 1
     text = claims[0].text
-    assert text.startswith("Heart rate: 92")
+    assert text.startswith("Heart Rate: 92")  # humanized from raw "Heart rate"
     assert "↓12" in text  # 92 minus 104
     assert "24h since prior" in text
     assert claims[0].source_ref.resource_id == "hr-1"  # cites the latest reading

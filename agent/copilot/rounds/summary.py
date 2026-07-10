@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from copilot.agent.grounding import claim_text, describe_resource
+from copilot.agent.grounding import claim_text, describe_resource, humanize_label
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, ResourceType
 
@@ -63,7 +63,7 @@ def build_summary_claims(resources: Sequence[Mapping[str, Any]]) -> list[Claim]:
                 ),
             )
         )
-    return claims
+    return _dedupe_medications(claims)
 
 
 def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 12.0) -> list[Claim]:
@@ -97,6 +97,44 @@ def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 1
 # --- helpers ---------------------------------------------------------------
 
 
+def _normalize_medication_value(value: str) -> str:
+    """Trim, lowercase, and drop trailing dots so med values compare cleanly."""
+    return value.strip().lower().rstrip(".").strip()
+
+
+def _dedupe_medications(claims: list[Claim]) -> list[Claim]:
+    """Collapse duplicate medication rows for the same drug.
+
+    The seed sometimes carries the same drug twice — a bare name
+    ("Hydromorphone") and a full sig ("Hydromorphone 0.5 mg IV q4h PRN pain").
+    Drop any ``MedicationRequest`` claim whose normalized value is a *strict*
+    prefix of another medication claim's value, keeping the longer/more
+    informative one. Non-medication claims are never dropped, empty-value claims
+    are kept, and original order is preserved. Mirrors ``dedupeMedicationClaims``
+    in web/src/labels.ts.
+    """
+    med_values = [
+        _normalize_medication_value(claim.source_ref.value)
+        for claim in claims
+        if claim.source_ref.resource_type == ResourceType.MedicationRequest
+    ]
+    result: list[Claim] = []
+    for claim in claims:
+        if claim.source_ref.resource_type != ResourceType.MedicationRequest:
+            result.append(claim)
+            continue
+        value = _normalize_medication_value(claim.source_ref.value)
+        if not value:
+            result.append(claim)
+            continue
+        is_prefix_of_another = any(
+            len(other) > len(value) and other.startswith(value) for other in med_values
+        )
+        if not is_prefix_of_another:
+            result.append(claim)
+    return result
+
+
 def _group_observations(resources: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
     """Group groundable Observations by metric label, each sorted latest-first."""
     groups: dict[str, list[Mapping[str, Any]]] = {}
@@ -120,7 +158,7 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
         return None
     label, field, value = described
     unit = _unit(latest)
-    head = f"{label}: {value}{(' ' + unit) if unit else ''}"
+    head = f"{humanize_label(label)}: {value}{(' ' + unit) if unit else ''}"
     return Claim(
         text=head + _trend(group),
         source_ref=FhirReference(

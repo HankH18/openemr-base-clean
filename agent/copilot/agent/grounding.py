@@ -76,12 +76,59 @@ def describe_resource(resource: Mapping[str, Any]) -> tuple[str, str, str] | Non
     return None
 
 
+# A raw FHIR resource type maps straight to its doctor-facing noun; this wins
+# before any casing heuristic. Mirrors ``RESOURCE_LABELS`` in web/src/labels.ts.
+_RESOURCE_LABELS: dict[str, str] = {
+    "MedicationRequest": "Medication",
+    "Condition": "Condition",
+    "AllergyIntolerance": "Allergy",
+    "Observation": "Observation",
+    "Immunization": "Immunization",
+    "Procedure": "Procedure",
+    "DiagnosticReport": "Diagnostic report",
+}
+
+def humanize_label(label: str) -> str:
+    """Normalize a raw FHIR type or code display to a doctor-facing label.
+
+    Mirrors the frontend's ``humanizeLabel`` (``web/src/labels.ts``) so a claim's
+    raw text already matches what the UI would render — re-humanizing on display
+    is then a no-op. The resource-type map wins first; otherwise snake_case is
+    split into words and each ordinary lowercase word is title-cased. A word that
+    already carries an internal uppercase letter is left untouched, so acronyms
+    and mixed-case abbreviations (``WBC``, ``BUN``, ``aPTT``) survive verbatim
+    rather than being split or lower-cased.
+
+    Examples: ``"oxygen_saturation"`` -> ``"Oxygen Saturation"``,
+    ``"Heart rate"`` -> ``"Heart Rate"``, ``"MedicationRequest"`` ->
+    ``"Medication"``, ``"WBC"`` -> ``"WBC"``, ``"aPTT"`` -> ``"aPTT"``.
+    """
+    mapped = _RESOURCE_LABELS.get(label.strip())
+    if mapped is not None:
+        return mapped
+
+    def _cap(word: str) -> str:
+        # An internal uppercase letter marks an acronym / mixed-case abbreviation
+        # (WBC, BUN, aPTT) — leave it verbatim; otherwise title-case the word.
+        if any(ch.isupper() for ch in word[1:]):
+            return word
+        return word[0].upper() + word[1:]
+
+    # ``str.split()`` (no arg) collapses whitespace runs and drops empty tokens.
+    return " ".join(_cap(word) for word in label.strip().replace("_", " ").split())
+
+
 def claim_text(resource_type: str, display: str, value: str) -> str:
     """A short factual sentence naming the resource and its value.
 
-    Numeric literals come verbatim from ``display``/``value`` (both read from
-    the resource), so the verification numeric check always finds them in source.
+    The type prefix and concept label are humanized so emitted text reads
+    cleanly ("Medication: Hydromorphone." not "MedicationRequest: Hydromorphone.";
+    "Observation Oxygen Saturation: 98." not "... oxygen_saturation: 98."). The
+    numeric ``value`` is kept verbatim — it comes straight from the resource, so
+    the verification numeric check always finds it in source.
     """
+    type_label = humanize_label(resource_type)
+    concept = humanize_label(display)
     if resource_type == "Observation":
-        return f"{resource_type} {display}: {value}."
-    return f"{resource_type}: {display}."
+        return f"{type_label} {concept}: {value}."
+    return f"{type_label}: {concept}."
