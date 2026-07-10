@@ -96,18 +96,21 @@ export function App(): JSX.Element {
     [activeAlerts],
   );
 
-  // Rail/hero display order. The backend order is risk-sorted, but a patient
-  // whose risk just spiked (active alert) rises to the top of the unseen group;
-  // already-seen patients sink to the bottom. Kept out of useRounds so round
-  // state stays the pure backend ranking.
+  // Rail/hero display order. The patient the doctor is currently seeing always
+  // leads the queue; everyone else reshuffles beneath them. Among those others,
+  // a patient whose risk just spiked (active alert) rises to the top; the rest
+  // keep the backend's risk ranking, and already-seen patients sink to the
+  // bottom. Kept out of useRounds so round state stays the pure backend ranking.
   const displayOrder = useMemo(() => {
     const seen = rounds.seen;
     const unseen = rounds.order.filter((id) => !seen.includes(id));
-    const alerted = unseen.filter((id) => alertIds.has(id)); // elevated risk -> top
-    const rest = unseen.filter((id) => !alertIds.has(id)); // backend acuity order preserved
+    const head = currentId !== null && unseen.includes(currentId) ? [currentId] : [];
+    const others = unseen.filter((id) => id !== currentId);
+    const alerted = others.filter((id) => alertIds.has(id)); // spiked risk -> just below current
+    const rest = others.filter((id) => !alertIds.has(id)); // backend acuity order preserved
     const seenList = rounds.order.filter((id) => seen.includes(id)); // done patients sink to bottom
-    return [...alerted, ...rest, ...seenList];
-  }, [rounds.order, rounds.seen, alertIds]);
+    return [...head, ...alerted, ...rest, ...seenList];
+  }, [rounds.order, rounds.seen, alertIds, currentId]);
 
   const withExitTransition = useCallback(async (action: () => Promise<void>) => {
     if (!prefersReducedMotion()) {

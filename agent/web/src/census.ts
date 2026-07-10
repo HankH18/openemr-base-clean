@@ -31,6 +31,16 @@ export const CENSUS: CensusEntry[] = [
   { id: 1003, name: 'Marcus Webb', given: 'Marcus', age: 41, sex: 'M', bed: '03-A', service: 'DKA — glucose 386, gap acidosis' },
   { id: 1004, name: 'June Okafor', given: 'June', age: 74, sex: 'F', bed: '15-C', service: 'Sepsis watch' },
   { id: 1005, name: 'Lillian Cho', given: 'Lillian', age: 82, sex: 'F', bed: '09-A', service: 'Acute pancreatitis — lipase 842' },
+  { id: 1006, name: 'Darnell Pierce', given: 'Darnell', age: 55, sex: 'M', bed: '05-B', service: 'Leukocytosis — WBC 12.4' },
+  { id: 1007, name: 'Aiko Tanaka', given: 'Aiko', age: 63, sex: 'F', bed: '11-A', service: 'Metabolic alkalosis — HCO₃ 31' },
+  { id: 1008, name: 'Grigor Petrov', given: 'Grigor', age: 70, sex: 'M', bed: '14-B', service: 'Acute kidney injury — Cr 2.4' },
+  { id: 1009, name: 'Yusuf Abdi', given: 'Yusuf', age: 48, sex: 'M', bed: '02-C', service: 'Anemia — Hgb 7.8' },
+  { id: 1010, name: 'Priya Nair', given: 'Priya', age: 59, sex: 'F', bed: '08-A', service: 'Coagulopathy — aPTT 62' },
+  { id: 1011, name: 'Helen Brooks', given: 'Helen', age: 66, sex: 'F', bed: '04-A', service: 'Stable — no abnormal labs' },
+  { id: 1012, name: 'Thomas Reilly', given: 'Thomas', age: 72, sex: 'M', bed: '16-B', service: 'Hyperglycemia — glucose 146' },
+  { id: 1013, name: 'Sofia Marchetti', given: 'Sofia', age: 51, sex: 'F', bed: '06-C', service: 'Electrolyte depletion — low K/Mg' },
+  { id: 1014, name: 'Walter Kim', given: 'Walter', age: 78, sex: 'M', bed: '10-A', service: 'Severe hyponatremia — Na 124' },
+  { id: 1015, name: 'Denise Alvarez', given: 'Denise', age: 64, sex: 'F', bed: '13-B', service: 'NSTEMI — troponin 2.34' },
 ];
 
 const byId = new Map(CENSUS.map((entry) => [entry.id, entry]));

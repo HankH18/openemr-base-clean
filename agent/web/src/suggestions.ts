@@ -14,6 +14,16 @@ const BY_PATIENT: Record<number, string[]> = {
   1003: ['Latest glucose?', 'Latest potassium?', "What's his bicarbonate?", 'Any MRI report?'],
   1004: ['Latest lactate?', 'Any MRI report?'],
   1005: ['Latest lipase?', 'Any MRI report?'],
+  1006: ['Latest white count?', 'Any MRI report?'],
+  1007: ['Latest bicarbonate?', 'Any MRI report?'],
+  1008: ['Latest creatinine?', 'Any MRI report?'],
+  1009: ['Latest hemoglobin?', 'Any MRI report?'],
+  1010: ['Latest aPTT?', 'Any MRI report?'],
+  1011: ['Any abnormal labs?', 'Any MRI report?'],
+  1012: ['Latest glucose?', 'Any MRI report?'],
+  1013: ['Latest potassium?', 'Latest magnesium?', 'Any MRI report?'],
+  1014: ['Latest sodium?', 'Any MRI report?'],
+  1015: ['Latest troponin?', 'Any MRI report?'],
 };
 
 export function suggestionsFor(patientId: number): string[] {
