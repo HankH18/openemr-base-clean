@@ -1,34 +1,28 @@
 import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
 import type { SourceRef } from '../api/types';
+import { humanizeLabel } from '../labels';
 
 /**
  * The citation chip. Every claim carries one; pressing it opens the exact
- * (resource, field, value) triple the claim was extracted from.
+ * (resource, value) pair the claim was extracted from. The inline chip shows
+ * a friendly, doctor-useful source label — never the raw record UUID.
  */
 export function ProvenanceChip({ source }: { source: SourceRef }): JSX.Element {
+  const label = humanizeLabel(source.resource_type);
   return (
     <DialogTrigger>
-      <Button
-        className="prov-chip"
-        aria-label={`Source: ${source.resource_type} ${source.resource_id}`}
-      >
-        <span className="prov-chip-type">{source.resource_type}</span>
-        <span className="prov-chip-id">{source.resource_id}</span>
+      <Button className="prov-chip" aria-label={`Source: ${label}`}>
+        <span className="prov-chip-check" aria-hidden="true">
+          ✓
+        </span>
+        <span className="prov-chip-type">{label}</span>
       </Button>
       <Popover className="prov-pop" placement="bottom end" offset={6}>
         <Dialog className="prov-pop-dialog" aria-label="Source record">
           <dl className="prov-meta">
             <div>
               <dt>Resource</dt>
-              <dd>{source.resource_type}</dd>
-            </div>
-            <div>
-              <dt>Record id</dt>
-              <dd>{source.resource_id}</dd>
-            </div>
-            <div>
-              <dt>Field</dt>
-              <dd>{source.field}</dd>
+              <dd>{label}</dd>
             </div>
             <div>
               <dt>Recorded value</dt>

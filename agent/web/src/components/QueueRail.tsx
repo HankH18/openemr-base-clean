@@ -60,13 +60,13 @@ export function QueueRail({
   onSelect: (patientId: number) => void;
   busy?: boolean;
 }): JSX.Element {
-  // The next patient to visit: the first unseen patient after the current one
-  // in the visiting order. Exactly one row is labelled "Up next".
-  const currentIdx = currentId === null ? -1 : order.indexOf(currentId);
+  // The next patient to visit: the sickest patient not yet seen, excluding the
+  // current patient and any alerting patient. `order` is the display order
+  // (alerting patients hoisted to the top), so the first row that is unseen,
+  // not current, and not alerting is the true "Up next". Exactly one row is
+  // labelled "Up next".
   const nextId =
-    currentIdx >= 0
-      ? order.slice(currentIdx + 1).find((id) => !seen.includes(id)) ?? null
-      : order.find((id) => !seen.includes(id)) ?? null;
+    order.find((id) => !seen.includes(id) && id !== currentId && !alertIds.has(id)) ?? null;
   return (
     <aside className="rail" aria-label="Rounding order">
       <div className="rail-head">

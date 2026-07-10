@@ -7,7 +7,7 @@ export type RoundsPhase = 'loading' | 'active' | 'complete' | 'error';
 export interface RoundsController {
   phase: RoundsPhase;
   card: PatientCard | null;
-  /** Full visit order: seen patients first (in visit order), then upcoming. */
+  /** Backend-ranked patient order (risk/acuity descending, sickest first). */
   order: number[];
   seen: number[];
   /** Non-fatal operation failure, surfaced inline and cleared on next success. */
@@ -46,25 +46,12 @@ export function useRounds(api: CopilotApi, clinicianId: number, patientIds: numb
     setSeen(ids);
   }, []);
 
-  const commitView = useCallback(
-    (view: RoundView) => {
-      cardRef.current = view.current;
-      setCard(view.current);
-      const currentId = view.current.patient_id;
-      // Display order: patients already seen (in visit order), then the current
-      // patient, then the rest (in the service's rank order). Anchoring the
-      // current patient right after the seen block keeps the rail reading as a
-      // coherent progression — the service may return `current` from anywhere
-      // in `order` (e.g. after a jump), which otherwise stranded "Now" mid-list.
-      const seenIds = seenRef.current.filter((id) => id !== currentId);
-      const upcoming = view.order.filter(
-        (id) => !seenIds.includes(id) && id !== currentId,
-      );
-      setOrder([...seenIds, currentId, ...upcoming]);
-      setNotice(null);
-    },
-    [],
-  );
+  const commitView = useCallback((view: RoundView) => {
+    cardRef.current = view.current;
+    setCard(view.current);
+    setOrder(view.order); // backend order is already risk-sorted; show as-is
+    setNotice(null);
+  }, []);
 
   const start = useCallback(async () => {
     setPhase('loading');

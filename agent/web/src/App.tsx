@@ -96,6 +96,19 @@ export function App(): JSX.Element {
     [activeAlerts],
   );
 
+  // Rail/hero display order. The backend order is risk-sorted, but a patient
+  // whose risk just spiked (active alert) rises to the top of the unseen group;
+  // already-seen patients sink to the bottom. Kept out of useRounds so round
+  // state stays the pure backend ranking.
+  const displayOrder = useMemo(() => {
+    const seen = rounds.seen;
+    const unseen = rounds.order.filter((id) => !seen.includes(id));
+    const alerted = unseen.filter((id) => alertIds.has(id)); // elevated risk -> top
+    const rest = unseen.filter((id) => !alertIds.has(id)); // backend acuity order preserved
+    const seenList = rounds.order.filter((id) => seen.includes(id)); // done patients sink to bottom
+    return [...alerted, ...rest, ...seenList];
+  }, [rounds.order, rounds.seen, alertIds]);
+
   const withExitTransition = useCallback(async (action: () => Promise<void>) => {
     if (!prefersReducedMotion()) {
       setLeaving(true);
@@ -140,7 +153,7 @@ export function App(): JSX.Element {
   }, [rounds.recheck, patientIds.length]);
 
   const entry = currentId !== null ? censusEntry(currentId) : undefined;
-  const position = currentId !== null ? rounds.order.indexOf(currentId) + 1 : 0;
+  const position = currentId !== null ? displayOrder.indexOf(currentId) + 1 : 0;
   const unseenCount = rounds.order.length - rounds.seen.length;
 
   return (
@@ -214,7 +227,7 @@ export function App(): JSX.Element {
       {rounds.phase === 'active' && card !== null ? (
         <div className="frame">
           <QueueRail
-            order={rounds.order}
+            order={displayOrder}
             seen={rounds.seen}
             currentId={currentId}
             alertIds={alertIds}
@@ -227,7 +240,7 @@ export function App(): JSX.Element {
                 card={card}
                 entry={entry}
                 position={position}
-                total={rounds.order.length}
+                total={displayOrder.length}
                 isLast={unseenCount <= 1}
                 busy={rounds.busy}
                 onDone={handleDone}

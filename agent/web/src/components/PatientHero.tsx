@@ -3,6 +3,7 @@ import { Button } from 'react-aria-components';
 import type { PatientCard } from '../api/types';
 import { objectPronoun, type CensusEntry } from '../census';
 import { fmtClock, isSafetyClaim } from '../fmt';
+import { dedupeMedicationClaims } from '../labels';
 import { AcuityMeter } from './AcuityMeter';
 import { ClaimList } from './ClaimList';
 import { FreshnessTag } from './FreshnessTag';
@@ -38,7 +39,9 @@ export function PatientHero({
   const given = entry?.given ?? `patient ${card.patient_id}`;
   const pronoun = objectPronoun(card.patient_id);
   const safetyClaims = card.summary_claims.filter((c) => isSafetyClaim(c.text));
-  const summaryClaims = card.summary_claims.filter((c) => !isSafetyClaim(c.text));
+  const summaryClaims = dedupeMedicationClaims(
+    card.summary_claims.filter((c) => !isSafetyClaim(c.text)),
+  );
 
   return (
     <article className="hero" aria-label={`Patient card: ${name}`}>
