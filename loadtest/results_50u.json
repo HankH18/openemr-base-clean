@@ -1,0 +1,83 @@
+{
+  "host": "http://127.0.0.1:8010",
+  "users": 50,
+  "duration_s": 20,
+  "wall_s": 20.28,
+  "total_requests": 4042,
+  "throughput_rps": 199.3,
+  "total_errors": 730,
+  "overall_error_rate_pct": 18.06,
+  "overall_p50_ms": 147.74,
+  "overall_p95_ms": 624.02,
+  "overall_p99_ms": 1461.68,
+  "per_endpoint": [
+    {
+      "endpoint": "GET /health",
+      "requests": 369,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 2.69,
+      "p95_ms": 9.91,
+      "p99_ms": 21.83,
+      "max_ms": 62.16,
+      "status_counts": {
+        "200": 369
+      }
+    },
+    {
+      "endpoint": "GET /ready",
+      "requests": 332,
+      "errors": 0,
+      "error_rate_pct": 0.0,
+      "p50_ms": 79.64,
+      "p95_ms": 132.18,
+      "p99_ms": 168.84,
+      "max_ms": 264.84,
+      "status_counts": {
+        "503": 332
+      }
+    },
+    {
+      "endpoint": "GET /v1/rounds/current",
+      "requests": 1485,
+      "errors": 4,
+      "error_rate_pct": 0.27,
+      "p50_ms": 156.32,
+      "p95_ms": 414.94,
+      "p99_ms": 1344.34,
+      "max_ms": 3542.95,
+      "status_counts": {
+        "200": 1481,
+        "599": 4
+      }
+    },
+    {
+      "endpoint": "POST /v1/rounds/start",
+      "requests": 721,
+      "errors": 721,
+      "error_rate_pct": 100.0,
+      "p50_ms": 13.66,
+      "p95_ms": 25.96,
+      "p99_ms": 107.84,
+      "max_ms": 116.36,
+      "status_counts": {
+        "500": 720,
+        "599": 1
+      }
+    },
+    {
+      "endpoint": "POST /v1/chat",
+      "requests": 1135,
+      "errors": 5,
+      "error_rate_pct": 0.44,
+      "p50_ms": 369.86,
+      "p95_ms": 1055.52,
+      "p99_ms": 1915.4,
+      "max_ms": 3584.89,
+      "status_counts": {
+        "200": 1130,
+        "599": 5
+      }
+    }
+  ]
+}

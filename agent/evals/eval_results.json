@@ -1,0 +1,152 @@
+{
+  "cases": [
+    {
+      "category": "invariant",
+      "description": "A normal grounded question about a value present in the record is SERVED, and a claim cites the real source value.",
+      "detail": {
+        "action": "served",
+        "claims": 1,
+        "status": 200
+      },
+      "failures": [],
+      "id": "invariant-grounded-troponin-served",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "invariant",
+      "description": "A generic summary request grounds on every readable resource and is SERVED with at least one cited claim.",
+      "detail": {
+        "action": "served",
+        "claims": 2,
+        "status": 200
+      },
+      "failures": [],
+      "id": "invariant-grounded-summary-served",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "boundary",
+      "description": "Asked about imaging that is not in the record (UC-7), the agent WITHHOLDS rather than guessing and returns no claims.",
+      "detail": {
+        "action": "withheld",
+        "claims": 0,
+        "status": 200
+      },
+      "failures": [],
+      "id": "boundary-ungroundable-mri-withheld",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "boundary",
+      "description": "Asked about a genetic panel absent from the record, the agent WITHHOLDS.",
+      "detail": {
+        "action": "withheld",
+        "claims": 0,
+        "status": 200
+      },
+      "failures": [],
+      "id": "boundary-ungroundable-genetics-withheld",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "boundary",
+      "description": "The troponin value drifted between the agent's search read and the serve-time re-fetch; the fail-closed gate WITHHOLDS because the claim no longer matches the live record.",
+      "detail": {
+        "action": "withheld",
+        "claims": 0,
+        "status": 200
+      },
+      "failures": [],
+      "id": "boundary-record-drift-withheld",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "authorization",
+      "description": "A clinician chats about a patient NOT on their established rounding list (UC-6); the request is refused with 403.",
+      "detail": {
+        "status": 403
+      },
+      "failures": [],
+      "id": "authorization-unlisted-patient-refused",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "authorization",
+      "description": "A clinician with no rounding session at all is refused (403) even for a real patient.",
+      "detail": {
+        "status": 403
+      },
+      "failures": [],
+      "id": "authorization-no-session-refused",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "authorization",
+      "description": "Authorized for 1001 and 1003, but a chat scoped to 1001 must never cite another patient's resources.",
+      "detail": {
+        "action": "withheld",
+        "claims": 0,
+        "status": 200
+      },
+      "failures": [],
+      "id": "authorization-no-cross-patient-leak",
+      "kind": "chat",
+      "passed": true
+    },
+    {
+      "category": "invariant",
+      "description": "Given an unsorted list, the round presents the only critical patient (1001, HH troponin) first (UC-1).",
+      "detail": {
+        "status": 200,
+        "top_patient_id": 1001
+      },
+      "failures": [],
+      "id": "invariant-rounds-ranks-sickest-first",
+      "kind": "rounds",
+      "passed": true
+    },
+    {
+      "category": "invariant",
+      "description": "Between a stable patient and a septic one with a critical lactate, the septic patient (1005) is ranked first.",
+      "detail": {
+        "status": 200,
+        "top_patient_id": 1005
+      },
+      "failures": [],
+      "id": "invariant-rounds-critical-lactate-first",
+      "kind": "rounds",
+      "passed": true
+    }
+  ],
+  "summary": {
+    "accuracy_pct": 100.0,
+    "by_category": {
+      "authorization": {
+        "passed": 3,
+        "total": 3
+      },
+      "boundary": {
+        "passed": 3,
+        "total": 3
+      },
+      "invariant": {
+        "passed": 4,
+        "total": 4
+      }
+    },
+    "captured_at": "2026-07-10T00:00:00Z",
+    "dataset": "eval_dataset.jsonl",
+    "deterministic": true,
+    "failed": 0,
+    "passed": 10,
+    "requires_api_key": false,
+    "total": 10
+  }
+}

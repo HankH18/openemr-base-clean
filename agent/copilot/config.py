@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(
         default="", description="Set via env; without it, LLM calls raise a documented error."
     )
+    anthropic_base_url: str = Field(
+        default="https://api.anthropic.com",
+        description=(
+            "Base URL for the Anthropic API. Overridable to point at a gateway/"
+            "proxy — or at a test double so readiness probes can verify "
+            "reachability without hitting the real provider."
+        ),
+    )
     anthropic_model_synthesis: str = Field(
         default="claude-sonnet-5", description="Model for synthesis and chat."
     )

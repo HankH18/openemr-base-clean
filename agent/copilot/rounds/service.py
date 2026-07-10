@@ -13,6 +13,7 @@ fresh process resumes exactly where the last one left off.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
@@ -25,9 +26,12 @@ from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import current_correlation_id
 from copilot.rounds.ranking import AcuityAssessment, assess_patient, rank
 from copilot.rounds.summary import build_change_claims, build_summary_claims
 from copilot.worker.synthesizer import StubSynthesizer, SynthesisInput
+
+_logger = logging.getLogger(__name__)
 
 # Resource types pulled to ground each card. Observations drive acuity; the
 # rest add reconciliation context (problems / meds / allergies) as grounded
@@ -92,6 +96,11 @@ class RoundsService:
                 await repo.save_memory_file(summary)
             await repo.upsert_rounding_cursor(clinician_id, ordered, 0, [])
 
+        # HIPAA §164.312(b): one access-trail row per chart this round read.
+        await self._record_reads_audit(
+            action="rounds.start", clinician_id=clinician_id, patient_ids=unique
+        )
+
         return RoundView(current=_card_from_summary(summaries[ordered[0]]), order=ordered)
 
     async def current(self, clinician_id: ClinicianId) -> RoundView:
@@ -104,6 +113,11 @@ class RoundsService:
             view = await _view_at(repo, cursor.ordered_patient_ids, cursor.current_index)
         if view is None:
             raise NoActiveRoundError
+        await self._record_reads_audit(
+            action="rounds.current",
+            clinician_id=clinician_id,
+            patient_ids=[view.current.patient_id],
+        )
         return view
 
     async def advance(self, clinician_id: ClinicianId, completed: PatientId) -> RoundView | None:
@@ -125,7 +139,14 @@ class RoundsService:
             await repo.upsert_rounding_cursor(
                 clinician_id, list(cursor.ordered_patient_ids), next_index, completed_ids
             )
-            return await _view_at(repo, cursor.ordered_patient_ids, next_index)
+            view = await _view_at(repo, cursor.ordered_patient_ids, next_index)
+        if view is not None:
+            await self._record_reads_audit(
+                action="rounds.advance",
+                clinician_id=clinician_id,
+                patient_ids=[view.current.patient_id],
+            )
+        return view
 
     async def jump(self, clinician_id: ClinicianId, target: PatientId) -> RoundView:
         """Move the cursor to ``target`` (already on the list); return its card.
@@ -151,9 +172,45 @@ class RoundsService:
             view = await _view_at(repo, ordered, index)
         if view is None:
             raise NoActiveRoundError
+        await self._record_reads_audit(
+            action="rounds.jump",
+            clinician_id=clinician_id,
+            patient_ids=[view.current.patient_id],
+        )
         return view
 
     # --- collaborators ----------------------------------------------------
+
+    async def _record_reads_audit(
+        self,
+        *,
+        action: str,
+        clinician_id: ClinicianId,
+        patient_ids: Sequence[PatientId],
+    ) -> None:
+        """Append one HIPAA access-trail row per patient chart read.
+
+        Fail-open: the card is already served, so a failed audit write must
+        never turn a round step into an error. All rows for one step share a
+        single transaction; any failure is logged and swallowed.
+        """
+        if not patient_ids:
+            return
+        try:
+            async with session_scope() as session:
+                repo = MemoryRepository(session)
+                for pid in patient_ids:
+                    await repo.record_audit(
+                        correlation_id=current_correlation_id(),
+                        action=action,
+                        patient_id=pid,
+                        clinician_id=clinician_id.value,
+                    )
+        except Exception:
+            _logger.exception(
+                "failed to write rounds read audit rows",
+                extra={"action": action, "clinician_id": clinician_id.value},
+            )
 
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a rounding synthesis.

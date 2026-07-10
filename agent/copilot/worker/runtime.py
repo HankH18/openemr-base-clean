@@ -31,7 +31,12 @@ from copilot.domain.primitives import PatientId
 from copilot.memory.db import session_scope
 from copilot.memory.models import RoundingCursorRow
 from copilot.memory.repository import MemoryRepository
-from copilot.observability import NoopObservability, Observability
+from copilot.observability import (
+    NoopObservability,
+    Observability,
+    current_correlation_id,
+    generate_correlation_id,
+)
 from copilot.verification.core import Verifier
 from copilot.verification.rules import default_rules
 from copilot.worker.pipeline import RefreshPipeline
@@ -65,7 +70,16 @@ class _RuntimePoller(Poller):
                 repository=repo,
                 observability=self._obs,
             )
-            return await inner.tick(patient_id)
+            result = await inner.tick(patient_id)
+            # HIPAA §164.312(b): the tick read this patient's chart from
+            # OpenEMR. Trail it atomically with the tick's own state write.
+            # Background ticks carry no request correlation id, so mint one.
+            await repo.record_audit(
+                correlation_id=current_correlation_id() or generate_correlation_id(),
+                action="poller.read",
+                patient_id=patient_id,
+            )
+            return result
 
 
 def build_poller_scheduler(

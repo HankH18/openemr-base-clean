@@ -17,6 +17,12 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from copilot.auth.roles import (
+    ROLE_HEADER,
+    UnknownClinicalRoleError,
+    may_lead_round,
+    parse_role,
+)
 from copilot.config import get_settings
 from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.observability import Observability
@@ -54,8 +60,22 @@ def _view_body(view: RoundView) -> dict[str, Any]:
     return {"current": view.current, "order": view.order}
 
 
+_ROLE_REFUSED = "Your clinical role is not permitted to lead a round"
+
+
 @router.post("/start", summary="Begin a round; returns the sickest patient's card")
 async def start(req: StartRequest, request: Request) -> dict[str, Any]:
+    # Role gate (feat_roles): leading a round is a rounding activity. Parse the
+    # clinician's role from the header (absent → physician, backward-compatible)
+    # and refuse anyone who may not lead — before any service work. Generic
+    # reason: no internal detail about the role model.
+    try:
+        role = parse_role(request.headers.get(ROLE_HEADER))
+    except UnknownClinicalRoleError:
+        raise HTTPException(status_code=403, detail=_ROLE_REFUSED) from None
+    if not may_lead_round(role):
+        raise HTTPException(status_code=403, detail=_ROLE_REFUSED)
+
     obs: Observability = request.app.state.observability
     async with obs.span("rounds.start", clinician_id=req.clinician_id):
         view = await _service().start(

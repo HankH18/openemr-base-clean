@@ -18,6 +18,8 @@ reply.
 
 from __future__ import annotations
 
+import logging
+
 from pydantic import BaseModel, ConfigDict
 
 from copilot.agent.base import ConversationTurn
@@ -30,8 +32,10 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
-from copilot.observability import NoopObservability, Observability
+from copilot.observability import NoopObservability, Observability, current_correlation_id
 from copilot.verification.serve import verify_answer
+
+_logger = logging.getLogger(__name__)
 
 # Shown whenever nothing groundable backs the answer — the honest,
 # evidence-free reply that surfaces uncertainty instead of guessing.
@@ -115,6 +119,9 @@ class ChatService:
             await repo.append_message(resolved_id, "user", message)
             await repo.append_message(resolved_id, "assistant", answer)
 
+        # HIPAA §164.312(b): every PHI read leaves an append-only trail.
+        await self._record_read_audit(clinician_id, patient_id, claims)
+
         return ChatReply(
             answer=answer,
             claims=claims,
@@ -125,6 +132,32 @@ class ChatService:
         )
 
     # --- collaborators ----------------------------------------------------
+
+    async def _record_read_audit(
+        self, clinician_id: ClinicianId, patient_id: PatientId, claims: list[Claim]
+    ) -> None:
+        """Append the HIPAA access-trail row for this chat PHI read.
+
+        Fail-open: the answer is already produced and returned to the
+        clinician, so a failed audit write must never turn a served read into
+        an error. The write runs in its own transaction; any failure is logged
+        and swallowed. ``resources_returned`` is the set of FHIR resources the
+        answer actually cited (empty when the turn was withheld).
+        """
+        try:
+            async with session_scope() as session:
+                await MemoryRepository(session).record_audit(
+                    correlation_id=current_correlation_id(),
+                    action="chat",
+                    patient_id=patient_id,
+                    clinician_id=clinician_id.value,
+                    resources_returned=[claim.source_ref.resource_id for claim in claims],
+                )
+        except Exception:
+            _logger.exception(
+                "failed to write chat read audit row",
+                extra={"patient_id": patient_id.value, "clinician_id": clinician_id.value},
+            )
 
     async def _resolve_conversation(
         self,

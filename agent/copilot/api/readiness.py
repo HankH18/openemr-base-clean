@@ -53,35 +53,74 @@ async def probe_openemr_fhir(
         return ReadinessDependency(name="openemr_fhir", ok=False, detail=type(exc).__name__)
 
 
-async def probe_llm(settings: Settings) -> ReadinessDependency:
-    """LLM readiness — presence of API key.
+async def probe_llm(
+    settings: Settings, client_factory: Callable[[], httpx.AsyncClient] | None = None
+) -> ReadinessDependency:
+    """LLM readiness — the provider must be *reachable*, not merely configured.
 
-    A real ping against Anthropic happens once the client is wired (Unit
-    3).  For scaffold, absence of the key is not-ready by design —
-    ``/ready`` refuses to say "yes" until the operator has provisioned it.
+    A set key pointed at a dead backend is not ready: we attempt a short
+    ``GET {anthropic_base_url}/v1/models`` with the key. Any HTTP response
+    (even 401 for a bad key) proves the endpoint answered, so the provider is
+    reachable; only a transport failure (refused/DNS/timeout) is not-ready.
+    Absence of the key stays not-ready without a network call — there is
+    nothing to ping.
     """
-    if settings.anthropic_api_key:
-        return ReadinessDependency(name="llm", ok=True, detail="key present")
-    return ReadinessDependency(name="llm", ok=False, detail="ANTHROPIC_API_KEY not set")
+    if not settings.anthropic_api_key:
+        return ReadinessDependency(name="llm", ok=False, detail="ANTHROPIC_API_KEY not set")
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=2.0))
+    url = settings.anthropic_base_url.rstrip("/") + "/v1/models"
+    headers = {
+        "x-api-key": settings.anthropic_api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    try:
+        async with factory() as client:
+            resp = await client.get(url, headers=headers)
+        # Reachable == the real provider answered with a well-formed 200 payload.
+        # A bare/empty 200 (a dead port, a catch-all proxy) is NOT proof the LLM
+        # backend is up — mirror probe_openemr_fhir, which validates content, not
+        # just status.
+        if resp.status_code == 200 and isinstance(resp.json(), dict):
+            return ReadinessDependency(name="llm", ok=True, detail="reachable")
+        return ReadinessDependency(name="llm", ok=False, detail=f"status={resp.status_code}")
+    except Exception as exc:
+        return ReadinessDependency(name="llm", ok=False, detail=type(exc).__name__)
 
 
-async def probe_langfuse(settings: Settings) -> ReadinessDependency:
-    """Langfuse readiness — advisory, never gating.
+async def probe_langfuse(
+    settings: Settings, client_factory: Callable[[], httpx.AsyncClient] | None = None
+) -> ReadinessDependency:
+    """Langfuse readiness — reachability, but advisory (never gating).
 
-    Observability is valuable but must not pull the service out of rotation: a
-    missing Langfuse config should not turn `/ready` into 503, because chat and
-    rounds do not depend on it. Its state is still reported for visibility, but
-    flagged ``advisory`` so it never blocks readiness.
+    Observability is valuable but must not pull the service out of rotation, so
+    the result is always flagged ``advisory``: a failing Langfuse never turns
+    ``/ready`` into a 503. Semantics still verify reachability rather than mere
+    credential presence — with all three creds set we ping the host's public
+    health endpoint (short timeout); a transport failure reports not-ok.
     """
     configured = bool(
         settings.langfuse_host and settings.langfuse_public_key and settings.langfuse_secret_key
     )
-    return ReadinessDependency(
-        name="langfuse",
-        ok=configured,
-        detail="creds present" if configured else "not configured (advisory)",
-        advisory=True,
-    )
+    if not configured:
+        return ReadinessDependency(
+            name="langfuse", ok=False, detail="not configured (advisory)", advisory=True
+        )
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=2.0))
+    url = settings.langfuse_host.rstrip("/") + "/api/public/health"
+    try:
+        async with factory() as client:
+            resp = await client.get(url)
+        # As with the LLM probe, an empty/opaque 200 does not prove Langfuse is
+        # actually up; require a well-formed JSON health payload.
+        if resp.status_code == 200 and isinstance(resp.json(), dict):
+            return ReadinessDependency(name="langfuse", ok=True, detail="reachable", advisory=True)
+        return ReadinessDependency(
+            name="langfuse", ok=False, detail=f"status={resp.status_code}", advisory=True
+        )
+    except Exception as exc:
+        return ReadinessDependency(
+            name="langfuse", ok=False, detail=type(exc).__name__, advisory=True
+        )
 
 
 async def run_all(

@@ -70,9 +70,14 @@ async def test_probe_openemr_fhir_fail_on_connection_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_llm_ok_when_key_present() -> None:
-    dep = await readiness.probe_llm(Settings(anthropic_api_key="sk-testing"))
+async def test_probe_llm_ok_when_backend_reachable() -> None:
+    """A set key plus a reachable provider (any HTTP response) is ready."""
+    settings = Settings(anthropic_api_key="sk-testing", anthropic_base_url="https://llm.test")
+    with respx.mock(base_url="https://llm.test") as mock:
+        mock.get("/v1/models").respond(200, json={"data": []})
+        dep = await readiness.probe_llm(settings)
     assert dep.ok is True
+    assert dep.name == "llm"
 
 
 @pytest.mark.asyncio
@@ -83,19 +88,49 @@ async def test_probe_llm_not_ready_when_key_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_probe_langfuse_requires_all_three_env_vars() -> None:
-    ok = await readiness.probe_langfuse(
-        Settings(
-            langfuse_host="https://cloud.langfuse.com",
-            langfuse_public_key="pk",
-            langfuse_secret_key="sk",
-        )
-    )
-    assert ok.ok is True
-    assert ok.advisory is True  # observability is reported but never gates readiness
+async def test_probe_llm_fail_when_backend_unreachable() -> None:
+    """A set key pointed at a dead provider is NOT ready — reachability, not presence."""
+    settings = Settings(anthropic_api_key="sk-testing", anthropic_base_url="https://llm.test")
+    with respx.mock(base_url="https://llm.test") as mock:
+        mock.get("/v1/models").mock(side_effect=httpx.ConnectError("boom"))
+        dep = await readiness.probe_llm(settings)
+    assert dep.ok is False
+    assert dep.detail == "ConnectError"
 
+
+@pytest.mark.asyncio
+async def test_probe_langfuse_ok_when_host_reachable() -> None:
+    settings = Settings(
+        langfuse_host="https://langfuse.test",
+        langfuse_public_key="pk",
+        langfuse_secret_key="sk",
+    )
+    with respx.mock(base_url="https://langfuse.test") as mock:
+        mock.get("/api/public/health").respond(200, json={"status": "OK"})
+        dep = await readiness.probe_langfuse(settings)
+    assert dep.ok is True
+    assert dep.advisory is True  # observability is reported but never gates readiness
+
+
+@pytest.mark.asyncio
+async def test_probe_langfuse_not_ready_but_advisory_when_not_configured() -> None:
     partial = await readiness.probe_langfuse(
-        Settings(langfuse_host="https://cloud.langfuse.com", langfuse_public_key="pk")
+        Settings(langfuse_host="https://langfuse.test", langfuse_public_key="pk")
     )
     assert partial.ok is False
     assert partial.advisory is True
+
+
+@pytest.mark.asyncio
+async def test_probe_langfuse_fail_when_host_unreachable() -> None:
+    """Creds set but the host is down: not reachable => not ok, still advisory."""
+    settings = Settings(
+        langfuse_host="https://langfuse.test",
+        langfuse_public_key="pk",
+        langfuse_secret_key="sk",
+    )
+    with respx.mock(base_url="https://langfuse.test") as mock:
+        mock.get("/api/public/health").mock(side_effect=httpx.ConnectError("down"))
+        dep = await readiness.probe_langfuse(settings)
+    assert dep.ok is False
+    assert dep.advisory is True

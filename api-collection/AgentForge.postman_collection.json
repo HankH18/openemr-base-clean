@@ -1,0 +1,112 @@
+{
+  "info": {
+    "name": "AgentForge Clinical Co-Pilot",
+    "description": "Grounded clinical co-pilot agent (copilot): chat + rounds + health/ready. Requests point at {{baseUrl}}.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8010" },
+    { "key": "clinician_id", "value": "1" },
+    { "key": "patient_id", "value": "101" },
+    { "key": "conversation_id", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Health (liveness)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] },
+        "description": "Liveness probe. 200 while the process can serve."
+      }
+    },
+    {
+      "name": "Ready (dependencies)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/ready", "host": ["{{baseUrl}}"], "path": ["ready"] },
+        "description": "Readiness. 200 when Postgres + OpenEMR FHIR + LLM reachable; 503 otherwise (Langfuse advisory)."
+      }
+    },
+    {
+      "name": "Chat (grounded drill-down)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": {{patient_id}},\n  \"message\": \"What is the patient's most recent potassium?\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/chat", "host": ["{{baseUrl}}"], "path": ["v1", "chat"] },
+        "description": "POST /v1/chat — grounded answer, verified against a live FHIR re-fetch; ungroundable questions are withheld (fail-closed). Requires the patient on an active round (else 403). Optional conversation_id continues a thread."
+      }
+    },
+    {
+      "name": "Get Conversation",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/conversations/{{conversation_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "conversations", "{{conversation_id}}"]
+        },
+        "description": "GET /v1/conversations/{id} — read a conversation's turns in order."
+      }
+    },
+    {
+      "name": "Rounds Start",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_ids\": [101, 102, 103]\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/rounds/start", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "start"] },
+        "description": "POST /v1/rounds/start — acuity-rank a patient list, persist a cursor, return the sickest card. Also authorizes chat about those patients."
+      }
+    },
+    {
+      "name": "Rounds Current",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/rounds/current?clinician_id={{clinician_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "rounds", "current"],
+          "query": [{ "key": "clinician_id", "value": "{{clinician_id}}" }]
+        },
+        "description": "GET /v1/rounds/current — current card from the persisted cursor (pure DB read). 404 if no active round."
+      }
+    },
+    {
+      "name": "Rounds Advance",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"completed_patient_id\": 101\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/rounds/advance", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "advance"] },
+        "description": "POST /v1/rounds/advance — mark current patient done, return next card or {done:true}."
+      }
+    },
+    {
+      "name": "Rounds Jump",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": 102\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/rounds/jump", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "jump"] },
+        "description": "POST /v1/rounds/jump — reposition the cursor to a patient already on the list."
+      }
+    }
+  ]
+}

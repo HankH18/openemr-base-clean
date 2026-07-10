@@ -18,7 +18,18 @@ from pathlib import Path
 import pytest
 
 ACC = Path(__file__).resolve().parent
-FEATURES = ["chat", "rounds", "authz", "background"]
+FEATURES = [
+    "chat",
+    "rounds",
+    "authz",
+    "background",
+    "audit",
+    "ready",
+    "roles",
+    "tokens",
+    "evals",
+    "artifacts",
+]
 
 
 class _Tally:

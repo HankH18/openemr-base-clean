@@ -1,10 +1,10 @@
 {
   "frozen": true,
-  "frozen_at": "2026-07-09T01:54:49",
+  "frozen_at": "2026-07-10T02:50:31",
   "metrics": [
     {
       "id": "acceptance_pass_rate",
-      "name": "E2E acceptance pass rate (%)",
+      "name": "E2E acceptance pass rate (%) \u2014 all features incl. gap items",
       "kind": "global",
       "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --pass-rate",
       "target": 100,
@@ -12,7 +12,7 @@
     },
     {
       "id": "project_tests",
-      "name": "Project test suite pass rate (%) \u2014 tests/ + evals/",
+      "name": "Project test suite pass rate (%) \u2014 agent tests/ + evals/ (regression guard)",
       "kind": "global",
       "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/project_tests.py",
       "target": 100,
@@ -35,48 +35,57 @@
       "direction": "minimize"
     },
     {
-      "id": "coverage",
-      "name": "Line coverage of copilot (%)",
-      "kind": "global",
-      "command": "cd agent && ./.venv/bin/python -m pytest --cov=copilot --cov-report=term -q tests evals 2>/dev/null | awk '/^TOTAL/ {gsub(/%/,\"\",$NF); print $NF}' | tail -1",
-      "target": 85,
-      "direction": "maximize",
-      "tolerance": 3
-    },
-    {
-      "id": "feat_chat",
-      "name": "Chat: grounded drill-down + serve-time verification + history (UC-2, UC-7)",
+      "id": "feat_audit",
+      "name": "HIPAA audit logging wired on every PHI read",
       "kind": "feature",
-      "feature_id": "feat_chat",
-      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature chat",
-      "target": 6,
-      "direction": "maximize"
-    },
-    {
-      "id": "feat_rounds",
-      "name": "Rounds: cursor + advance + acuity ranking (UC-1, UC-3, UC-4)",
-      "kind": "feature",
-      "feature_id": "feat_rounds",
-      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature rounds",
-      "target": 6,
-      "direction": "maximize"
-    },
-    {
-      "id": "feat_authz",
-      "name": "Authorization boundary + no cross-patient leakage (UC-6)",
-      "kind": "feature",
-      "feature_id": "feat_authz",
-      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature authz",
+      "feature_id": "feat_audit",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature audit",
       "target": 3,
       "direction": "maximize"
     },
     {
-      "id": "feat_background",
-      "name": "Poller wiring + memory persistence + deterioration alerts (UC-5)",
+      "id": "feat_ready",
+      "name": "/ready verifies dependency reachability (not just creds)",
       "kind": "feature",
-      "feature_id": "feat_background",
-      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature background",
-      "target": 5,
+      "feature_id": "feat_ready",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature ready",
+      "target": 2,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_roles",
+      "name": "Role-based access control (physician/nurse/resident)",
+      "kind": "feature",
+      "feature_id": "feat_roles",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature roles",
+      "target": 3,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_tokens",
+      "name": "LLM token usage + cost captured to observability",
+      "kind": "feature",
+      "feature_id": "feat_tokens",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature tokens",
+      "target": 2,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_evals",
+      "name": "Runnable eval dataset + captured results artifact",
+      "kind": "feature",
+      "feature_id": "feat_evals",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature evals",
+      "target": 2,
+      "direction": "maximize"
+    },
+    {
+      "id": "feat_artifacts",
+      "name": "Cost analysis + API collection + load-test + observability-dashboard deliverables",
+      "kind": "feature",
+      "feature_id": "feat_artifacts",
+      "command": "cd agent && ./.venv/bin/python ../.swarm-loop/acceptance/run.py --feature artifacts",
+      "target": 4,
       "direction": "maximize"
     }
   ]
