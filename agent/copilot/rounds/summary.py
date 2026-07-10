@@ -116,12 +116,26 @@ def _sort_key(res: Mapping[str, Any]) -> datetime:
     return _effective(res) or datetime.min.replace(tzinfo=UTC)
 
 
+# OpenEMR emits UCUM codes in valueQuantity.unit; map the common vitals ones to
+# the display a clinician expects. Anything unmapped passes through verbatim.
+_UNIT_DISPLAY: dict[str, str] = {
+    "in_i": "in",
+    "[in_i]": "in",
+    "lb_av": "lb",
+    "[lb_av]": "lb",
+    "degF": "°F",
+    "[degF]": "°F",
+    "Cel": "°C",
+    "degC": "°C",
+}
+
+
 def _unit(res: Mapping[str, Any]) -> str:
     q = res.get("valueQuantity")
     if isinstance(q, Mapping):
         unit = q.get("unit")
         if isinstance(unit, str) and unit.strip() and unit != "1":
-            return unit
+            return _UNIT_DISPLAY.get(unit, unit)
     return ""
 
 
