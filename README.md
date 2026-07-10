@@ -12,12 +12,14 @@ authorization.
 
 - **Agent service** — `agent/` (Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy/Postgres ·
   Anthropic). Chat, rounds, background poller, deterministic fail-closed verification, memory
-  with provenance. 183+ tests; 20/20 E2E acceptance.
+  with provenance. 285 tests; full E2E acceptance suite green.
 - **Web UI** — `agent/web/` (React 18 · Vite · TypeScript · React Aria Components). The
   "Rounds Co-Pilot" panel: grounded cards with provenance chips, cited chat with
   served/withheld/degraded states, deterioration alerts. Light + dark.
 - **Docs** — [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`AUDIT.md`](AUDIT.md) ·
-  [`USERS.md`](USERS.md) · [`NOTES.md`](NOTES.md) · [`demo/SCRIPT.md`](demo/SCRIPT.md) ·
+  [`USERS.md`](USERS.md) · [`COST_ANALYSIS.md`](COST_ANALYSIS.md) ·
+  [`OBSERVABILITY.md`](OBSERVABILITY.md) · [`ACCESS.md`](ACCESS.md) ·
+  [`DEPLOY.md`](DEPLOY.md) · [`NOTES.md`](NOTES.md) · [`demo/SCRIPT.md`](demo/SCRIPT.md) ·
   build log [`RUNLOG.md`](RUNLOG.md).
 
 ## Quick start
@@ -28,7 +30,7 @@ cd docker/development-easy && docker compose up --detach --wait
 
 # Agent service (Python 3.12)
 cd agent && uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e '.[dev]'
-pytest -q                                   # 183+ passing, deterministic (no key/server needed)
+pytest -q                                   # 285 passing, deterministic (no key/server needed)
 uvicorn copilot.api.app:app --port 8000     # /health, /ready, /v1/rounds/*, /v1/chat
 
 # Rounds Co-Pilot UI (runs standalone on the seeded demo cohort — no backend needed)
@@ -39,7 +41,21 @@ cd agent/web && npm install && npm run dev
 **Operator actions to go fully live** (need credentials; intentionally not committed):
 `ANTHROPIC_API_KEY` (swaps the deterministic stub agent for live Claude), SMART client
 registrations (chat + backend-services poller), Langfuse creds, and deploy. **Demo data only —
-never real PHI.**  _Deployed URL: **paste on deploy**._
+never real PHI.**  _Deployed URL: **http://198.199.68.21/** — basic-auth user `demo` (password shared separately)._
+
+## Submission deliverables
+
+| Deliverable | Where |
+|---|---|
+| GitHub repository (fork + setup + architecture + deployed link) | this repo · [`ARCHITECTURE.md`](ARCHITECTURE.md) · Quick start above |
+| Audit document | [`AUDIT.md`](AUDIT.md) |
+| User doc + use cases | [`USERS.md`](USERS.md) |
+| Agent architecture | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| **Eval dataset + results** | [`agent/evals/`](agent/evals/) — 10-case hermetic suite ([`eval_dataset.jsonl`](agent/evals/eval_dataset.jsonl)), runner ([`run_evals.py`](agent/evals/run_evals.py)), recorded results [`EVAL_RESULTS.md`](agent/evals/EVAL_RESULTS.md) (10/10), plus LLM-backed [`test_grounding_evals.py`](agent/evals/test_grounding_evals.py) |
+| **AI cost analysis** | [`COST_ANALYSIS.md`](COST_ANALYSIS.md) — actual dev spend + 100 / 1K / 10K / 100K projections + per-tier architecture changes |
+| Deployed application | **http://198.199.68.21/** (live; basic-auth `demo`) |
+| Demo video script | [`demo/SCRIPT.md`](demo/SCRIPT.md) |
+| Observability + rigor (bonus) | [`OBSERVABILITY.md`](OBSERVABILITY.md) · load test [`loadtest/RESULTS.md`](loadtest/RESULTS.md) · API collections [`api-collection/`](api-collection/) |
 
 <!-- ────────────────────────────────────────────────────────────────────── -->
 
