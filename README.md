@@ -54,7 +54,7 @@ never real PHI.**  _Deployed URL: **http://198.199.68.21/** — basic-auth user 
 | **Eval dataset + results** | [`agent/evals/`](agent/evals/) — 10-case hermetic suite ([`eval_dataset.jsonl`](agent/evals/eval_dataset.jsonl)), runner ([`run_evals.py`](agent/evals/run_evals.py)), recorded results [`EVAL_RESULTS.md`](agent/evals/EVAL_RESULTS.md) (10/10), plus LLM-backed [`test_grounding_evals.py`](agent/evals/test_grounding_evals.py) |
 | **AI cost analysis** | [`COST_ANALYSIS.md`](COST_ANALYSIS.md) — actual dev spend + 100 / 1K / 10K / 100K projections + per-tier architecture changes |
 | Deployed application | **http://198.199.68.21/** (live; basic-auth `demo`) |
-| Demo video script | [`demo/SCRIPT.md`](demo/SCRIPT.md) |
+| **Demo video** | ▶ [Loom walkthrough](https://www.loom.com/share/762e2fa76307493594f48862e8cccee5) ([`demo/VIDEO.md`](demo/VIDEO.md)) · shot list [`demo/SCRIPT.md`](demo/SCRIPT.md) |
 | Observability + rigor (bonus) | [`OBSERVABILITY.md`](OBSERVABILITY.md) · load test [`loadtest/RESULTS.md`](loadtest/RESULTS.md) · API collections [`api-collection/`](api-collection/) |
 
 <!-- ────────────────────────────────────────────────────────────────────── -->
