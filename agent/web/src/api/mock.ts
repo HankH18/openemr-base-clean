@@ -10,6 +10,7 @@
 import type { CopilotApi } from './client';
 import { ALERT_REASON_1005, COHORT, type ChatFact, type CohortPatient, type CohortPhase } from './cohort';
 import { patientName } from '../census';
+import { newCorrelationId } from '../ids';
 import {
   ApiError,
   type ChatRequest,
@@ -289,7 +290,7 @@ export function createMockApi(): CopilotApi {
         claims: result.claims,
         verification: { action: result.action, passed: result.passed },
         conversation_id: conversationId,
-        correlation_id: req.correlation_id ?? `mock-${crypto.randomUUID()}`,
+        correlation_id: req.correlation_id ?? `mock-${newCorrelationId()}`,
       };
     },
 

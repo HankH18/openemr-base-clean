@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import type { CopilotApi } from '../api/client';
 import type { Claim, Verification } from '../api/types';
+import { newCorrelationId } from '../ids';
 
 export interface ChatMessage {
   id: string;
@@ -83,7 +84,7 @@ export function useChat(api: CopilotApi, clinicianId: number): ChatController {
           ...(conversationIds.current.has(patientId)
             ? { conversation_id: conversationIds.current.get(patientId) as number }
             : {}),
-          correlation_id: crypto.randomUUID(),
+          correlation_id: newCorrelationId(),
         });
         conversationIds.current.set(patientId, response.conversation_id);
         replace(patientId, placeholderId, {
