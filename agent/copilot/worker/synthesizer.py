@@ -88,15 +88,15 @@ class StubSynthesizer:
             if rtype is None or rid is None:
                 continue
             described = describe_resource(res)
-            if described is not None:
-                display, field, value = described
-                text = claim_text(str(rtype), display, str(value))
-            else:
-                field, value = _extract_stub_field(res)
-                text = f"{rtype}/{rid} → {field}={value}"
+            if described is None:
+                # No groundable concept/value (e.g. a vital-signs panel container
+                # whose only field is status=final) — skip it rather than surface
+                # a clinically meaningless "Observation/<uuid>" line on the card.
+                continue
+            display, field, value = described
             claims.append(
                 Claim(
-                    text=text,
+                    text=claim_text(str(rtype), display, str(value)),
                     source_ref=FhirReference(
                         resource_type=ResourceType(rtype)
                         if rtype in ResourceType.__members__
@@ -118,18 +118,6 @@ class StubSynthesizer:
             source_watermark=inputs.source_watermark,
             content_hash=content_hash_for_resources(list(inputs.resources)),
         )
-
-
-def _extract_stub_field(res: Mapping[str, Any]) -> tuple[str, str]:
-    """Best-effort (field, value) extraction for the stub."""
-    if "valueQuantity" in res and isinstance(res["valueQuantity"], Mapping):
-        v = res["valueQuantity"].get("value")
-        return "valueQuantity.value", str(v) if v is not None else ""
-    if "valueString" in res:
-        return "valueString", str(res["valueString"])
-    if "status" in res:
-        return "status", str(res["status"])
-    return "id", str(res.get("id", ""))
 
 
 # --- Claude ----------------------------------------------------------------
