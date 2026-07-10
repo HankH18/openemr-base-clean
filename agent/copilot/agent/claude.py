@@ -170,10 +170,13 @@ class ClaudeAgent:
     def _build_answer(
         self, text: str, fetched: dict[tuple[str, str], dict[str, Any]]
     ) -> AgentAnswer:
-        try:
-            payload = _ClaudeAnswer.model_validate_json(text)
-        except Exception as exc:
-            raise AgentError(f"Claude output was not valid JSON: {exc}") from exc
+        payload = _parse_answer(text)
+        if payload is None:
+            # The model didn't return parseable JSON — markdown fences, or a prose
+            # refusal to an out-of-scope question. Fail closed: no claims means the
+            # chat service withholds with an honest message. A chat turn must never
+            # 500 on a model formatting quirk.
+            return AgentAnswer(answer="", claims=[])
 
         claims: list[Claim] = []
         for c in payload.claims:
@@ -214,6 +217,30 @@ def _cache_bundle(bundle: dict[str, Any], fetched: dict[tuple[str, str], dict[st
         rid = res.get("id")
         if isinstance(rtype, str) and isinstance(rid, str):
             fetched[(rtype, rid)] = res
+
+
+def _parse_answer(text: str) -> _ClaudeAnswer | None:
+    """Parse the model reply into ``_ClaudeAnswer``, tolerating fences/prose.
+
+    Returns None when no valid answer object can be recovered, so the caller can
+    fail closed rather than raise — a chat turn must not 500 on a model quirk.
+    """
+    candidate = _json_object_slice(text)
+    if candidate is None:
+        return None
+    try:
+        return _ClaudeAnswer.model_validate_json(candidate)
+    except Exception:
+        return None
+
+
+def _json_object_slice(text: str) -> str | None:
+    """The outermost ``{...}`` span in ``text`` — strips code fences / prose."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    return text[start : end + 1]
 
 
 def _extract_text(response: Any) -> str:
