@@ -6,6 +6,12 @@
 .env.local
 # agent local secrets (private keys, etc.) — never commit
 agent/secrets/
+# deploy-time secrets: the single-VM stack mounts ./secrets/backend-key.pem at
+# the repo root, so this MUST be ignored or a stray `git clean` wipes the
+# backend-services private key on the droplet.
+/secrets/
+# stray compose backup files (e.g. docker-compose.deploy.yml.bak)
+*.bak
 
 # vendor and assets
 node_modules
