@@ -11,6 +11,7 @@ import type {
   ChatResponse,
   ConversationMessage,
   DeteriorationAlert,
+  ObservationSeries,
   RefreshOutcome,
   RoundView,
 } from './types';
@@ -34,6 +35,17 @@ export interface CopilotApi {
   jumpTo(clinicianId: number, patientId: number, unseenIds: number[]): Promise<RoundView>;
   chat(req: ChatRequest): Promise<ChatResponse>;
   getConversation(conversationId: number): Promise<ConversationMessage[]>;
+  /**
+   * Lazily fetch a patient's per-metric time series for the drill-down trend
+   * chart. Orthogonal to the verified-claim contract; each point is
+   * independently grounded. `metric` is the humanized label derived from the
+   * claim (e.g. "Troponin I"). An unknown metric returns an empty series.
+   */
+  observations(
+    clinicianId: number,
+    patientId: number,
+    metric: string,
+  ): Promise<ObservationSeries>;
 }
 
 export function createApi(): CopilotApi {

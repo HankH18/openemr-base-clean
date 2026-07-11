@@ -42,6 +42,39 @@ export function humanizeLabel(label: string): string {
     .join(' ');
 }
 
+/**
+ * The metric name an Observation claim is about — the leading run of words
+ * before the first token carrying a digit or a dash separator. "Troponin I
+ * 0.9 ng/mL — critical high" → "Troponin I"; "Potassium 5.6 mmol/L" →
+ * "Potassium". This is the humanized label the trend endpoint groups by.
+ * Falls back to the humanized resource type if no leading label is found.
+ */
+export function observationMetric(claim: Claim): string {
+  const words = claim.text.trim().split(/\s+/);
+  const out: string[] = [];
+  for (const w of words) {
+    if (/\d/.test(w) || /^[—–-]$/.test(w)) {
+      break;
+    }
+    out.push(w);
+  }
+  const label = out.join(' ').replace(/[.,:;]+$/, '').trim();
+  return label.length > 0 ? label : humanizeLabel(claim.source_ref.resource_type);
+}
+
+/**
+ * True when a claim is a numeric Observation — the only kind a trend chart
+ * makes sense for. A status/text Observation (e.g. cultures "pending") is
+ * excluded, so the "View trend" affordance never appears where it can't plot.
+ */
+export function isNumericObservation(claim: Claim): boolean {
+  if (claim.source_ref.resource_type !== 'Observation') {
+    return false;
+  }
+  const trimmed = claim.source_ref.value.trim();
+  return trimmed !== '' && Number.isFinite(Number(trimmed));
+}
+
 /** Trim, lowercase, and drop trailing dots so medication values compare cleanly. */
 function normalizeMedicationValue(value: string): string {
   return value.trim().toLowerCase().replace(/\.+$/, '').trim();

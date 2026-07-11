@@ -1,8 +1,68 @@
-import type { ReactNode } from 'react';
-import type { Claim } from '../api/types';
+import { useCallback, useState, type ReactNode } from 'react';
+import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
+import type { Claim, ObservationSeries } from '../api/types';
 import { claimTone, type ClaimTone } from '../fmt';
-import { humanizeLabel } from '../labels';
+import { humanizeLabel, isNumericObservation, observationMetric } from '../labels';
+import { MetricChart } from './MetricChart';
 import { ProvenanceChip } from './ProvenanceChip';
+
+type FetchTrend = (metric: string) => Promise<ObservationSeries>;
+type TrendState = 'idle' | 'loading' | 'ready' | 'error';
+
+/**
+ * "View trend" affordance for a numeric Observation claim. Mirrors the
+ * ProvenanceChip DialogTrigger/Popover pattern; the series is fetched lazily
+ * the first time the popover opens, then rendered as a MetricChart.
+ */
+function TrendChip({ claim, fetchTrend }: { claim: Claim; fetchTrend: FetchTrend }): JSX.Element {
+  const metric = observationMetric(claim);
+  const [state, setState] = useState<TrendState>('idle');
+  const [series, setSeries] = useState<ObservationSeries | null>(null);
+
+  const load = useCallback(() => {
+    setState('loading');
+    fetchTrend(metric)
+      .then((result) => {
+        setSeries(result);
+        setState('ready');
+      })
+      .catch(() => {
+        setState('error');
+      });
+  }, [fetchTrend, metric]);
+
+  return (
+    <DialogTrigger
+      onOpenChange={(open) => {
+        if (open && state === 'idle') {
+          load();
+        }
+      }}
+    >
+      <Button className="trend-chip" aria-label={`View ${metric} trend`}>
+        <svg className="trend-chip-spark" viewBox="0 0 12 8" aria-hidden="true">
+          <polyline points="0,7 3,5 6,6 9,1 12,2" />
+        </svg>
+        <span className="trend-chip-text">Trend</span>
+      </Button>
+      <Popover className="trend-pop" placement="bottom end" offset={6}>
+        <Dialog className="trend-pop-dialog" aria-label={`${metric} trend`}>
+          {state === 'ready' && series !== null ? (
+            series.points.length > 0 ? (
+              <MetricChart series={series} />
+            ) : (
+              <p className="trend-empty">No serial readings on file for {metric}.</p>
+            )
+          ) : state === 'error' ? (
+            <p className="trend-empty">Trend unavailable right now.</p>
+          ) : (
+            <p className="trend-loading">Loading {metric} trend…</p>
+          )}
+        </Dialog>
+      </Popover>
+    </DialogTrigger>
+  );
+}
 
 /**
  * Bold the recorded value inside a text segment, toned by severity. Returns
@@ -56,16 +116,24 @@ function claimText(claim: Claim): ReactNode {
 export function ClaimList({
   claims,
   dense = false,
+  fetchTrend,
 }: {
   claims: Claim[];
   dense?: boolean;
+  /** When provided, numeric Observation claims gain a "View trend" chart. */
+  fetchTrend?: FetchTrend;
 }): JSX.Element {
   return (
     <ul className={dense ? 'claims claims--dense' : 'claims'}>
       {claims.map((claim, i) => (
         <li className="claim" key={`${claim.source_ref.resource_id}-${i}`}>
           <span className="claim-text">{claimText(claim)}</span>
-          <ProvenanceChip source={claim.source_ref} />
+          <span className="claim-tools">
+            {fetchTrend !== undefined && isNumericObservation(claim) ? (
+              <TrendChip claim={claim} fetchTrend={fetchTrend} />
+            ) : null}
+            <ProvenanceChip source={claim.source_ref} />
+          </span>
         </li>
       ))}
     </ul>

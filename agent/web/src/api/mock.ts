@@ -302,5 +302,27 @@ export function createMockApi(): CopilotApi {
       }
       return [...log];
     },
+
+    async observations(_clinicianId, patientId, metric) {
+      await delay(jitter(240, 220));
+      const patient = requirePatient(patientId);
+      const empty = { patient_id: patientId, metric, unit: '', reference_range: null, points: [] };
+      const catalogue = patient.series;
+      if (catalogue === undefined) {
+        return empty;
+      }
+      const key = metric.trim().toLowerCase();
+      const match = Object.entries(catalogue).find(([name]) => {
+        const n = name.toLowerCase();
+        // Tolerant match: the drill-down may hand us a fuller phrase than the
+        // canonical label (e.g. "Heart rate trending up" vs "Heart rate").
+        return n === key || key.startsWith(n) || n.startsWith(key);
+      });
+      if (match === undefined) {
+        // Unknown metric — an honest empty series, never fabricated.
+        return empty;
+      }
+      return { ...match[1], patient_id: patientId };
+    },
   };
 }

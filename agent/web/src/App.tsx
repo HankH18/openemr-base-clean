@@ -248,6 +248,7 @@ export function App(): JSX.Element {
                 isLast={unseenCount <= 1}
                 busy={rounds.busy}
                 onDone={handleDone}
+                fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
               />
               <ChatPanel
                 given={entry?.given ?? `patient ${card.patient_id}`}
@@ -257,6 +258,7 @@ export function App(): JSX.Element {
                 onSend={(message) => {
                   void chat.send(card.patient_id, message);
                 }}
+                fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
               />
             </div>
           </main>

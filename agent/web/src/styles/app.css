@@ -13,8 +13,24 @@
 .mode-tag,
 .msg-a-foot,
 .prov-meta dd,
+.metric-tick,
+.metric-endlabel,
 .hero-overline {
   font-variant-numeric: tabular-nums;
+}
+
+/* Screen-reader-only, for the chart's data-table fallback. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ---------------------------------------------------------------- motion */
@@ -820,6 +836,203 @@
   font-style: italic;
   font-size: 13px;
   color: var(--ink-soft);
+}
+
+/* The action chips that trail a claim (view trend + provenance). */
+.claim-tools {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+/* --------------------------------------------------------- trend chart */
+
+.trend-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.trend-chip[data-hovered] {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+.trend-chip[data-pressed] {
+  background: var(--accent-soft);
+}
+
+.trend-chip-spark {
+  width: 12px;
+  height: 8px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-chip-text {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.trend-chip[data-hovered] .trend-chip-text {
+  color: var(--accent);
+}
+
+.trend-pop[data-entering] {
+  animation: pop-in 140ms ease-out;
+}
+
+.trend-pop[data-exiting] {
+  animation: pop-out 100ms ease-in;
+}
+
+.trend-pop-dialog {
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  padding: 14px 16px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+.trend-loading,
+.trend-empty {
+  padding: 10px 2px;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+.trend-loading {
+  animation: soft-pulse 1.2s ease-in-out infinite;
+}
+
+.metric-chart {
+  margin: 0;
+}
+
+.metric-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.metric-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 16px;
+  font-weight: 520;
+}
+
+.metric-unit {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.metric-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.metric-band {
+  fill: var(--accent-soft);
+  opacity: 0.5;
+}
+
+.metric-refline {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.metric-axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.metric-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.metric-pt {
+  fill: var(--accent);
+  stroke: var(--raised);
+  stroke-width: 2;
+}
+
+.metric-pt--warning {
+  fill: var(--warning);
+}
+
+.metric-pt--critical {
+  fill: var(--critical);
+}
+
+.metric-tick {
+  fill: var(--ink-faint);
+  font-family: var(--font-data);
+  font-size: 8.5px;
+}
+
+.metric-endlabel {
+  fill: var(--ink);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 640;
+}
+
+.metric-caption {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+/* The 2px line-draw reveal is motion; only when the user allows it. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes metric-draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  .metric-line {
+    stroke-dasharray: 1;
+    animation: metric-draw 650ms ease-out;
+  }
 }
 
 /* ------------------------------------------------------------------ chat */

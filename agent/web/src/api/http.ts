@@ -10,6 +10,7 @@ import {
   normalizeAlerts,
   normalizeChat,
   normalizeConversation,
+  normalizeObservationSeries,
   normalizeRefresh,
   normalizeRoundView,
 } from './normalize';
@@ -94,6 +95,14 @@ export function createHttpApi(base: string): CopilotApi {
     async getConversation(conversationId) {
       const raw = await get(`/v1/conversations/${conversationId}`);
       return normalizeConversation(raw);
+    },
+
+    async observations(clinicianId, patientId, metric) {
+      const raw = await get(
+        `/v1/patients/${patientId}/observations?metric=${encodeURIComponent(metric)}` +
+          `&clinician_id=${clinicianId}`,
+      );
+      return normalizeObservationSeries(raw);
     },
   };
 }

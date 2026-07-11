@@ -13,7 +13,10 @@ import {
   type ConversationMessage,
   type DeteriorationAlert,
   type Freshness,
+  type ObservationSeries,
+  type ObservationSeriesPoint,
   type PatientCard,
+  type ReferenceRange,
   type RefreshOutcome,
   type RoundView,
   type SourceRef,
@@ -58,11 +61,15 @@ function normalizeSourceRef(v: unknown): SourceRef {
   if (!isRecord(v)) {
     fail('source_ref');
   }
+  // Timestamp is optional and non-gating — read it tolerantly, never fail on
+  // absence. A non-string (or missing) value normalizes to null.
+  const timestamp = v['timestamp'];
   return {
     resource_type: asString(v['resource_type'], 'source_ref.resource_type'),
     resource_id: asString(v['resource_id'], 'source_ref.resource_id'),
     field: asString(v['field'], 'source_ref.field'),
     value: asString(v['value'], 'source_ref.value'),
+    timestamp: typeof timestamp === 'string' ? timestamp : null,
   };
 }
 
@@ -185,6 +192,80 @@ export function normalizeChat(v: unknown): ChatResponse {
     verification: normalizeVerification(v['verification']),
     conversation_id: normalizeId(v['conversation_id'], 'chat.conversation_id'),
     correlation_id: asString(v['correlation_id'], 'chat.correlation_id'),
+  };
+}
+
+/** Tolerant id read for the series endpoint — defaults to 0 rather than failing. */
+function looseId(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return v;
+  }
+  if (isRecord(v) && typeof v['value'] === 'number' && Number.isFinite(v['value'])) {
+    return v['value'];
+  }
+  return 0;
+}
+
+function looseString(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function normalizeReferenceRange(v: unknown): ReferenceRange | null {
+  if (!isRecord(v)) {
+    return null;
+  }
+  const low = v['low'];
+  const high = v['high'];
+  if (
+    typeof low === 'number' &&
+    Number.isFinite(low) &&
+    typeof high === 'number' &&
+    Number.isFinite(high)
+  ) {
+    return { low, high };
+  }
+  return null;
+}
+
+function normalizeObservationPoint(v: unknown): ObservationSeriesPoint | null {
+  if (!isRecord(v)) {
+    return null;
+  }
+  const value = looseString(v['value']);
+  const timestamp = looseString(v['timestamp']);
+  // A point with no value or no time can't be plotted or grounded — drop it.
+  if (value === '' || timestamp === '') {
+    return null;
+  }
+  return {
+    resource_id: looseString(v['resource_id']),
+    value,
+    timestamp,
+    abnormal: looseString(v['abnormal']),
+  };
+}
+
+/**
+ * Tolerant normalizer for the per-metric trend endpoint. Never throws on a
+ * missing field: an unrecognized shape becomes an empty series, and a point
+ * that can't be grounded is dropped rather than fabricated.
+ */
+export function normalizeObservationSeries(v: unknown): ObservationSeries {
+  if (!isRecord(v)) {
+    return { patient_id: 0, metric: '', unit: '', reference_range: null, points: [] };
+  }
+  const rawPoints = v['points'];
+  const points = Array.isArray(rawPoints)
+    ? rawPoints
+        .map(normalizeObservationPoint)
+        .filter((p): p is ObservationSeriesPoint => p !== null)
+    : [];
+  return {
+    patient_id: looseId(v['patient_id']),
+    metric: looseString(v['metric']),
+    unit: looseString(v['unit']),
+    reference_range: normalizeReferenceRange(v['reference_range']),
+    points,
   };
 }
 

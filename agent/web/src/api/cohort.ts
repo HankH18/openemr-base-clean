@@ -8,7 +8,7 @@
  * proactive-alert flow.
  */
 
-import type { Claim } from './types';
+import type { Claim, ObservationSeries, ObservationSeriesPoint, ReferenceRange } from './types';
 
 export interface ChatFact {
   /** Lowercased keywords; any hit answers with this fact. */
@@ -38,6 +38,13 @@ export interface CohortPatient {
   base: CohortPhase;
   deteriorated?: CohortPhase;
   facts: ChatFact[];
+  /**
+   * Per-metric trend series, keyed by the humanized metric label the
+   * drill-down derives from an Observation claim ("Troponin I", "Lactate", …).
+   * Lets the trend chart demo offline. Mirrors the shape/direction of the
+   * live seed's serial readings.
+   */
+  series?: Record<string, ObservationSeries>;
 }
 
 function claim(
@@ -52,6 +59,79 @@ function claim(
     source_ref: { resource_type: resourceType, resource_id: resourceId, field, value },
   };
 }
+
+// ---- Trend series (oldest→newest) -----------------------------------------
+// A single wall-clock anchor so timestamps are stable for the session; each
+// reading is placed a fixed number of hours before it.
+const SERIES_NOW = Date.now();
+
+function hoursAgo(h: number): string {
+  return new Date(SERIES_NOW - h * 3_600_000).toISOString();
+}
+
+function reading(
+  resourceId: string,
+  value: string,
+  hAgo: number,
+  abnormal: string,
+): ObservationSeriesPoint {
+  return { resource_id: resourceId, value, timestamp: hoursAgo(hAgo), abnormal };
+}
+
+function series(
+  patientId: number,
+  metric: string,
+  unit: string,
+  range: ReferenceRange | null,
+  points: ObservationSeriesPoint[],
+): ObservationSeries {
+  return { patient_id: patientId, metric, unit, reference_range: range, points };
+}
+
+// 1001 · rising troponin (NSTEMI) — last reading is the cited claim value 0.9.
+const TROP_SERIES_1001 = series(1001, 'Troponin I', 'ng/mL', { low: 0, high: 0.04 }, [
+  reading('trop-1001-a', '0.02', 22, ''),
+  reading('trop-1001-b', '0.05', 12, 'high'),
+  reading('trop-1001-c', '0.42', 6, 'vhigh'),
+  reading('trop-1001', '0.9', 1, 'vhigh'),
+]);
+
+// 1002 · potassium climbing onto the ACE inhibitor — ends at the cited 5.6.
+const K_SERIES_1002 = series(1002, 'Potassium', 'mmol/L', { low: 3.5, high: 5.1 }, [
+  reading('k-1002-a', '4.6', 20, ''),
+  reading('k-1002-b', '5.1', 8, ''),
+  reading('k-1002', '5.6', 1, 'high'),
+]);
+
+// 1003 · hemoglobin holding within range — a calm, all-normal trend.
+const HGB_SERIES_1003 = series(1003, 'Hemoglobin', 'g/dL', { low: 13.0, high: 17.0 }, [
+  reading('hgb-1003-a', '13.9', 30, ''),
+  reading('hgb-1003-b', '13.7', 14, ''),
+  reading('hgb-1003', '13.5', 2, ''),
+]);
+
+// 1004 · sodium stable and normal — ends at the cited 140.
+const NA_SERIES_1004 = series(1004, 'Sodium', 'mmol/L', { low: 135, high: 145 }, [
+  reading('na-1004-a', '138', 28, ''),
+  reading('na-1004-b', '139', 12, ''),
+  reading('na-1004', '140', 2, ''),
+]);
+
+// 1005 · serial lactate rising to critical — mirrors the live 1.9→2.8→4.2
+// trend, extended to the deteriorated card's cited 5.0.
+const LACT_SERIES_1005 = series(1005, 'Lactate', 'mmol/L', { low: 0.5, high: 2.0 }, [
+  reading('lact-1005-a', '1.9', 20, ''),
+  reading('lact-1005-b', '2.8', 10, 'high'),
+  reading('lact-1005-c', '4.2', 4, 'vhigh'),
+  reading('lact-1005', '5.0', 1, 'vhigh'),
+]);
+
+// 1005 · heart rate climbing over the last four hours — ends at the cited 118.
+const HR_SERIES_1005 = series(1005, 'Heart rate', 'bpm', { low: 60, high: 100 }, [
+  reading('hr-1005-a', '92', 4, ''),
+  reading('hr-1005-b', '104', 2, 'high'),
+  reading('hr-1005', '118', 1, 'high'),
+]);
 
 // ---- 1001 · Ernest Vaughn · NSTEMI ----------------------------------------
 
@@ -146,6 +226,7 @@ export const ALERT_REASON_1005 =
 export const COHORT: CohortPatient[] = [
   {
     id: 1001,
+    series: { 'Troponin I': TROP_SERIES_1001 },
     base: {
       acuity: 9.1,
       rankReason: 'critical troponin',
@@ -185,6 +266,7 @@ export const COHORT: CohortPatient[] = [
   },
   {
     id: 1002,
+    series: { Potassium: K_SERIES_1002 },
     base: {
       acuity: 5.4,
       rankReason: 'potassium rising on ACE inhibitor',
@@ -212,6 +294,7 @@ export const COHORT: CohortPatient[] = [
   },
   {
     id: 1003,
+    series: { Hemoglobin: HGB_SERIES_1003 },
     base: {
       acuity: 2.3,
       rankReason: 'drug–allergy conflict flagged',
@@ -238,6 +321,7 @@ export const COHORT: CohortPatient[] = [
   },
   {
     id: 1004,
+    series: { Sodium: NA_SERIES_1004 },
     base: {
       acuity: 1.2,
       rankReason: 'all results within reference',
@@ -263,6 +347,7 @@ export const COHORT: CohortPatient[] = [
   },
   {
     id: 1005,
+    series: { Lactate: LACT_SERIES_1005, 'Heart rate': HR_SERIES_1005 },
     base: {
       acuity: 4.2,
       rankReason: 'infection under treatment; lactate pending',

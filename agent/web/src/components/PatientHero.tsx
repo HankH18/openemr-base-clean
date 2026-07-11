@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import { Button } from 'react-aria-components';
-import type { PatientCard } from '../api/types';
+import type { ObservationSeries, PatientCard } from '../api/types';
 import { objectPronoun, type CensusEntry } from '../census';
 import { fmtClock, isSafetyClaim } from '../fmt';
 import { dedupeMedicationClaims } from '../labels';
@@ -26,6 +26,7 @@ export function PatientHero({
   isLast,
   busy,
   onDone,
+  fetchTrend,
 }: {
   card: PatientCard;
   entry: CensusEntry | undefined;
@@ -34,6 +35,7 @@ export function PatientHero({
   isLast: boolean;
   busy: boolean;
   onDone: () => void;
+  fetchTrend?: (metric: string) => Promise<ObservationSeries>;
 }): JSX.Element {
   const name = entry?.name ?? `Patient ${card.patient_id}`;
   const given = entry?.given ?? `patient ${card.patient_id}`;
@@ -89,7 +91,7 @@ export function PatientHero({
           </span>
         </div>
         {card.changes_since_last_seen.length > 0 ? (
-          <ClaimList claims={card.changes_since_last_seen} />
+          <ClaimList claims={card.changes_since_last_seen} fetchTrend={fetchTrend} />
         ) : (
           <p className="empty-changes">
             No recorded changes since your last review — last synthesis{' '}
@@ -105,7 +107,7 @@ export function PatientHero({
             {summaryClaims.length} {summaryClaims.length === 1 ? 'record' : 'records'}
           </span>
         </div>
-        <ClaimList claims={summaryClaims} />
+        <ClaimList claims={summaryClaims} fetchTrend={fetchTrend} />
       </section>
 
       <div className="hero-actions reveal" style={revealDelay(4)}>

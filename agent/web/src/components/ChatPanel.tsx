@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button, Input, TextField } from 'react-aria-components';
-import type { Verification } from '../api/types';
+import type { ObservationSeries, Verification } from '../api/types';
 import type { ChatMessage } from '../state/useChat';
 import { ClaimList } from './ClaimList';
+
+type FetchTrend = (metric: string) => Promise<ObservationSeries>;
 
 const VERIFICATION_LABEL: Record<Verification['action'], string> = {
   served: 'Verified — served',
@@ -18,7 +20,13 @@ function answerClass(message: ChatMessage): string {
   return `msg msg--a msg--${action}`;
 }
 
-function Answer({ message }: { message: ChatMessage }): JSX.Element {
+function Answer({
+  message,
+  fetchTrend,
+}: {
+  message: ChatMessage;
+  fetchTrend?: FetchTrend;
+}): JSX.Element {
   const action = message.verification?.action;
   return (
     <div className={answerClass(message)}>
@@ -36,7 +44,7 @@ function Answer({ message }: { message: ChatMessage }): JSX.Element {
       <p className={message.pending ? 'msg-a-body pending-pulse' : 'msg-a-body'}>{message.text}</p>
       {message.claims.length > 0 ? (
         <div className="msg-a-claims">
-          <ClaimList claims={message.claims} dense />
+          <ClaimList claims={message.claims} dense fetchTrend={fetchTrend} />
         </div>
       ) : null}
       {message.correlationId !== null ? (
@@ -56,12 +64,14 @@ export function ChatPanel({
   busy,
   suggestions,
   onSend,
+  fetchTrend,
 }: {
   given: string;
   messages: ChatMessage[];
   busy: boolean;
   suggestions: string[];
   onSend: (message: string) => void;
+  fetchTrend?: FetchTrend;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -107,7 +117,7 @@ export function ChatPanel({
               {message.text}
             </div>
           ) : (
-            <Answer message={message} key={message.id} />
+            <Answer message={message} key={message.id} fetchTrend={fetchTrend} />
           ),
         )}
       </div>

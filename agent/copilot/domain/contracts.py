@@ -118,6 +118,60 @@ class PatientCard(BaseModel):
     freshness: PatientCardFreshness
 
 
+# --- Observation time-series (drill-down) -----------------------------------
+
+
+class ReferenceRange(BaseModel):
+    """A metric's numeric reference bounds, each independently optional.
+
+    Parsed from an Observation's ``referenceRange[0]`` — ``null`` on the wire
+    when neither bound is derivable, so the chart never invents a band.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    low: float | None = None
+    high: float | None = None
+
+
+class ObservationSeriesPoint(BaseModel):
+    """One grounded reading in a metric time-series.
+
+    Each point is independently auditable — ``resource_id`` locates the exact
+    Observation, ``value`` is the verbatim source string (same discipline as a
+    claim), and ``timestamp`` is the raw ISO instant from ``extract_temporal``
+    (``effectiveDateTime`` → ``issued``). A point that cannot ground a value or
+    a timestamp is dropped upstream, never fabricated.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    resource_id: str = Field(min_length=1)
+    value: str = Field(description="Verbatim numeric value as a string, straight from source.")
+    timestamp: str = Field(min_length=1, description="Clinical instant, verbatim ISO string.")
+    abnormal: str = Field(
+        default="",
+        description="Observation interpretation / OpenEMR abnormal flag; '' when normal/absent.",
+    )
+
+
+class ObservationSeries(BaseModel):
+    """A patient's readings for one metric, oldest→newest, each grounded.
+
+    Orthogonal to the verified-claim contract: a lazily-fetched, patient-scoped
+    series feeding a drill-down chart. An unknown/absent metric yields an empty
+    ``points`` list (fail-closed), never a fabricated series.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    patient_id: int = Field(gt=0)
+    metric: str
+    unit: str = ""
+    reference_range: ReferenceRange | None = None
+    points: list[ObservationSeriesPoint] = Field(default_factory=list)
+
+
 # --- Verification -----------------------------------------------------------
 
 

@@ -10,6 +10,38 @@ export function fmtClock(iso: string): string {
   return `${hh}:${mm}`;
 }
 
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/**
+ * A record's clinically-meaningful timestamp: short date + HH:MM
+ * (e.g. "Jul 9, 05:30"). '—' on an invalid/absent date. Months come from a
+ * fixed table so the output is locale-independent.
+ */
+export function fmtStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return '—';
+  }
+  const mon = MONTHS[date.getMonth()] ?? '';
+  const day = date.getDate();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${mon} ${day}, ${hh}:${mm}`;
+}
+
 export function fmtAge(seconds: number): string {
   if (seconds < 60) {
     return 'just now';

@@ -1,5 +1,6 @@
 import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
 import type { SourceRef } from '../api/types';
+import { fmtStamp } from '../fmt';
 import { humanizeLabel } from '../labels';
 
 /**
@@ -28,6 +29,12 @@ export function ProvenanceChip({ source }: { source: SourceRef }): JSX.Element {
               <dt>Recorded value</dt>
               <dd className="prov-value">{source.value}</dd>
             </div>
+            {source.timestamp ? (
+              <div>
+                <dt>Recorded</dt>
+                <dd>{fmtStamp(source.timestamp)}</dd>
+              </div>
+            ) : null}
           </dl>
           <p className="prov-note">Quoted verbatim from the source record.</p>
         </Dialog>

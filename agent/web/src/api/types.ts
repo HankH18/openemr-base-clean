@@ -11,6 +11,12 @@ export interface SourceRef {
   field: string;
   /** Verbatim value from the source record — what verification compares against. */
   value: string;
+  /**
+   * Clinically meaningful time of the cited resource — authoredOn
+   * (MedicationRequest) or effectiveDateTime (Observation). Grounded, but
+   * NOT part of the value-match gate. Absent on timestamp-less claims.
+   */
+  timestamp?: string | null;
 }
 
 /** One assertion in a summary or a chat answer. */
@@ -44,6 +50,36 @@ export interface RoundView {
 }
 
 export type AdvanceResult = { done: true } | RoundView;
+
+/** Inclusive reference range for a metric, when the source records one. */
+export interface ReferenceRange {
+  low: number;
+  high: number;
+}
+
+/** One grounded reading in a per-metric time series. */
+export interface ObservationSeriesPoint {
+  resource_id: string;
+  /** Verbatim recorded value (kept as a string, like SourceRef.value). */
+  value: string;
+  /** ISO effective time of the reading. */
+  timestamp: string;
+  /** Abnormal flag from the source ('', 'high', 'vhigh', …); '' is normal. */
+  abnormal: string;
+}
+
+/**
+ * A lazily-fetched, per-metric series for the drill-down trend chart.
+ * Independent of the verified-claim contract: each point stays individually
+ * grounded (resource_id + value + timestamp). Points are oldest→newest.
+ */
+export interface ObservationSeries {
+  patient_id: number;
+  metric: string;
+  unit: string;
+  reference_range: ReferenceRange | null;
+  points: ObservationSeriesPoint[];
+}
 
 export interface RefreshOutcome {
   patient_id: number;
