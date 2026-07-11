@@ -13,6 +13,7 @@ from httpx import Response
 from copilot.fhir.auth import (
     BackendServicesTokenProvider,
     OAuthToken,
+    ResourceOwnerPasswordTokenProvider,
     SmartAppLaunchTokenProvider,
     TokenAcquisitionError,
 )
@@ -251,3 +252,125 @@ class TestBackendServices:
         # scopes are URL-encoded: 'system/Patient.read system/Observation.read' → '+' between
         assert "system%2FPatient.read" in posted["scope"]
         assert "system%2FObservation.read" in posted["scope"]
+
+
+# --- Resource-Owner Password (dedicated write user) -----------------------
+
+
+@pytest.mark.asyncio
+class TestResourceOwnerPassword:
+    @respx.mock
+    async def test_password_grant_exchange_sends_expected_fields(self) -> None:
+        route = respx.post("https://openemr.test/token").mock(
+            return_value=Response(
+                200,
+                json={
+                    "access_token": "write-1",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "write-refresh-1",
+                    "scope": "api:oemr user/vital.crus",
+                },
+            )
+        )
+        provider = ResourceOwnerPasswordTokenProvider(
+            token_url="https://openemr.test/token",
+            client_id="write-app",
+            username="copilot_writer",
+            password="s3cret",
+            client_secret="confidential-shhh",
+            scope="openid api:oemr user/vital.crus",
+        )
+        token = await provider.get_token()
+
+        assert token.access_token == "write-1"
+        assert token.refresh_token == "write-refresh-1"
+
+        posted = dict(x.split("=", 1) for x in route.calls[0].request.content.decode().split("&"))
+        assert posted["grant_type"] == "password"
+        assert posted["client_id"] == "write-app"
+        assert posted["username"] == "copilot_writer"
+        assert posted["password"] == "s3cret"
+        assert posted["user_role"] == "users"
+        assert posted["client_secret"] == "confidential-shhh"
+        assert "api%3Aoemr" in posted["scope"]
+
+    @respx.mock
+    async def test_second_call_uses_cache_when_fresh(self) -> None:
+        route = respx.post("https://openemr.test/token").mock(
+            return_value=Response(
+                200,
+                json={"access_token": "write-1", "token_type": "Bearer", "expires_in": 3600},
+            )
+        )
+        provider = ResourceOwnerPasswordTokenProvider(
+            token_url="https://openemr.test/token",
+            client_id="write-app",
+            username="copilot_writer",
+            password="s3cret",
+        )
+        first = await provider.get_token()
+        second = await provider.get_token()
+        assert first.access_token == second.access_token
+        assert route.call_count == 1
+
+    @respx.mock
+    async def test_force_refresh_uses_refresh_token(self) -> None:
+        route = respx.post("https://openemr.test/token").mock(
+            side_effect=[
+                Response(
+                    200,
+                    json={
+                        "access_token": "write-1",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "refresh_token": "refresh-1",
+                    },
+                ),
+                Response(
+                    200,
+                    json={"access_token": "write-2", "token_type": "Bearer", "expires_in": 3600},
+                ),
+            ]
+        )
+        provider = ResourceOwnerPasswordTokenProvider(
+            token_url="https://openemr.test/token",
+            client_id="write-app",
+            username="copilot_writer",
+            password="s3cret",
+        )
+        assert (await provider.get_token()).access_token == "write-1"
+        second = await provider.get_token(force=True)
+        assert second.access_token == "write-2"
+
+        posted = dict(x.split("=", 1) for x in route.calls[1].request.content.decode().split("&"))
+        assert posted["grant_type"] == "refresh_token"
+        assert posted["refresh_token"] == "refresh-1"
+
+    @respx.mock
+    async def test_raises_on_bad_credentials(self) -> None:
+        respx.post("https://openemr.test/token").mock(
+            return_value=Response(401, json={"error": "invalid_grant"})
+        )
+        provider = ResourceOwnerPasswordTokenProvider(
+            token_url="https://openemr.test/token",
+            client_id="write-app",
+            username="copilot_writer",
+            password="wrong",
+        )
+        with pytest.raises(TokenAcquisitionError):
+            await provider.get_token()
+
+
+def test_password_provider_secrets_are_not_in_repr() -> None:
+    # The password and client secret must never surface in a repr/log line.
+    provider = ResourceOwnerPasswordTokenProvider(
+        token_url="https://openemr.test/token",
+        client_id="write-app",
+        username="copilot_writer",
+        password="s3cret-password",
+        client_secret="s3cret-client",
+    )
+    text = repr(provider)
+    assert "s3cret-password" not in text
+    assert "s3cret-client" not in text

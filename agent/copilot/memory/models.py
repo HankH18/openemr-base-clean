@@ -154,6 +154,10 @@ class AuditLogRow(Base):
     patient_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     resources_returned: Mapped[list[str]] = mapped_column(JSONType, nullable=False, default=list)
+    # Physician-attribution surface for write-back: 'human_direct' (Phase 1) or
+    # 'agent_proposed_physician_confirmed' (Phase 2). Nullable — reads and all
+    # pre-write-back rows leave it NULL, so the column is fully backward-compatible.
+    entry_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utc_default, server_default=text("CURRENT_TIMESTAMP")
     )

@@ -97,6 +97,51 @@ class Settings(BaseSettings):
         description="Audience claim for the JWT assertion. Empty ⇒ the token URL.",
     )
 
+    # --- Write-back (physician direct-edit) -------------------------------
+
+    writeback_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for physician write-back. Defaults OFF so the live "
+            "app is byte-for-byte unchanged until an operator opts in. The write "
+            "client/token provider refuse to be built while this is false."
+        ),
+    )
+    write_client_id: str = Field(
+        default="",
+        description=(
+            "client_id of the DEDICATED write client (password grant) — never "
+            "the read poller's client. An ID, not a secret."
+        ),
+    )
+    write_client_secret: str = Field(
+        default="",
+        description="Secret for the confidential write client. Secrets-manager only; never logged.",
+    )
+    write_username: str = Field(
+        default="",
+        description="Dedicated OpenEMR write user (e.g. 'copilot_writer') for the password grant.",
+    )
+    write_password: str = Field(
+        default="",
+        description="Password for the dedicated write user. Secrets-manager only; never logged.",
+    )
+    write_scopes: str = Field(
+        default="",
+        description=(
+            "Space-separated user/* scopes for the write client, e.g. "
+            "'openid offline_access api:oemr user/vital.crus user/encounter.crus "
+            "user/medication.cruds'. Empty ⇒ the token endpoint's default."
+        ),
+    )
+    write_api_base_url: str = Field(
+        default="",
+        description=(
+            "Standard REST API base (…/apis/default/api). Empty ⇒ derived from "
+            "fhir_base_url by swapping the trailing '/fhir' for '/api'."
+        ),
+    )
+
     # --- LLM --------------------------------------------------------------
 
     anthropic_api_key: str = Field(

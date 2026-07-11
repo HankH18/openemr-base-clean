@@ -128,6 +128,77 @@ class SmartAppLaunchTokenProvider:
         return _parse_token_response(resp)
 
 
+# --- Resource-Owner Password (dedicated write user) -------------------------
+
+
+@dataclass
+class ResourceOwnerPasswordTokenProvider:
+    """``grant_type=password`` against a dedicated OpenEMR write user.
+
+    Phase-1 write attribution: the Standard REST API exposes only ``user/``
+    scopes and demands a user/ACL session, which the system read token cannot
+    provide (see ``research/WRITEBACK_PHASE1_PLAN.md`` §2). A dedicated
+    confidential client + ``copilot_writer`` user, exchanged via the
+    resource-owner password grant, is the credential that can actually write.
+
+    Mirrors ``SmartAppLaunchTokenProvider``: caches in memory, refreshes via the
+    ``refresh_token`` when one is present, and reuses ``_parse_token_response``.
+    The ``password`` and ``client_secret`` are held ``repr=False`` so they never
+    surface in a stack trace or log line — the "never log secrets" rule extends
+    to these higher-value writable credentials.
+    """
+
+    token_url: str
+    client_id: str
+    username: str
+    password: str = field(repr=False)
+    client_secret: str | None = field(default=None, repr=False)
+    user_role: str = "users"
+    scope: str | None = None
+    http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    _cached: OAuthToken | None = field(default=None, init=False, repr=False)
+
+    async def get_token(self, force: bool = False) -> OAuthToken:
+        if not force and self._cached is not None and self._cached.is_fresh():
+            return self._cached
+        if self._cached is not None and self._cached.refresh_token:
+            token = await self._refresh(self._cached.refresh_token)
+        else:
+            token = await self._password_grant()
+        self._cached = token
+        return token
+
+    async def _password_grant(self) -> OAuthToken:
+        data = {
+            "grant_type": "password",
+            "client_id": self.client_id,
+            "user_role": self.user_role,
+            "username": self.username,
+            "password": self.password,
+        }
+        if self.scope:
+            data["scope"] = self.scope
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
+        async with self.http_client_factory(timeout=10.0) as client:
+            resp = await client.post(self.token_url, data=data)
+        return _parse_token_response(resp)
+
+    async def _refresh(self, refresh_token: str) -> OAuthToken:
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.client_id,
+        }
+        if self.scope:
+            data["scope"] = self.scope
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
+        async with self.http_client_factory(timeout=10.0) as client:
+            resp = await client.post(self.token_url, data=data)
+        return _parse_token_response(resp)
+
+
 # --- SMART Backend Services (client_credentials + JWT assertion) ------------
 
 

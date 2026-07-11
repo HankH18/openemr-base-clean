@@ -22,10 +22,12 @@ from copilot.domain.primitives import ResourceType, utcnow
 from copilot.fhir.auth import (
     BackendServicesTokenProvider,
     OAuthToken,
+    ResourceOwnerPasswordTokenProvider,
     StaticTokenProvider,
     TokenProvider,
 )
 from copilot.fhir.client import FhirClient
+from copilot.fhir.write_client import OpenEmrWriteClient
 
 # Minimal system read scopes the poller/rounds path needs, used when
 # ``backend_services_scopes`` is left empty.
@@ -102,3 +104,69 @@ def build_fhir_client(settings: Settings) -> FhirClient:
             verify=settings.tls_verify,
         )
     return FhirClient(settings.fhir_base_url, provider, verify=settings.tls_verify)
+
+
+# --- Write path (interactive only — NEVER the poller/background path) -------
+
+
+class WritebackDisabledError(RuntimeError):
+    """Raised when a write provider/client is requested but cannot be built.
+
+    Either write-back is disabled (the master flag) or the write credentials are
+    absent. This is the guard that keeps the writable credential out of the
+    read-only poller path: the poller never calls these builders, and if any code
+    ever did while write-back was off, it fails loudly instead of writing.
+    """
+
+
+# The credentials that MUST be present before a write client can be built.
+_REQUIRED_WRITE_SETTINGS: tuple[str, ...] = ("write_client_id", "write_username", "write_password")
+
+
+def build_write_token_provider(settings: Settings) -> ResourceOwnerPasswordTokenProvider:
+    """Password-grant provider for the dedicated write user.
+
+    GUARDED: raises ``WritebackDisabledError`` unless write-back is explicitly
+    enabled *and* the write credentials are configured. Only ever called from the
+    interactive request path — never the background lifespan/poller, whose system
+    token stays read-only.
+    """
+    if not settings.writeback_enabled:
+        raise WritebackDisabledError("write-back is disabled (COPILOT_WRITEBACK_ENABLED=false)")
+    missing = [name for name in _REQUIRED_WRITE_SETTINGS if not getattr(settings, name)]
+    if missing:
+        raise WritebackDisabledError(f"write credentials not configured: {', '.join(missing)}")
+    return ResourceOwnerPasswordTokenProvider(
+        token_url=settings.oauth_token_url,
+        client_id=settings.write_client_id,
+        username=settings.write_username,
+        password=settings.write_password,
+        client_secret=settings.write_client_secret or None,
+        scope=settings.write_scopes or None,
+        http_client_factory=partial(httpx.AsyncClient, verify=settings.tls_verify),
+    )
+
+
+def build_write_client(settings: Settings) -> OpenEmrWriteClient:
+    """Standard-API write client wired to the password-grant provider.
+
+    GUARDED via ``build_write_token_provider`` — see its contract. The write
+    client is constructed only in the interactive path; keeping it out of the
+    poller is a hard invariant (``research/WRITEBACK_PHASE1_PLAN.md`` §2.4).
+    """
+    provider = build_write_token_provider(settings)
+    return OpenEmrWriteClient(
+        _write_api_base_url(settings), provider, verify=settings.tls_verify
+    )
+
+
+def _write_api_base_url(settings: Settings) -> str:
+    """The Standard REST API base — explicit, else derived from the FHIR base."""
+    if settings.write_api_base_url:
+        return settings.write_api_base_url
+    fhir_base = settings.fhir_base_url.rstrip("/")
+    if fhir_base.endswith("/fhir"):
+        return fhir_base[: -len("/fhir")] + "/api"
+    raise WritebackDisabledError(
+        "write_api_base_url is unset and cannot be derived from fhir_base_url"
+    )
