@@ -18,6 +18,7 @@ SET SESSION sql_mode = REPLACE(REPLACE(@@SESSION.sql_mode, 'STRICT_TRANS_TABLES'
 
 SET @NOW = NOW();
 SET @T_MINUS_2H = DATE_SUB(@NOW, INTERVAL 2 HOUR);
+SET @T_MINUS_6H = DATE_SUB(@NOW, INTERVAL 6 HOUR);
 SET @T_MINUS_18H = DATE_SUB(@NOW, INTERVAL 18 HOUR);
 SET @T_MINUS_1D = DATE_SUB(@NOW, INTERVAL 1 DAY);
 SET @T_MINUS_2D = DATE_SUB(@NOW, INTERVAL 2 DAY);
@@ -343,6 +344,21 @@ VALUES
   (5020, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005020','-','')), 1015, @T_MINUS_2D, 101, 2015, DATE(@T_MINUS_2D), 'Aspirin',                       '1191',  '325 mg->81','30','PO',  1, DATE(@T_MINUS_2D), 'SEED', 'r/o ACS'),
   (5021, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005021','-','')), 1015, @T_MINUS_2D, 101, 2015, DATE(@T_MINUS_2D), 'Atorvastatin',                  '83367', '40 mg',   '30', 'PO',  1, DATE(@T_MINUS_2D), 'SEED', 'r/o ACS');
 
+-- Recently-authored orders (date_added within the last 24h) so time-relative
+-- questions like "what meds were started in the last 24 hours?" return real
+-- rows (FHIR MedicationRequest.authoredOn <- prescriptions.date_added).
+INSERT INTO prescriptions
+  (id, uuid, patient_id, date_added, provider_id, encounter, start_date, drug,
+   rxnorm_drugcode, dosage, quantity, route, active, txDate, external_id, note)
+VALUES
+  -- Pt 1003 (DKA): insulin drip uptitrated overnight
+  (5022, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005022','-','')), 1003, @T_MINUS_18H, 101, 2003, DATE(@T_MINUS_18H), 'Insulin regular (drip)',        '5856',  '0.15 U/kg/hr','1','IV', 1, DATE(@T_MINUS_18H), 'SEED', 'Uptitrated from 0.1 U/kg/hr for persistent anion gap'),
+  -- Pt 1004 (sepsis): pressor titration 2h ago
+  (5023, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005023','-','')), 1004, @T_MINUS_2H,  101, 2004, DATE(@T_MINUS_2H),  'Norepinephrine',                '7512',  '0.05 mcg/kg/min titrate','1','IV', 1, DATE(@T_MINUS_2H), 'SEED', 'Pressor titration to MAP >= 65'),
+  -- Pt 1015 (r/o ACS): heparin + IV nitro started 2h ago after troponin rise
+  (5024, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005024','-','')), 1015, @T_MINUS_2H,  101, 2015, DATE(@T_MINUS_2H),  'Heparin',                       '5224',  'aPTT titrate','1','IV', 1, DATE(@T_MINUS_2H), 'SEED', 'Started for NSTEMI after overnight troponin rise'),
+  (5025, UNHEX(REPLACE('cc000000-0000-0000-0000-000000005025','-','')), 1015, @T_MINUS_2H,  101, 2015, DATE(@T_MINUS_2H),  'Nitroglycerin',                 '4917',  '10 mcg/min titrate','1','IV', 1, DATE(@T_MINUS_2H), 'SEED', 'IV nitro for ongoing chest pressure');
+
 INSERT INTO uuid_registry (uuid, table_name, table_id, table_vertical, couchdb, document_drive, mapped, created)
 SELECT uuid, 'prescriptions', CAST(id AS CHAR), '', '', 0, 0, NOW() FROM prescriptions WHERE external_id='SEED';
 
@@ -392,8 +408,7 @@ VALUES
   (7011, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007011','-','')), 101, 1006, 2006, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','cellulitis',''),
   -- Pt 1007 BMP
   (7012, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007012','-','')), 101, 1007, 2007, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','COPD',''),
-  -- Pt 1008 BMP (AKI trend)
-  (7013, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007013','-','')), 101, 1008, 2008, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','AKI',''),
+  -- Pt 1008 BMP — serial creatinine relocated to section 10b (orders 7024-7026); legacy single-point order 7013 retired.
   -- Pt 1009 CBC (H/H trend for GIB)
   (7014, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007014','-','')), 101, 1009, 2009, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','GIB',''),
   -- Pt 1010 CBC + BMP
@@ -404,8 +419,7 @@ VALUES
   (7017, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007017','-','')), 101, 1012, 2012, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','CVA',''),
   -- Pt 1013 BMP
   (7018, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007018','-','')), 101, 1013, 2013, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','ETOH withdrawal',''),
-  -- Pt 1014 BMP (Na trend)
-  (7019, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007019','-','')), 101, 1014, 2014, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','hyponatremia','q6h Na'),
+  -- Pt 1014 BMP — serial sodium relocated to section 10b (orders 7027-7030); legacy single-point order 7019 retired.
   -- Pt 1015 troponin (baseline t=0)  AND  the "overnight change" trop @ -2h
   (7020, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007020','-','')), 101, 1015, 2015, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','r/o ACS','baseline'),
   (7021, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007021','-','')), 101, 1015, 2015, @T_MINUS_2H, @T_MINUS_2H, 'complete', 1, 'laboratory_test','order','SEED','r/o ACS','*** overnight recheck: chest pressure recurred ***');
@@ -425,13 +439,11 @@ VALUES
   (8010, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008010','-','')), 7010, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8011, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008011','-','')), 7011, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8012, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008012','-','')), 7012, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
-  (8013, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008013','-','')), 7013, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8014, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008014','-','')), 7014, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8015, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008015','-','')), 7015, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8016, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008016','-','')), 7016, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8017, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008017','-','')), 7017, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8018, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008018','-','')), 7018, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
-  (8019, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008019','-','')), 7019, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8020, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008020','-','')), 7020, 1, @T_MINUS_1D, @T_MINUS_1D, 0, 'complete','reviewed'),
   (8021, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008021','-','')), 7021, 1, @T_MINUS_2H, @T_MINUS_2H, 0, 'complete','received'); -- overnight change, not yet reviewed
 
@@ -472,8 +484,8 @@ VALUES
   -- 8008 = pt1004 BMP (sepsis, AKI)
   (90023, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090023','-','')), 8008, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '2.1',  '0.6-1.3',    'high',          'final', ''),
   (90024, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090024','-','')), 8008, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_1D, 'mEq/L', '141',  '135-145',    '',              'final', ''),
-  -- 8009 = pt1004 lactate (elevated for sepsis)
-  (90025, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090025','-','')), 8009, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_1D, 'mmol/L','4.2',  '0.5-2.2',    'vhigh', 'final', '>4 = severe sepsis marker'),
+  -- 8009 = pt1004 lactate (oldest point of the RISING series — normal at -1D)
+  (90025, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090025','-','')), 8009, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_1D, 'mmol/L','1.9',  '0.5-2.2',    '',              'final', 'Initial lactate — normal'),
   -- 8010 = pt1005 BMP
   (90026, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090026','-','')), 8010, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '1.0',  '0.6-1.3',    '',              'final', ''),
   (90027, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090027','-','')), 8010, 'N', 'LOINC:3040-3', 'Lipase',     @T_MINUS_1D, 'U/L',   '842',  '10-190',     'vhigh', 'final', ''),
@@ -483,8 +495,7 @@ VALUES
   -- 8012 = pt1007 BMP (COPD)
   (90030, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090030','-','')), 8012, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '0.9',  '0.6-1.3',    '',              'final', ''),
   (90031, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090031','-','')), 8012, 'N', 'LOINC:1963-8', 'Bicarbonate',@T_MINUS_1D, 'mEq/L', '31',   '22-29',      'high',          'final', 'Chronic CO2 retainer'),
-  -- 8013 = pt1008 BMP (AKI resolving)
-  (90032, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090032','-','')), 8013, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D, 'mg/dL', '2.4',  '0.6-1.3',    'high',          'final', 'Down from 3.1 on admission'),
+  -- pt1008 serial creatinine relocated to section 10b (results 90048-90050); legacy report 8013/order 7013 retired to keep the series single-valued.
   -- 8014 = pt1009 CBC (GIB — low Hgb after 1u pRBC)
   (90033, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090033','-','')), 8014, 'N', 'LOINC:718-7',  'Hemoglobin', @T_MINUS_1D, 'g/dL',  '7.8',  '13.5-17.5',  'low',           'final', 'Post 1u pRBC'),
   (90034, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090034','-','')), 8014, 'N', 'LOINC:777-3',  'Platelets',  @T_MINUS_1D, 'K/uL',  '164',  '150-400',    '',              'final', ''),
@@ -500,12 +511,77 @@ VALUES
   -- 8018 = pt1013 BMP
   (90041, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090041','-','')), 8018, 'N', 'LOINC:2823-3', 'Potassium',  @T_MINUS_1D, 'mEq/L', '3.3',  '3.5-5.0',    'low',           'final', 'Replete'),
   (90042, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090042','-','')), 8018, 'N', 'LOINC:2777-1', 'Magnesium',  @T_MINUS_1D, 'mg/dL', '1.5',  '1.7-2.2',    'low',           'final', 'Replete'),
-  -- 8019 = pt1014 BMP (Na trend correction)
-  (90043, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090043','-','')), 8019, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_1D, 'mEq/L', '124',  '135-145',    'vlow',  'final', 'Down from 118 on admit'),
+  -- pt1014 serial sodium relocated to section 10b (results 90051-90054); legacy report 8019/order 7019 retired to keep the series single-valued.
   -- 8020 = pt1015 baseline troponin (yesterday, normal)
   (90044, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090044','-','')), 8020, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_1D, 'ng/mL', '0.02', '<0.04',      '',              'final', 'Baseline negative'),
   -- 8021 = pt1015 OVERNIGHT CHANGE (last 2h) — critical trop
   (90045, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090045','-','')), 8021, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_2H, 'ng/mL', '2.34', '<0.04',      'vhigh', 'final', '*** OVERNIGHT: rise from 0.02 -> 2.34 with recurrent chest pressure ***');
+
+-- -----------------------------------------------------------------------------
+-- 10b. Serial lab series — one order (7xxx) + one report (8xxx, DISTINCT
+--      date_report => distinct FHIR effectiveDateTime per point) + one result
+--      (9xxxx) per reading. Extends pt1015 troponin (0.02 @-1D order 7020 /
+--      2.34 @-2H order 7021 above) into a 4-point series, and adds creatinine
+--      (pt1008, 3.1->2.7->2.4), sodium (pt1014, 118->120->122->124), and
+--      lactate (pt1004, RISING 1.9->2.8->4.2; the -1D point is legacy order
+--      7009). Legacy single-point BMP orders 7013 (Cr) / 7019 (Na) are retired
+--      below so each series stays single-valued in time; latest point equals
+--      the current demo value (trop 2.34, Cr 2.4, Na 124, lactate 4.2).
+-- -----------------------------------------------------------------------------
+INSERT INTO procedure_order
+  (procedure_order_id, uuid, provider_id, patient_id, encounter_id, date_collected, date_ordered,
+   order_status, activity, procedure_order_type, order_intent, external_id, order_diagnosis, clinical_hx)
+VALUES
+  -- Pt 1004 serial lactate (RISING after 1.9 @-1D — deterioration toward septic shock)
+  (7022, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007022','-','')), 101, 1004, 2004, @T_MINUS_6H, @T_MINUS_6H, 'complete', 1, 'laboratory_test','order','SEED','sepsis','serial lactate — rising'),
+  (7023, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007023','-','')), 101, 1004, 2004, @T_MINUS_2H, @T_MINUS_2H, 'complete', 1, 'laboratory_test','order','SEED','sepsis','serial lactate — septic shock'),
+  -- Pt 1008 serial creatinine (AKI trend 3.1 -> 2.7 -> 2.4)
+  (7024, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007024','-','')), 101, 1008, 2008, @T_MINUS_2D, @T_MINUS_2D, 'complete', 1, 'laboratory_test','order','SEED','AKI','serial Cr — admission'),
+  (7025, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007025','-','')), 101, 1008, 2008, @T_MINUS_1D, @T_MINUS_1D, 'complete', 1, 'laboratory_test','order','SEED','AKI','serial Cr'),
+  (7026, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007026','-','')), 101, 1008, 2008, @T_MINUS_2H, @T_MINUS_2H, 'complete', 1, 'laboratory_test','order','SEED','AKI','serial Cr'),
+  -- Pt 1014 serial sodium (correction 118 -> 120 -> 122 -> 124; -2H current = 124)
+  (7027, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007027','-','')), 101, 1014, 2014, @T_MINUS_2D, @T_MINUS_2D, 'complete', 1, 'laboratory_test','order','SEED','hyponatremia','q6h Na — admission'),
+  (7028, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007028','-','')), 101, 1014, 2014, @T_MINUS_18H, @T_MINUS_18H, 'complete', 1, 'laboratory_test','order','SEED','hyponatremia','q6h Na'),
+  (7029, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007029','-','')), 101, 1014, 2014, @T_MINUS_6H, @T_MINUS_6H, 'complete', 1, 'laboratory_test','order','SEED','hyponatremia','q6h Na'),
+  (7030, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007030','-','')), 101, 1014, 2014, @T_MINUS_2H, @T_MINUS_2H, 'complete', 1, 'laboratory_test','order','SEED','hyponatremia','q6h Na'),
+  -- Pt 1015 serial troponin (fills between baseline 7020 @-1D and overnight 7021 @-2H)
+  (7031, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007031','-','')), 101, 1015, 2015, @T_MINUS_18H, @T_MINUS_18H, 'complete', 1, 'laboratory_test','order','SEED','r/o ACS','serial troponin #2'),
+  (7032, UNHEX(REPLACE('dd000000-0000-0000-0000-000000007032','-','')), 101, 1015, 2015, @T_MINUS_6H,  @T_MINUS_6H,  'complete', 1, 'laboratory_test','order','SEED','r/o ACS','serial troponin #3');
+
+INSERT INTO procedure_report
+  (procedure_report_id, uuid, procedure_order_id, procedure_order_seq, date_collected, date_report, source, report_status, review_status)
+VALUES
+  (8022, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008022','-','')), 7022, 1, @T_MINUS_6H,  @T_MINUS_6H,  0, 'complete','reviewed'),
+  (8023, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008023','-','')), 7023, 1, @T_MINUS_2H,  @T_MINUS_2H,  0, 'complete','reviewed'),
+  (8024, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008024','-','')), 7024, 1, @T_MINUS_2D,  @T_MINUS_2D,  0, 'complete','reviewed'),
+  (8025, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008025','-','')), 7025, 1, @T_MINUS_1D,  @T_MINUS_1D,  0, 'complete','reviewed'),
+  (8026, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008026','-','')), 7026, 1, @T_MINUS_2H,  @T_MINUS_2H,  0, 'complete','reviewed'),
+  (8027, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008027','-','')), 7027, 1, @T_MINUS_2D,  @T_MINUS_2D,  0, 'complete','reviewed'),
+  (8028, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008028','-','')), 7028, 1, @T_MINUS_18H, @T_MINUS_18H, 0, 'complete','reviewed'),
+  (8029, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008029','-','')), 7029, 1, @T_MINUS_6H,  @T_MINUS_6H,  0, 'complete','reviewed'),
+  (8030, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008030','-','')), 7030, 1, @T_MINUS_2H,  @T_MINUS_2H,  0, 'complete','reviewed'),
+  (8031, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008031','-','')), 7031, 1, @T_MINUS_18H, @T_MINUS_18H, 0, 'complete','reviewed'),
+  (8032, UNHEX(REPLACE('ee000000-0000-0000-0000-000000008032','-','')), 7032, 1, @T_MINUS_6H,  @T_MINUS_6H,  0, 'complete','reviewed');
+
+INSERT INTO procedure_result
+  (procedure_result_id, uuid, procedure_report_id, result_data_type, result_code, result_text,
+   date, units, result, `range`, abnormal, result_status, comments)
+VALUES
+  -- 8022/8023 = pt1004 serial lactate — RISING to 4.2 (1.9 @-1D above -> 2.8 -> 4.2)
+  (90046, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090046','-','')), 8022, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_6H,  'mmol/L','2.8',  '0.5-2.2',    'high',          'final', 'Rising despite resuscitation'),
+  (90047, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090047','-','')), 8023, 'N', 'LOINC:32693-4','Lactate',    @T_MINUS_2H,  'mmol/L','4.2',  '0.5-2.2',    'vhigh', 'final', 'Septic shock — current lactate 4.2'),
+  -- 8024..8026 = pt1008 serial creatinine (AKI trend)
+  (90048, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090048','-','')), 8024, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_2D,  'mg/dL', '3.1',  '0.6-1.3',    'high',          'final', 'Admission peak'),
+  (90049, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090049','-','')), 8025, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_1D,  'mg/dL', '2.7',  '0.6-1.3',    'high',          'final', 'Improving with IVF'),
+  (90050, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090050','-','')), 8026, 'N', 'LOINC:2160-0', 'Creatinine', @T_MINUS_2H,  'mg/dL', '2.4',  '0.6-1.3',    'high',          'final', 'Continued improvement'),
+  -- 8027..8030 = pt1014 serial sodium (correction on 3% saline)
+  (90051, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090051','-','')), 8027, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_2D,  'mEq/L', '118',  '135-145',    'vlow',  'final', 'Admission nadir'),
+  (90052, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090052','-','')), 8028, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_18H, 'mEq/L', '120',  '135-145',    'vlow',  'final', 'On 3% saline'),
+  (90053, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090053','-','')), 8029, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_6H,  'mEq/L', '122',  '135-145',    'vlow',  'final', 'Correction within daily target'),
+  (90054, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090054','-','')), 8030, 'N', 'LOINC:2951-2', 'Sodium',     @T_MINUS_2H,  'mEq/L', '124',  '135-145',    'vlow',  'final', 'Current value — corrected at goal rate'),
+  -- 8031/8032 = pt1015 serial troponin (0.02 @-1D and 2.34 @-2H above)
+  (90055, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090055','-','')), 8031, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_18H, 'ng/mL', '0.03', '<0.04',      '',              'final', 'Serial #2 — flat'),
+  (90056, UNHEX(REPLACE('fc000000-0000-0000-0000-000000090056','-','')), 8032, 'N', 'LOINC:6598-7', 'Troponin I', @T_MINUS_6H,  'ng/mL', '0.8',  '<0.04',      'high',          'final', 'Serial #3 — rising, MD notified');
 
 INSERT INTO uuid_registry (uuid, table_name, table_id, table_vertical, couchdb, document_drive, mapped, created)
 SELECT uuid, 'procedure_order',  CAST(procedure_order_id AS CHAR),  '', '', 0, 0, NOW() FROM procedure_order  WHERE external_id='SEED';
