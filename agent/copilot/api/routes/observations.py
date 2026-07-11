@@ -45,6 +45,7 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability, current_correlation_id
+from copilot.rounds.ranges import reference_bounds
 from copilot.rounds.summary import _unit, group_observations
 
 _logger = logging.getLogger(__name__)
@@ -253,23 +254,14 @@ def _series_range(resources: Sequence[Mapping[str, Any]]) -> ReferenceRange | No
 
 
 def _reference_range_of(res: Mapping[str, Any]) -> ReferenceRange | None:
-    ranges = res.get("referenceRange")
-    if not isinstance(ranges, list) or not ranges:
-        return None
-    first = ranges[0]
-    if not isinstance(first, Mapping):
-        return None
-    low = _bound(first.get("low"))
-    high = _bound(first.get("high"))
+    """The metric's reference band, via the shared grounded parser.
+
+    Reuses :func:`copilot.rounds.ranges.reference_bounds`, which reads the
+    structured ``low.value`` / ``high.value`` and falls back to parsing a
+    free-text ``referenceRange[0].text`` — so a one-sided text range like
+    troponin's ``"<0.04"`` now yields a (half-open) band instead of nothing.
+    """
+    low, high = reference_bounds(res)
     if low is None and high is None:
         return None
     return ReferenceRange(low=low, high=high)
-
-
-def _bound(node: Any) -> float | None:
-    """Read the numeric ``value`` out of a referenceRange low/high element."""
-    if isinstance(node, Mapping):
-        v = node.get("value")
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
-    return None

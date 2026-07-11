@@ -1,6 +1,6 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
-import type { Claim, ObservationSeries } from '../api/types';
+import type { Claim, ClaimSeverity, ObservationSeries, TrendDirection } from '../api/types';
 import { claimTone, type ClaimTone } from '../fmt';
 import { humanizeLabel, isNumericObservation, observationMetric } from '../labels';
 import { MetricChart } from './MetricChart';
@@ -83,17 +83,84 @@ function withBoldedValue(segment: string, value: string, tone: ClaimTone | null)
   );
 }
 
+/** Severity → the metric-label colour class (normal/absent → default ink). */
+function labelSeverityClass(severity: ClaimSeverity | null | undefined): string {
+  if (severity === 'critical') {
+    return ' claim-label--critical';
+  }
+  if (severity === 'warning') {
+    return ' claim-label--warning';
+  }
+  return '';
+}
+
 /**
- * Render a claim as "Label: value …" — a humanized label followed by the
- * remainder with the recorded value bolded and toned by severity. Prose
- * claims (a long or absent leading label) are rendered as-is with the value
- * bolded. Tone is always derived from the ORIGINAL text so coloring is
- * unaffected by the label/rest split.
+ * Trend-arrow colour class from the grounded direction. "improving" gets the
+ * distinct positive token; "worsening" reuses the reserved status hue matching
+ * the claim's severity (critical vs warning); "steady"/absent stays neutral so
+ * an in-range fluctuation is not dressed up as a directional signal.
+ */
+function trendArrowClass(
+  direction: TrendDirection | null | undefined,
+  severity: ClaimSeverity | null | undefined,
+): string | null {
+  if (direction === 'improving') {
+    return 'claim-trend--improving';
+  }
+  if (direction === 'worsening') {
+    return severity === 'critical' ? 'claim-trend--critical' : 'claim-trend--warning';
+  }
+  return null;
+}
+
+// The trend arrow plus its delta run, e.g. "↓12" / "↑0.5" — a rising or falling
+// glyph followed by its (space-terminated) magnitude. A "→ no change" suffix has
+// no directional glyph and is left in default ink.
+const TREND_ARROW_RE = /[↑↓]\S*/u;
+
+/**
+ * Render the post-label remainder: bold the recorded value (toned by the legacy
+ * text heuristic) and, when the trend is directional, colour the ↑/↓ glyph by
+ * `trendClass`. The value always precedes the trend suffix, so the pre-arrow
+ * slice is where the value lives.
+ */
+function withValueAndTrend(
+  segment: string,
+  value: string,
+  tone: ClaimTone | null,
+  trendClass: string | null,
+): ReactNode {
+  if (trendClass === null) {
+    return withBoldedValue(segment, value, tone);
+  }
+  const match = TREND_ARROW_RE.exec(segment);
+  if (match === null || match.index === undefined) {
+    return withBoldedValue(segment, value, tone);
+  }
+  const before = segment.slice(0, match.index);
+  const arrow = match[0];
+  const after = segment.slice(match.index + arrow.length);
+  return (
+    <>
+      {withBoldedValue(before, value, tone)}
+      <span className={`claim-trend ${trendClass}`}>{arrow}</span>
+      {after}
+    </>
+  );
+}
+
+/**
+ * Render a claim as "Label: value …" — a humanized label (coloured by the
+ * grounded severity) followed by the remainder, with the recorded value bolded
+ * and the trend arrow coloured by the grounded direction. Prose claims (a long
+ * or absent leading label) are rendered as-is with the value bolded. Tone is
+ * always derived from the ORIGINAL text so coloring is unaffected by the split.
  */
 function claimText(claim: Claim): ReactNode {
-  const { text, source_ref } = claim;
+  const { text, source_ref, severity, trend_direction } = claim;
   const value = source_ref.value;
   const tone = claimTone(text);
+  const trendClass = trendArrowClass(trend_direction, severity);
 
   const sepIdx = text.indexOf(': ');
   if (sepIdx !== -1) {
@@ -103,14 +170,16 @@ function claimText(claim: Claim): ReactNode {
     if (label.trim().split(/\s+/).length <= 4) {
       return (
         <>
-          <span className="claim-label">{`${humanizeLabel(label)}: `}</span>
-          {withBoldedValue(rest, value, tone)}
+          <span className={`claim-label${labelSeverityClass(severity)}`}>
+            {`${humanizeLabel(label)}: `}
+          </span>
+          {withValueAndTrend(rest, value, tone, trendClass)}
         </>
       );
     }
   }
 
-  return withBoldedValue(text, value, tone);
+  return withValueAndTrend(text, value, tone, trendClass);
 }
 
 export function ClaimList({

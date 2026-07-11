@@ -16,6 +16,37 @@ from pydantic import BaseModel, ConfigDict, Field
 from copilot.domain.primitives import FhirReference, PatientId
 
 
+class ClaimSeverity(StrEnum):
+    """Record-grounded severity of an observation claim.
+
+    Derived from the observation's own abnormal flag ('' → ``normal``,
+    ``high``/``low`` → ``warning``, ``vhigh``/``vlow``/``HH``/``LL`` →
+    ``critical``). Never inferred from a range the agent invented. Absent on
+    non-observation claims (medications, conditions, allergies) and on any
+    claim whose flag cannot be read.
+    """
+
+    normal = "normal"
+    warning = "warning"
+    critical = "critical"
+
+
+class TrendDirection(StrEnum):
+    """Whether the latest reading is moving toward or away from its range.
+
+    Computed from the distance-to-range of the latest vs the prior reading:
+    entering the band or shrinking the distance is ``improving``, leaving it or
+    growing the distance is ``worsening``, and both-in-range / no-change is
+    ``steady``. Grounded in the record's values + the record/standard range;
+    ``None`` when it cannot be judged (no prior reading, non-numeric, or no
+    range at all) so the UI stays neutral.
+    """
+
+    improving = "improving"
+    worsening = "worsening"
+    steady = "steady"
+
+
 class Claim(BaseModel):
     """One assertion inside a memory file or a chat answer.
 
@@ -23,12 +54,20 @@ class Claim(BaseModel):
     the fail-closed rule.  `text` is what the LLM wrote; verification
     compares `source_ref.value` against `text` for numeric/med-name exact
     match.
+
+    `severity` and `trend_direction` are optional, record-grounded
+    classifications attached to observation claims by the chart-summary builder
+    (see `rounds.summary`). They are presentation hints only — never part of the
+    value-match gate — so a `None`/absent classification leaves an existing claim
+    and its verification wholly unaffected.
     """
 
     model_config = ConfigDict(frozen=True)
 
     text: str = Field(min_length=1)
     source_ref: FhirReference
+    severity: ClaimSeverity | None = None
+    trend_direction: TrendDirection | None = None
 
 
 class LabResult(BaseModel):

@@ -10,6 +10,7 @@ import {
   type AdvanceResult,
   type ChatResponse,
   type Claim,
+  type ClaimSeverity,
   type ConversationMessage,
   type DeteriorationAlert,
   type Freshness,
@@ -20,6 +21,7 @@ import {
   type RefreshOutcome,
   type RoundView,
   type SourceRef,
+  type TrendDirection,
   type Verification,
   type VerificationAction,
 } from './types';
@@ -73,6 +75,16 @@ function normalizeSourceRef(v: unknown): SourceRef {
   };
 }
 
+/** Grounded severity, read tolerantly: an unknown/absent value → null (neutral). */
+function normalizeSeverity(v: unknown): ClaimSeverity | null {
+  return v === 'normal' || v === 'warning' || v === 'critical' ? v : null;
+}
+
+/** Grounded trend direction, read tolerantly: unknown/absent → null (neutral). */
+function normalizeTrend(v: unknown): TrendDirection | null {
+  return v === 'improving' || v === 'worsening' || v === 'steady' ? v : null;
+}
+
 export function normalizeClaim(v: unknown): Claim {
   if (!isRecord(v)) {
     fail('claim');
@@ -80,6 +92,8 @@ export function normalizeClaim(v: unknown): Claim {
   return {
     text: asString(v['text'], 'claim.text'),
     source_ref: normalizeSourceRef(v['source_ref']),
+    severity: normalizeSeverity(v['severity']),
+    trend_direction: normalizeTrend(v['trend_direction']),
   };
 }
 

@@ -38,6 +38,13 @@
   --ok: #1b6e4a;
   --ok-soft: #deede4;
 
+  /* Trend moving toward its range = a positive signal. A single restrained,
+     desaturated positive token, deliberately NOT the vivid verified green
+     (--ok, reserved for the VERIFIED badge) and never the petrol brand accent
+     (reserved for interaction). Only ever tints the inline ↑/↓ trend glyph, so
+     it always ships paired with a direction (secondary encoding). */
+  --improving: #2f8168;
+
   --focus: #175e77;
   --shadow-pop: 0 12px 32px rgba(22, 38, 45, 0.18);
 
@@ -75,6 +82,7 @@
     --warning-soft: #33250c;
     --ok: #5fc793;
     --ok-soft: #0f2e1e;
+    --improving: #6cc1a8;
 
     --focus: #6fb8d3;
     --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);
@@ -106,6 +114,7 @@
   --warning-soft: #33250c;
   --ok: #5fc793;
   --ok-soft: #0f2e1e;
+  --improving: #6cc1a8;
 
   --focus: #6fb8d3;
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);

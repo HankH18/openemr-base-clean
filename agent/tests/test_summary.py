@@ -119,6 +119,139 @@ def test_change_empty_without_timestamps() -> None:
     assert build_change_claims([obs]) == []
 
 
+# --- record-grounded severity + trend classification -----------------------
+
+
+def _obs_rng(
+    rid: str,
+    name: str,
+    value: float,
+    when: str,
+    *,
+    unit: str = "mmol/L",
+    low: float | None = None,
+    high: float | None = None,
+    interp: str | None = None,
+) -> dict[str, Any]:
+    obs = _obs(rid, name, value, when, unit=unit)
+    if low is not None or high is not None:
+        band: dict[str, Any] = {}
+        if low is not None:
+            band["low"] = {"value": low}
+        if high is not None:
+            band["high"] = {"value": high}
+        obs["referenceRange"] = [band]
+    if interp is not None:
+        obs["interpretation"] = [{"coding": [{"code": interp}]}]
+    return obs
+
+
+def _only(resources: list[dict[str, Any]]) -> Any:
+    claims = build_summary_claims(resources)
+    assert len(claims) == 1
+    return claims[0]
+
+
+def test_severity_normal_when_no_flag() -> None:
+    claim = _only([_obs_rng("k1", "Potassium", 4.0, "2026-07-10T05:00:00Z", low=3.5, high=5.1)])
+    assert claim.severity is not None and claim.severity.value == "normal"
+
+
+def test_severity_warning_from_high_flag() -> None:
+    claim = _only(
+        [_obs_rng("k1", "Potassium", 5.6, "2026-07-10T05:00:00Z", low=3.5, high=5.1, interp="H")]
+    )
+    assert claim.severity is not None and claim.severity.value == "warning"
+
+
+def test_severity_critical_from_double_letter_flag() -> None:
+    claim = _only(
+        [_obs_rng("l1", "Lactate", 5.0, "2026-07-10T05:00:00Z", low=0.5, high=2.0, interp="HH")]
+    )
+    assert claim.severity is not None and claim.severity.value == "critical"
+
+
+def test_severity_critical_from_openemr_vhigh() -> None:
+    obs = _obs_rng("t1", "Troponin I", 0.9, "2026-07-10T05:00:00Z", high=0.04)
+    obs["abnormal"] = "vhigh"  # OpenEMR seed convention
+    claim = _only([obs])
+    assert claim.severity is not None and claim.severity.value == "critical"
+
+
+def test_non_observation_claim_has_no_classification() -> None:
+    cond = {"resourceType": "Condition", "id": "c1", "code": {"text": "NSTEMI"}}
+    claim = _only([cond])
+    assert claim.severity is None
+    assert claim.trend_direction is None
+
+
+def test_trend_worsening_moves_out_of_range() -> None:
+    # One-sided lab band (troponin <0.04): prior in range, latest well above.
+    resources = [
+        _obs_rng("t-prior", "Troponin I", 0.02, "2026-07-09T05:00:00Z", unit="ng/mL", high=0.04),
+        _obs_rng("t-now", "Troponin I", 0.9, "2026-07-10T05:00:00Z", unit="ng/mL", high=0.04),
+    ]
+    claim = _only(resources)
+    assert claim.trend_direction is not None and claim.trend_direction.value == "worsening"
+
+
+def test_trend_improving_shrinks_distance_to_range() -> None:
+    resources = [
+        _obs_rng("k-prior", "Potassium", 6.0, "2026-07-09T05:00:00Z", low=3.5, high=5.1),
+        _obs_rng("k-now", "Potassium", 5.5, "2026-07-10T05:00:00Z", low=3.5, high=5.1),
+    ]
+    claim = _only(resources)
+    assert claim.trend_direction is not None and claim.trend_direction.value == "improving"
+
+
+def test_trend_steady_when_both_in_range() -> None:
+    resources = [
+        _obs_rng("k-prior", "Potassium", 4.5, "2026-07-09T05:00:00Z", low=3.5, high=5.1),
+        _obs_rng("k-now", "Potassium", 4.0, "2026-07-10T05:00:00Z", low=3.5, high=5.1),
+    ]
+    claim = _only(resources)
+    assert claim.trend_direction is not None and claim.trend_direction.value == "steady"
+
+
+def test_trend_uses_vitals_table_when_record_has_no_range() -> None:
+    # Heart rate carries no referenceRange -> standard adult band (60-100) applies.
+    resources = [
+        _obs("hr-prior", "Heart rate", 130, "2026-07-09T05:00:00Z"),
+        _obs("hr-now", "Heart rate", 110, "2026-07-10T05:00:00Z"),
+    ]
+    claim = _only(resources)
+    assert claim.trend_direction is not None and claim.trend_direction.value == "improving"
+
+
+def test_trend_none_without_any_range() -> None:
+    # A non-vital metric with no recorded range → neutral (no fabricated band).
+    resources = [
+        _obs("t-prior", "Troponin I", 0.02, "2026-07-09T05:00:00Z", unit="ng/mL"),
+        _obs("t-now", "Troponin I", 0.9, "2026-07-10T05:00:00Z", unit="ng/mL"),
+    ]
+    claim = _only(resources)
+    assert claim.trend_direction is None
+
+
+def test_trend_none_for_single_reading() -> None:
+    claim = _only([_obs_rng("k1", "Potassium", 5.7, "2026-07-10T05:00:00Z", low=3.5, high=5.1)])
+    assert claim.trend_direction is None
+
+
+def test_classification_round_trips_through_repository() -> None:
+    from copilot.memory.repository import _claim_from_json, _claim_to_json
+
+    resources = [
+        _obs_rng("k-prior", "Potassium", 6.0, "2026-07-09T05:00:00Z", low=3.5, high=5.1, interp="H"),
+        _obs_rng("k-now", "Potassium", 5.5, "2026-07-10T05:00:00Z", low=3.5, high=5.1, interp="H"),
+    ]
+    claim = _only(resources)
+    back = _claim_from_json(_claim_to_json(claim))
+    assert back.severity == claim.severity
+    assert back.trend_direction == claim.trend_direction
+    assert back.source_ref.value == claim.source_ref.value  # value stays verbatim
+
+
 def test_memory_file_round_trips_changes() -> None:
     from datetime import datetime
 

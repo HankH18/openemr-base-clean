@@ -693,6 +693,18 @@
   font-weight: 600;
 }
 
+/* Record-grounded severity of the metric label (from the observation's abnormal
+   flag). Normal stays the default muted ink above; warning/critical borrow the
+   reserved clinical status hues. Placed after `.claim-label` so equal-specificity
+   source order lets the modifier win. */
+.claim-label--warning {
+  color: var(--warning);
+}
+
+.claim-label--critical {
+  color: var(--critical);
+}
+
 .claim-val {
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
@@ -710,6 +722,28 @@
 
 .claim-val--ok {
   color: var(--ok);
+}
+
+/* Trend arrow (↑/↓) tinted by the grounded direction. Always paired with the
+   direction glyph, so colour is never the sole signal. "improving" uses the
+   distinct positive token; "worsening" reuses the reserved status hue matching
+   the claim's severity; "steady"/in-range carries no class and stays in ink. */
+.claim-trend {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+}
+
+.claim-trend--improving {
+  color: var(--improving);
+}
+
+.claim-trend--warning {
+  color: var(--warning);
+}
+
+.claim-trend--critical {
+  color: var(--critical);
 }
 
 .empty-changes {

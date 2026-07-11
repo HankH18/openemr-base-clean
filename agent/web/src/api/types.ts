@@ -19,10 +19,28 @@ export interface SourceRef {
   timestamp?: string | null;
 }
 
+/**
+ * Record-grounded severity of an observation claim, from its abnormal flag.
+ * Absent (neutral) on non-observation claims and on any claim whose flag can't
+ * be read.
+ */
+export type ClaimSeverity = 'normal' | 'warning' | 'critical';
+
+/**
+ * Whether the latest reading is moving toward ('improving') or away from
+ * ('worsening') its reference range; 'steady' when in-range/unchanged. Absent
+ * when it can't be judged (no prior reading, non-numeric, or no range).
+ */
+export type TrendDirection = 'improving' | 'worsening' | 'steady';
+
 /** One assertion in a summary or a chat answer. */
 export interface Claim {
   text: string;
   source_ref: SourceRef;
+  /** Record-grounded severity; absent/null → neutral. */
+  severity?: ClaimSeverity | null;
+  /** Record-grounded trend direction; absent/null → neutral. */
+  trend_direction?: TrendDirection | null;
 }
 
 export interface Freshness {

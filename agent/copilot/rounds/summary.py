@@ -26,8 +26,9 @@ from copilot.agent.grounding import (
     extract_temporal,
     humanize_label,
 )
-from copilot.domain.contracts import Claim
+from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection
 from copilot.domain.primitives import FhirReference, ResourceType
+from copilot.rounds.ranges import reference_bounds, vitals_range
 
 
 def build_summary_claims(resources: Sequence[Mapping[str, Any]]) -> list[Claim]:
@@ -163,7 +164,14 @@ def group_observations(resources: Sequence[Mapping[str, Any]]) -> dict[str, list
 
 
 def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
-    """One claim for a metric group: latest value + unit + trend vs prior."""
+    """One claim for a metric group: latest value + unit + trend vs prior.
+
+    Also carries two record-grounded classifications for the chart-summary
+    colour-coding: ``severity`` (from the abnormal flag) and ``trend_direction``
+    (from the latest-vs-prior distance to the metric's reference band). Both are
+    presentation hints — ``source_ref.value`` stays verbatim, so verification is
+    unaffected.
+    """
     latest = group[0]
     described = describe_resource(latest)
     if described is None:
@@ -171,6 +179,7 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
     label, field, value = described
     unit = _unit(latest)
     head = f"{humanize_label(label)}: {value}{(' ' + unit) if unit else ''}"
+    low, high = _metric_bounds(latest, label, unit)
     return Claim(
         text=head + _trend(group),
         source_ref=FhirReference(
@@ -180,7 +189,111 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
             value=str(value),
             timestamp=extract_temporal(latest),
         ),
+        severity=_classify_severity(latest),
+        trend_direction=_classify_trend(group, low, high),
     )
+
+
+# --- record-grounded classification (severity + trend direction) -----------
+
+
+def _abnormal_code(res: Mapping[str, Any]) -> str:
+    """The record's abnormal flag as a raw string, or '' when normal/absent.
+
+    Prefers ``interpretation[0].coding[0].code`` (US Core convention); falls back
+    to a top-level ``abnormal`` (OpenEMR seed convention). Verbatim — the caller
+    classifies it; this never invents a flag.
+    """
+    interp = res.get("interpretation")
+    if isinstance(interp, list) and interp and isinstance(interp[0], Mapping):
+        coding = interp[0].get("coding")
+        if isinstance(coding, list) and coding and isinstance(coding[0], Mapping):
+            code = coding[0].get("code")
+            if isinstance(code, str):
+                return code
+    raw = res.get("abnormal")
+    return raw if isinstance(raw, str) else ""
+
+
+_NORMAL_FLAGS = frozenset({"", "n", "no", "normal"})
+
+
+def _is_critical_flag(flag: str) -> bool:
+    """True for a flag denoting a *critical* result (double-letter / vhigh/vlow).
+
+    Mirrors the frontend chart's ``severityOf`` and the verification critical
+    sets: ``HH``/``LL``/``AA``, ``vhigh``/``vlow``, ``critical_*``, ``<<``/``>>``,
+    and any ``crit``/``panic`` wording. Everything else abnormal is a warning.
+    """
+    f = flag.strip().lower()
+    if f in ("hh", "ll", "aa", "<<", ">>", "critical_high", "critical_low"):
+        return True
+    return f.startswith("vh") or f.startswith("vl") or "crit" in f or "panic" in f
+
+
+def _classify_severity(res: Mapping[str, Any]) -> ClaimSeverity:
+    """Severity from the record's abnormal flag: '' → normal, high/low → warning,
+    vhigh/vlow / HH/LL → critical. Grounded in the flag, never in a guessed range.
+    """
+    flag = _abnormal_code(res)
+    if flag.strip().lower() in _NORMAL_FLAGS:
+        return ClaimSeverity.normal
+    return ClaimSeverity.critical if _is_critical_flag(flag) else ClaimSeverity.warning
+
+
+def _distance_to_range(value: float, low: float | None, high: float | None) -> float:
+    """How far ``value`` sits outside ``[low, high]``; 0.0 when inside (or on) it.
+
+    Handles one-sided bands: with only a high bound there is no "below" distance,
+    and vice-versa — so troponin's ``<0.04`` still measures over-shoot correctly.
+    """
+    if high is not None and value > high:
+        return value - high
+    if low is not None and value < low:
+        return low - value
+    return 0.0
+
+
+def _metric_bounds(
+    res: Mapping[str, Any], label: str, unit: str
+) -> tuple[float | None, float | None]:
+    """The metric's reference band, grounded: the record's own ``referenceRange``
+    (labs) or, ONLY when the record carries none, the standard vitals table.
+    """
+    low, high = reference_bounds(res)
+    if low is None and high is None:
+        return vitals_range(humanize_label(label), unit)
+    return (low, high)
+
+
+def _classify_trend(
+    group: list[Mapping[str, Any]], low: float | None, high: float | None
+) -> TrendDirection | None:
+    """Improving / worsening / steady, from distance-to-range of latest vs prior.
+
+    Grounded: uses only the record's own values and the record/standard range.
+    Entering the band or shrinking the distance is ``improving``; leaving it or
+    growing the distance is ``worsening``; both-in-range or no numeric change is
+    ``steady``. Returns ``None`` when it cannot be judged — no prior reading, a
+    non-numeric reading, or no range at all — so the UI renders neutral rather
+    than guessing a direction.
+    """
+    if len(group) < 2:
+        return None
+    latest, prior = _numeric(group[0]), _numeric(group[1])
+    if latest is None or prior is None:
+        return None
+    if low is None and high is None:
+        return None
+    d_latest = _distance_to_range(latest, low, high)
+    d_prior = _distance_to_range(prior, low, high)
+    if latest == prior or (d_latest == 0.0 and d_prior == 0.0):
+        return TrendDirection.steady
+    if d_latest < d_prior:
+        return TrendDirection.improving
+    if d_latest > d_prior:
+        return TrendDirection.worsening
+    return TrendDirection.steady
 
 
 _ABNORMAL_CODES = {"HH", "LL", "H", "L", "A", "AA"}

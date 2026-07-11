@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from copilot.domain.contracts import Claim, MemoryFileSummary
+from copilot.domain.contracts import Claim, ClaimSeverity, MemoryFileSummary, TrendDirection
 from copilot.domain.primitives import (
     ClinicianId,
     FhirReference,
@@ -110,7 +110,14 @@ class MemoryRepository:
         patient_id: PatientId | None = None,
         clinician_id: int | None = None,
         resources_returned: list[str] | None = None,
+        entry_mode: str | None = None,
     ) -> None:
+        """Append one access/write trail row.
+
+        ``entry_mode`` is the write-back physician-attribution field
+        (``human_direct`` in Phase 1); it defaults to ``None`` so every existing
+        read-audit caller is unaffected.
+        """
         self._session.add(
             AuditLogRow(
                 correlation_id=correlation_id,
@@ -118,6 +125,7 @@ class MemoryRepository:
                 patient_id=patient_id.value if patient_id else None,
                 clinician_id=clinician_id,
                 resources_returned=resources_returned or [],
+                entry_mode=entry_mode,
                 at=utcnow().replace(tzinfo=None),
             )
         )
@@ -232,6 +240,10 @@ class MemoryRepository:
 def _claim_to_json(c: Claim) -> dict[str, Any]:
     return {
         "text": c.text,
+        # Record-grounded chart-summary classifications; None when absent
+        # (non-observation claims). Serialized as the enum's string value.
+        "severity": c.severity.value if c.severity is not None else None,
+        "trend_direction": c.trend_direction.value if c.trend_direction is not None else None,
         "source_ref": {
             "resource_type": c.source_ref.resource_type.value,
             "resource_id": c.source_ref.resource_id,
@@ -252,8 +264,14 @@ def _claim_from_json(c: dict[str, Any]) -> Claim:
     last_upd = ref.get("last_updated")
     # Older rows predate `timestamp`; `.get` defaults it to None (backward-compatible).
     ts = ref.get("timestamp")
+    # Older rows predate `severity`/`trend_direction`; `.get` defaults to None so
+    # a pre-classification memory file deserializes unchanged.
+    severity = c.get("severity")
+    trend = c.get("trend_direction")
     return Claim(
         text=c["text"],
+        severity=ClaimSeverity(severity) if severity else None,
+        trend_direction=TrendDirection(trend) if trend else None,
         source_ref=FhirReference(
             resource_type=ResourceType(ref["resource_type"]),
             resource_id=ref["resource_id"],
