@@ -76,6 +76,29 @@ def describe_resource(resource: Mapping[str, Any]) -> tuple[str, str, str] | Non
     return None
 
 
+def extract_temporal(resource: Mapping[str, Any]) -> str | None:
+    """The clinically meaningful timestamp of a resource, as a raw ISO string.
+
+    ``authoredOn`` for a ``MedicationRequest``; ``effectiveDateTime`` (then
+    ``issued``) for an ``Observation``. Read through the verification layer's own
+    ``extract_field_value`` — the *same* extractor the gate uses — so a value
+    grounded here agrees byte-for-byte with what a live re-fetch re-derives.
+
+    Returns ``None`` for any other resource type, or when the field is absent, so
+    a timestamp-less claim is left entirely untouched by the temporal gate (the
+    fail-closed short-circuit: no timestamp grounded ⇒ nothing to re-verify).
+    """
+    rtype = resource.get("resourceType")
+    if rtype == "MedicationRequest":
+        return extract_field_value(resource, "authoredOn")
+    if rtype == "Observation":
+        for path in ("effectiveDateTime", "issued"):
+            value = extract_field_value(resource, path)
+            if value is not None:
+                return value
+    return None
+
+
 # A raw FHIR resource type maps straight to its doctor-facing noun; this wins
 # before any casing heuristic. Mirrors ``RESOURCE_LABELS`` in web/src/labels.ts.
 _RESOURCE_LABELS: dict[str, str] = {

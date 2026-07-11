@@ -39,6 +39,7 @@ def _summary(pid: int = 1015) -> MemoryFileSummary:
                     field="valueQuantity.value",
                     value="2.34",
                     last_updated=datetime(2026, 7, 8, 3, tzinfo=UTC),
+                    timestamp=datetime(2026, 7, 8, 3, tzinfo=UTC),
                 ),
             ),
         ],
@@ -107,6 +108,27 @@ class TestMemoryFile:
         assert s_out.content_hash == s_in.content_hash
         assert len(s_out.claims) == 1
         assert s_out.claims[0].source_ref.value == "2.34"
+        # The grounded clinical timestamp survives the DB JSON round-trip.
+        assert s_out.claims[0].source_ref.timestamp == datetime(2026, 7, 8, 3, tzinfo=UTC)
+
+    async def test_older_row_without_timestamp_defaults_none(self, session: AsyncSession) -> None:
+        """A memory-file row serialized before `timestamp` existed still reads back
+        cleanly, with `source_ref.timestamp` defaulting to None (backward-compatible)."""
+        from copilot.memory.repository import _claim_from_json
+
+        legacy = {
+            "text": "Troponin I 2.34 ng/mL.",
+            "source_ref": {
+                "resource_type": "Observation",
+                "resource_id": "90045",
+                "field": "valueQuantity.value",
+                "value": "2.34",
+                # no `timestamp` key — mirrors a pre-migration row
+            },
+        }
+        claim = _claim_from_json(legacy)
+        assert claim.source_ref.timestamp is None
+        assert claim.source_ref.value == "2.34"
 
     async def test_second_save_overwrites(self, session: AsyncSession) -> None:
         repo = MemoryRepository(session)

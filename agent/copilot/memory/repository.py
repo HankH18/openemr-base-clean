@@ -240,6 +240,9 @@ def _claim_to_json(c: Claim) -> dict[str, Any]:
             "last_updated": c.source_ref.last_updated.isoformat()
             if c.source_ref.last_updated
             else None,
+            "timestamp": c.source_ref.timestamp.isoformat()
+            if c.source_ref.timestamp
+            else None,
         },
     }
 
@@ -247,6 +250,8 @@ def _claim_to_json(c: Claim) -> dict[str, Any]:
 def _claim_from_json(c: dict[str, Any]) -> Claim:
     ref = c["source_ref"]
     last_upd = ref.get("last_updated")
+    # Older rows predate `timestamp`; `.get` defaults it to None (backward-compatible).
+    ts = ref.get("timestamp")
     return Claim(
         text=c["text"],
         source_ref=FhirReference(
@@ -255,6 +260,7 @@ def _claim_from_json(c: dict[str, Any]) -> Claim:
             field=ref["field"],
             value=ref["value"],
             last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
+            timestamp=datetime.fromisoformat(ts) if ts else None,
         ),
     )
 

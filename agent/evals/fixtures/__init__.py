@@ -15,9 +15,15 @@ def observation(
     abnormal: str = "",
     last_updated: str = "2026-07-08T03:00:00Z",
     patient: str = "1015",
+    effective: str | None = None,
 ) -> dict:
-    """Build a US-Core-shaped Observation."""
-    return {
+    """Build a US-Core-shaped Observation.
+
+    ``effective`` defaults to None so existing cases carry no ``effectiveDateTime``
+    (``extract_temporal`` → None ⇒ the temporal gate is skipped); set it to
+    exercise temporal grounding/drift.
+    """
+    obs = {
         "resourceType": "Observation",
         "id": id,
         "status": "final",
@@ -30,6 +36,9 @@ def observation(
         "interpretation": ([{"coding": [{"code": abnormal}]}] if abnormal else []),
         "meta": {"lastUpdated": last_updated},
     }
+    if effective is not None:
+        obs["effectiveDateTime"] = effective
+    return obs
 
 
 def medication_request(
@@ -38,8 +47,9 @@ def medication_request(
     patient: str,
     active: bool = True,
     last_updated: str = "2026-07-08T00:00:00Z",
+    authored_on: str | None = None,
 ) -> dict:
-    return {
+    med = {
         "resourceType": "MedicationRequest",
         "id": id,
         "status": "active" if active else "stopped",
@@ -48,6 +58,9 @@ def medication_request(
         "medicationCodeableConcept": {"text": name, "coding": [{"display": name}]},
         "meta": {"lastUpdated": last_updated},
     }
+    if authored_on is not None:
+        med["authoredOn"] = authored_on
+    return med
 
 
 def allergy(

@@ -20,7 +20,12 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from copilot.agent.grounding import claim_text, describe_resource, humanize_label
+from copilot.agent.grounding import (
+    claim_text,
+    describe_resource,
+    extract_temporal,
+    humanize_label,
+)
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, ResourceType
 
@@ -60,6 +65,7 @@ def build_summary_claims(resources: Sequence[Mapping[str, Any]]) -> list[Claim]:
                     resource_id=str(res.get("id")),
                     field=field,
                     value=str(value),
+                    timestamp=extract_temporal(res),
                 ),
             )
         )
@@ -166,6 +172,7 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
             resource_id=str(latest.get("id")),
             field=field,
             value=str(value),
+            timestamp=extract_temporal(latest),
         ),
     )
 

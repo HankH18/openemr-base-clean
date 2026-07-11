@@ -46,7 +46,8 @@ _ABNORMAL_SYS = "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretat
 
 
 def _obs(rid: str, code_text: str, value: float, unit: str, low: float, high: float,
-         interp: str | None, updated: str = _RECENT) -> dict[str, Any]:
+         interp: str | None, updated: str = _RECENT,
+         effective: str | None = None) -> dict[str, Any]:
     r: dict[str, Any] = {
         "resourceType": "Observation",
         "id": rid,
@@ -58,17 +59,25 @@ def _obs(rid: str, code_text: str, value: float, unit: str, low: float, high: fl
     }
     if interp is not None:
         r["interpretation"] = [{"coding": [{"system": _ABNORMAL_SYS, "code": interp}]}]
+    # Optional clinical time — default None keeps existing cases temporal-field-free
+    # so `extract_temporal` returns None and the temporal gate is skipped.
+    if effective is not None:
+        r["effectiveDateTime"] = effective
     return r
 
 
-def _med(rid: str, name: str, status: str = "active", updated: str = _OLDER) -> dict[str, Any]:
-    return {
+def _med(rid: str, name: str, status: str = "active", updated: str = _OLDER,
+         authored_on: str | None = None) -> dict[str, Any]:
+    r: dict[str, Any] = {
         "resourceType": "MedicationRequest",
         "id": rid,
         "meta": {"lastUpdated": updated},
         "status": status,
         "medicationCodeableConcept": {"text": name},
     }
+    if authored_on is not None:
+        r["authoredOn"] = authored_on
+    return r
 
 
 def _allergy(rid: str, substance: str, updated: str = _OLDER) -> dict[str, Any]:

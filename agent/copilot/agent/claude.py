@@ -20,7 +20,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from copilot.agent.base import AgentAnswer, ConversationTurn
-from copilot.agent.grounding import claim_text, describe_resource
+from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
 from copilot.config import Settings
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
@@ -34,6 +34,11 @@ answering questions about a single patient.
 
 You have tools to read the patient's labs and medications from the record. Use \
 them before answering any question that depends on clinical data.
+
+Tool results include each resource's clinical time (`MedicationRequest.authoredOn`, \
+`Observation.effectiveDateTime`), which you may use to answer time-relative questions; \
+the system still fills each claim's `source_ref` — including that timestamp — from the \
+cited resource, so grounding holds.
 
 Return your final message as a single JSON object with EXACTLY this shape (no \
 prose outside the JSON, no code fences):
@@ -224,7 +229,11 @@ class ClaudeAgent:
                 Claim(
                     text=claim_text(c.resource_type, display, value),
                     source_ref=FhirReference(
-                        resource_type=rtype, resource_id=c.resource_id, field=field, value=value
+                        resource_type=rtype,
+                        resource_id=c.resource_id,
+                        field=field,
+                        value=value,
+                        timestamp=extract_temporal(resource),
                     ),
                 )
             )

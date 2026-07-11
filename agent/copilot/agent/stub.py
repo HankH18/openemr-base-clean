@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from copilot.agent.base import AgentAnswer, ConversationTurn
-from copilot.agent.grounding import claim_text, describe_resource
+from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
 from copilot.domain.contracts import Claim
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
@@ -85,6 +85,7 @@ class StubAgent:
                         resource_id=rid,
                         field=field,
                         value=value,
+                        timestamp=extract_temporal(res),
                     ),
                 )
             )

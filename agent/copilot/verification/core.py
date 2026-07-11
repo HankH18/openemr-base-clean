@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from copilot.domain.contracts import (
@@ -186,6 +187,30 @@ class Verifier:
                 ),
             )
 
+        # Temporal grounding — only when the claim carried a clinical timestamp.
+        # A None timestamp short-circuits entirely, so every timestamp-less claim
+        # is untouched (nothing was grounded, so there is nothing to re-verify).
+        # When present, the SAME extractor grounding used must re-derive an equal
+        # instant from the live re-fetch, or we fail closed. Import locally to
+        # break the grounding<->core module cycle (grounding reads via this
+        # module's extract_field_value).
+        if ref.timestamp is not None:
+            from copilot.agent.grounding import extract_temporal
+
+            refetched = extract_temporal(resource)
+            parsed = _parse_temporal(refetched) if refetched is not None else None
+            if parsed is None or parsed != _to_utc(ref.timestamp):
+                return VerificationClaimResult(
+                    text=claim.text,
+                    source_ref=ref,
+                    attribution_ok=True,
+                    value_match=False,
+                    reason=(
+                        f"temporal drift at {ref.field}: source={refetched!r} "
+                        f"claim={ref.timestamp.isoformat()!r}"
+                    ),
+                )
+
         entailment_ok = await self._entailment_check(claim, resource)
         return VerificationClaimResult(
             text=claim.text,
@@ -248,6 +273,24 @@ def _to_result(
         domain_flags=domain_flags,
         action=VerificationAction.degraded,
     )
+
+
+def _to_utc(dt: datetime) -> datetime:
+    """Treat a naive datetime as UTC so aware/naive instants compare safely."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
+def _parse_temporal(raw: str) -> datetime | None:
+    """Parse an ISO timestamp (tolerating a trailing ``Z``) to an aware UTC datetime.
+
+    Comparing instants (not raw strings) is deliberate: the claim's ``timestamp``
+    was coerced to a ``datetime`` at grounding time, so ``Z`` vs ``+00:00`` or a
+    differing precision must not read as drift and withhold an honest claim.
+    """
+    try:
+        return _to_utc(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    except ValueError:
+        return None
 
 
 def _values_equal(source: str, claimed: str) -> bool:

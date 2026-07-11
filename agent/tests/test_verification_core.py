@@ -18,8 +18,10 @@ from copilot.verification.core import (
 # --- Helpers ---------------------------------------------------------------
 
 
-def _trop_resource(value: str = "2.34", abnormal: str = "HH") -> dict:
-    return {
+def _trop_resource(
+    value: str = "2.34", abnormal: str = "HH", effective: str | None = None
+) -> dict:
+    r: dict = {
         "resourceType": "Observation",
         "id": "trop-1",
         "status": "final",
@@ -27,10 +29,17 @@ def _trop_resource(value: str = "2.34", abnormal: str = "HH") -> dict:
         "valueQuantity": {"value": float(value), "unit": "ng/mL"},
         "interpretation": [{"coding": [{"code": abnormal, "display": "critical high"}]}],
     }
+    if effective is not None:
+        r["effectiveDateTime"] = effective
+    return r
 
 
 def _claim(
-    text: str, resource_id: str = "trop-1", field: str = "valueQuantity.value", value: str = "2.34"
+    text: str,
+    resource_id: str = "trop-1",
+    field: str = "valueQuantity.value",
+    value: str = "2.34",
+    timestamp: str | None = None,
 ) -> Claim:
     return Claim(
         text=text,
@@ -39,6 +48,7 @@ def _claim(
             resource_id=resource_id,
             field=field,
             value=value,
+            timestamp=timestamp,
         ),
     )
 
@@ -159,3 +169,64 @@ class TestFailClosedActions:
         result = await verifier.verify_memory_file(_summary(), ctx)
         assert result.action == VerificationAction.served
         assert result.passed is True
+
+
+@pytest.mark.asyncio
+class TestTemporalGate:
+    """The grounded `source_ref.timestamp` gate — shared extractor, fail-closed.
+
+    A None timestamp must skip the check entirely (no regression for the entire
+    existing corpus); a present timestamp must re-derive an equal instant from
+    the live re-fetch or the claim is withheld.
+    """
+
+    async def test_timestamp_absent_unaffected(self) -> None:
+        # No effectiveDateTime on the resource, no timestamp on the claim: the
+        # temporal gate is skipped, so behavior is identical to pre-change.
+        ctx = build_context_from_resources([_trop_resource()])
+        verifier = Verifier(rules=())
+        summary = _summary(_claim("Troponin I 2.34 ng/mL — critical high."))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.served
+        assert result.claims[0].value_match is True
+
+    async def test_timestamp_match_served(self) -> None:
+        stamp = "2026-07-08T03:00:00Z"
+        ctx = build_context_from_resources([_trop_resource(effective=stamp)])
+        verifier = Verifier(rules=())
+        summary = _summary(_claim("Troponin I 2.34 ng/mL.", timestamp=stamp))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.served
+        assert result.claims[0].value_match is True
+
+    async def test_zulu_vs_offset_same_instant_still_served(self) -> None:
+        # Grounding stored "...Z"; a re-fetch reporting "+00:00" is the SAME
+        # instant and must NOT withhold an honest claim (instant, not string, eq).
+        ctx = build_context_from_resources(
+            [_trop_resource(effective="2026-07-08T03:00:00+00:00")]
+        )
+        verifier = Verifier(rules=())
+        summary = _summary(_claim("Troponin I 2.34 ng/mL.", timestamp="2026-07-08T03:00:00Z"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.served
+
+    async def test_timestamp_drift_withheld(self) -> None:
+        # Claim grounded at 03:00; the live re-fetch now reads 09:00 → drift.
+        ctx = build_context_from_resources([_trop_resource(effective="2026-07-08T09:00:00Z")])
+        verifier = Verifier(rules=())
+        summary = _summary(_claim("Troponin I 2.34 ng/mL.", timestamp="2026-07-08T03:00:00Z"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "temporal drift" in result.claims[0].reason
+
+    async def test_timestamp_removed_from_source_withheld(self) -> None:
+        # Claim carried a timestamp, but the live re-fetch no longer has one → drift.
+        ctx = build_context_from_resources([_trop_resource()])  # no effectiveDateTime
+        verifier = Verifier(rules=())
+        summary = _summary(_claim("Troponin I 2.34 ng/mL.", timestamp="2026-07-08T03:00:00Z"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].value_match is False
+        assert "temporal drift" in result.claims[0].reason

@@ -93,3 +93,12 @@ class FhirReference(BaseModel):
         default=None,
         description="`meta.lastUpdated` of the cited resource at synthesis time.",
     )
+    timestamp: datetime | None = Field(
+        default=None,
+        description=(
+            "Clinically meaningful time of the cited resource — authoredOn "
+            "(MedicationRequest) or effectiveDateTime (Observation). Grounded, "
+            "re-checked on live re-fetch; NOT part of the value-match gate. "
+            "Distinct from `last_updated`, which is record-mutation time."
+        ),
+    )
