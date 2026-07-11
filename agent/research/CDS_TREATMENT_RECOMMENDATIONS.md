@@ -514,6 +514,153 @@ existing strengths:
 
 ---
 
+# Part 4 — Can We Log Agent Reasoning to De-Black-Box This? (mid-2026 state of the art)
+
+*Follow-up analysis: what solutions exist for logging agent reasoning on tasks
+like this, to make similar applications less of a black box.*
+
+**The short answer: split the question in two, because "logging reasoning"
+means two very different things, and only one of them is a solved problem.**
+
+## 4.1 Two distinct problems hiding under "log the reasoning"
+
+| | **(A) Decision-provenance / pipeline observability** | **(B) Model-reasoning faithfulness** |
+|---|---|---|
+| Question it answers | *"What did the agent do, on what inputs, and what did each deterministic step decide?"* | *"Why did the model actually conclude X — is its stated reason its real reason?"* |
+| Status (mid-2026) | **Solved and mature.** A defined product category with healthcare-compliance framing. | **Not solved.** Actively researched; explicitly under-validated in medicine. |
+| De-black-boxes… | the *system* (the pipeline around the model) | the *model itself* |
+| Maps to CDS Criterion 4 | the *information-provenance* half (inputs/sources) | the *reasoning-provenance* half (basis→conclusion) |
+
+Conflating them is the trap. Logging (A) is genuinely valuable and you should do
+more of it — but it does **not** deliver (B), and marketing (A) as "explainable
+AI" overclaims in a way regulators and plaintiffs' experts will notice.
+
+## 4.2 Problem (A) — decision-provenance logging: solved, and AgentForge is most of the way there
+
+By mid-2026 "agent observability / decision provenance" is a standard discipline:
+*the capability to reconstruct the series of inputs, reasoning steps, and outputs
+behind every agentic decision*, captured as **hierarchical, causally-linked
+spans** that support **trace replay** and structured **compliance export**
+([Arthur, "Agentic AI Observability: A 2026 Playbook"](https://www.arthur.ai/column/agentic-ai-observability-playbook-2026);
+[MLflow, "What Is Agent Observability? A 2026 Developer Guide"](https://mlflow.org/articles/what-is-agent-observability-a-2026-developer-guide/);
+[MLflow, "Why Audit AI Decision Making: A 2026 Guide"](https://mlflow.org/articles/why-audit-ai-decision-making-a-2026-guide/)).
+The 2026 healthcare framing is explicit: *"correlation-ID-based logging satisfies
+the evidentiary standard that financial and healthcare compliance frameworks
+impose, binding every AI output to a verifiable source and making individual
+data access attributable rather than hidden behind a service account"*
+([Atlan, "AI Agent Observability: A Complete Guide for 2026"](https://atlan.com/know/ai-agent-observability/)).
+Audit is framed as two layers: **explainability** ("why was this decision made?"
+in human-understandable terms) plus a **tamper-proof trail** that can be queried
+later.
+
+**AgentForge already implements this pattern's spine** (see Part 3): correlation
+IDs threaded as the Langfuse trace ID (`agent/copilot/api/middleware.py`,
+`agent/copilot/observability/langfuse_backend.py`), a chat span carrying the
+verification outcome (`record_verification`), rounds/poller spans, per-claim FHIR
+provenance (`FhirReference`), and an append-only PHI-read audit trail. That is
+exactly the "bind every output to a verifiable source; attributable data access"
+control the 2026 playbooks prescribe.
+
+**Available solutions to extend (A):**
+
+- **Trace/observability platforms** — Langfuse (already wired, self-hostable —
+  keeps PHI on your infra), and peers: LangSmith, Arize Phoenix (ships 50+
+  research-backed eval metrics incl. faithfulness/hallucination scoring),
+  Helicone, Datadog LLM Observability, Braintrust, Laminar
+  ([Latitude, "Best AI Agent Observability Tools in 2026"](https://latitude.so/blog/best-ai-agent-observability-tools-2026-comparison);
+  [MLflow, "Top 5 Agent Observability Tools"](https://mlflow.org/top-5-agent-observability-tools/)).
+- **Vendor-neutral standard: OpenTelemetry GenAI semantic conventions (v1.37).**
+  A standard schema for GenAI spans/events/metrics — prompts, responses, token
+  usage, tool/agent calls, retrieval steps, and reasoning attributes
+  (`gen_ai.request.reasoning_effort`, `gen_ai.request.reasoning_summary`,
+  `gen_ai.usage.reasoning_tokens`). Content lives in *span events* that a
+  Collector can filter/drop for governance without touching app code — useful
+  for PHI redaction. Instrument once, export to any backend
+  ([OpenTelemetry, "Semantic conventions for GenAI spans"](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/);
+  [Greptime, "How OpenTelemetry Traces LLM Calls, Agent Reasoning, and MCP Tools"](https://greptime.com/blogs/2026-05-09-opentelemetry-genai-semantic-conventions);
+  [Datadog, "LLM Observability natively supports OTel GenAI Semantic Conventions"](https://www.datadoghq.com/blog/llm-otel-semantic-convention/)).
+
+**Concrete recommendation for AgentForge:** capture the *full chain* as
+causally-linked spans — the prompt, the exact FHIR resources retrieved, the raw
+model output, the **deterministic verification-gate decision per claim**
+(served/degraded/withheld and why), and the physician disposition (§1.5) — adopt
+OTel GenAI semconv for portability and compliance export, and enable trace
+replay. This is the single most valuable, and most achievable, transparency
+investment.
+
+## 4.3 Problem (B) — capturing genuine model reasoning: still a black box in 2026
+
+Here is the part that does **not** have a clean solution, and where honesty
+matters for a clinical product.
+
+**You can log the model's "thinking," but the provider only gives you a
+summary.** On current Claude models, extended/adaptive thinking is available, but
+the **raw chain of thought is never returned by the API** — the most you can
+capture is a *summarized* rendering (request `thinking: {type: "adaptive",
+display: "summarized"}`; the default `"omitted"` returns empty thinking text,
+and thinking is billed the same either way). So even at the provider boundary,
+what you can log is a model-generated *summary of* reasoning, not the reasoning.
+
+**And the deeper problem: logged chain-of-thought is not a faithful account of
+the model's actual computation.** This is the well-established
+"CoT-unfaithfulness" result (Turpin et al., 2023, *"Language Models Don't Always
+Say What They Think"*), reaffirmed by Anthropic's 2025 *"Reasoning models don't
+always say what they think."* The 2026 literature both sharpens the problem and
+offers partial tools:
+
+- **Rationalization is real and pre-verbal.** 2026 work detects "motivated
+  reasoning" — models rationalizing a pre-determined answer — from residual-stream
+  activations *before any CoT is generated*, meaning the written rationale can be
+  post-hoc ([arXiv 2603.17199, "Catching rationalization in the act"](https://arxiv.org/abs/2603.17199)).
+- **Faithfulness is task- and domain-dependent, and thin in medicine.** 2026
+  medical-specific evaluations find closed-source LLM medical reasoning is often
+  *"plausible rather than faithful,"* and note that *"systematic investigations
+  of faithfulness remain sparse in healthcare"*
+  ([arXiv 2603.13988, "Faithful or Just Plausible? … Medical Reasoning"](https://arxiv.org/abs/2603.13988);
+  MedOmni-45° benchmark). The clinical domain is precisely where verbalized
+  reasoning is *least* validated.
+- **Promising but research-grade mitigations.** Activation probing / representation
+  engineering can recover "monitorability" (linear faithfulness directions in
+  mid-to-late layers, reported gains up to ~46%)
+  ([arXiv 2602 probing/steering work](https://arxiv.org/abs/2602.02639)), and some
+  2026 results are cautiously positive that self-explanations predict behavior.
+  **But these require access to model internals (activations/weights)** — which a
+  hosted API such as Anthropic's does not expose — and none are validated or
+  cleared for clinical decision support.
+
+**Implication for the CDS black-box question (ties back to §1.4 / Part 3 gap
+#2):** logging reasoning traces improves *debuggability and auditability* and is
+worth doing — but it does **not** satisfy FDA Criterion 4's "independently review
+the basis" in a defensible way, because the thing you logged (a CoT summary) is
+not a verified explanation of why the model recommended a treatment. Presenting a
+logged rationale to a physician as "the basis" would actually *overstate*
+transparency.
+
+## 4.4 The pragmatic answer: make the system and the conclusion transparent, not the model
+
+For CDS-class applications in mid-2026, the defensible strategy is to **stop
+trying to extract trustworthy reasoning from the model** and instead:
+
+1. **Log decision-provenance richly (Problem A).** Do all of §4.2 — it is solved,
+   compliance-aligned, and AgentForge already has the foundation.
+2. **Ground the *conclusion* in an external, inspectable artifact.** Anchor each
+   recommendation to cited FHIR records **plus a named clinical guideline/rule**
+   so "the basis" a physician reviews is a citable, verifiable artifact — not
+   model introspection. This sidesteps the faithfulness problem entirely and is
+   what actually maps onto Criterion 4.
+3. **If you surface the model's thinking summary at all, label it honestly** —
+   "model-generated rationale, not a verified explanation; not the basis for the
+   recommendation." Never present a CoT summary as the authoritative reason.
+4. **Capture physician disposition** (agree/disagree/why) in the same audited
+   trail — it is both a liability safeguard (§1.5) and the highest-signal data
+   for evaluating the feature over time.
+
+In one line: **2026 tooling lets you fully de-black-box the *pipeline*; it does
+not yet let you faithfully de-black-box the *model* — so put the audit weight on
+provenance and externally-grounded conclusions, not on logged model reasoning.**
+
+---
+
 ## References
 
 **FDA CDS device framework**
@@ -560,6 +707,21 @@ existing strengths:
 - AMA — *Principles for Augmented Intelligence Development, Deployment, and Use* (PDF): https://www.ama-assn.org/system/files/ama-ai-principles.pdf
 - AMA — *AMA Issues New Principles for AI Development, Deployment & Use* (press release): https://www.ama-assn.org/press-center/ama-press-releases/ama-issues-new-principles-ai-development-deployment-use
 - Healthcare IT News — *AMA recommends a risk-based approach in its new AI governance framework*: https://www.healthcareitnews.com/news/ama-recommends-risk-based-approach-its-new-ai-governance-framework
+
+**Agent-reasoning logging / observability / faithfulness (Part 4)**
+- Arthur — *Agentic AI Observability: A 2026 Playbook*: https://www.arthur.ai/column/agentic-ai-observability-playbook-2026
+- MLflow — *What Is Agent Observability? A 2026 Developer Guide*: https://mlflow.org/articles/what-is-agent-observability-a-2026-developer-guide/
+- MLflow — *Why Audit AI Decision Making: A 2026 Guide*: https://mlflow.org/articles/why-audit-ai-decision-making-a-2026-guide/
+- Atlan — *AI Agent Observability: A Complete Guide for 2026 & Beyond*: https://atlan.com/know/ai-agent-observability/
+- Latitude — *Best AI Agent Observability Tools in 2026*: https://latitude.so/blog/best-ai-agent-observability-tools-2026-comparison
+- MLflow — *Top 5 LLM and Agent Observability Tools*: https://mlflow.org/top-5-agent-observability-tools/
+- OpenTelemetry — *Semantic conventions for generative AI spans* (GenAI semconv): https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/
+- Greptime — *How OpenTelemetry Traces LLM Calls, Agent Reasoning, and MCP Tools* (May 2026): https://greptime.com/blogs/2026-05-09-opentelemetry-genai-semantic-conventions
+- Datadog — *LLM Observability natively supports OpenTelemetry GenAI Semantic Conventions*: https://www.datadoghq.com/blog/llm-otel-semantic-convention/
+- Turpin et al. (2023) — *Language Models Don't Always Say What They Think: Unfaithful Explanations in Chain-of-Thought Prompting*: https://arxiv.org/abs/2305.04388
+- arXiv 2603.17199 (2026) — *Catching rationalization in the act: detecting motivated reasoning before and after CoT via activation probing*: https://arxiv.org/abs/2603.17199
+- arXiv 2603.13988 (2026) — *Faithful or Just Plausible? Evaluating the Faithfulness of Closed-Source LLMs in Medical Reasoning*: https://arxiv.org/abs/2603.13988
+- arXiv 2602.02639 (2026) — *A Positive Case for Faithfulness: LLM Self-Explanations Help Predict Model Behavior*: https://arxiv.org/abs/2602.02639
 
 ---
 
