@@ -6,6 +6,7 @@ import { fmtClock, isSafetyClaim } from '../fmt';
 import { dedupeMedicationClaims } from '../labels';
 import { AcuityMeter } from './AcuityMeter';
 import { ClaimList } from './ClaimList';
+import type { ConfirmWrite, ProposeWrite } from './EditRecordDialog';
 import { FreshnessTag } from './FreshnessTag';
 import { ProvenanceChip } from './ProvenanceChip';
 
@@ -27,6 +28,8 @@ export function PatientHero({
   busy,
   onDone,
   fetchTrend,
+  proposeWrite,
+  confirmWrite,
 }: {
   card: PatientCard;
   entry: CensusEntry | undefined;
@@ -36,6 +39,9 @@ export function PatientHero({
   busy: boolean;
   onDone: () => void;
   fetchTrend?: (metric: string) => Promise<ObservationSeries>;
+  /** Physician direct-edit callbacks, bound to this patient at the App seam. */
+  proposeWrite?: ProposeWrite;
+  confirmWrite?: ConfirmWrite;
 }): JSX.Element {
   const name = entry?.name ?? `Patient ${card.patient_id}`;
   const given = entry?.given ?? `patient ${card.patient_id}`;
@@ -91,7 +97,12 @@ export function PatientHero({
           </span>
         </div>
         {card.changes_since_last_seen.length > 0 ? (
-          <ClaimList claims={card.changes_since_last_seen} fetchTrend={fetchTrend} />
+          <ClaimList
+            claims={card.changes_since_last_seen}
+            fetchTrend={fetchTrend}
+            proposeWrite={proposeWrite}
+            confirmWrite={confirmWrite}
+          />
         ) : (
           <p className="empty-changes">
             No recorded changes since your last review — last synthesis{' '}
@@ -107,7 +118,12 @@ export function PatientHero({
             {summaryClaims.length} {summaryClaims.length === 1 ? 'record' : 'records'}
           </span>
         </div>
-        <ClaimList claims={summaryClaims} fetchTrend={fetchTrend} />
+        <ClaimList
+          claims={summaryClaims}
+          fetchTrend={fetchTrend}
+          proposeWrite={proposeWrite}
+          confirmWrite={confirmWrite}
+        />
       </section>
 
       <div className="hero-actions reveal" style={revealDelay(4)}>

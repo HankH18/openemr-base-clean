@@ -6,15 +6,19 @@
 
 import type { CopilotApi } from './client';
 import {
+  extractDisabledMessage,
+  extractWriteErrors,
   normalizeAdvance,
   normalizeAlerts,
   normalizeChat,
+  normalizeCommittedWrite,
   normalizeConversation,
   normalizeObservationSeries,
+  normalizeProposedWrite,
   normalizeRefresh,
   normalizeRoundView,
 } from './normalize';
-import { ApiError, type ChatRequest } from './types';
+import { ApiError, WriteDisabledError, WriteRejectedError, type ChatRequest } from './types';
 
 async function request(base: string, path: string, init?: RequestInit): Promise<unknown> {
   let response: Response;
@@ -34,6 +38,47 @@ async function request(base: string, path: string, init?: RequestInit): Promise<
   } catch {
     throw new ApiError('Record service returned malformed JSON');
   }
+}
+
+/**
+ * POST for the write endpoints. Unlike `request`, it reads the response body
+ * even on a non-2xx so the two contract failure modes surface as typed errors:
+ * 503 → `WriteDisabledError` (write-back off), 400/422 → `WriteRejectedError`
+ * carrying the verdict's specific violations. Everything else is a generic
+ * ApiError — a write whose success cannot be confirmed is never assumed committed.
+ */
+async function requestWrite(base: string, path: string, body: unknown): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError('Could not reach the record service');
+  }
+
+  let payload: unknown = null;
+  try {
+    payload = (await response.json()) as unknown;
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 503) {
+    throw new WriteDisabledError(extractDisabledMessage(payload));
+  }
+  if (response.status === 400 || response.status === 422) {
+    throw new WriteRejectedError(extractWriteErrors(payload));
+  }
+  if (!response.ok) {
+    throw new ApiError(`Record service replied ${response.status}`, response.status);
+  }
+  if (payload === null) {
+    throw new ApiError('Record service returned malformed JSON');
+  }
+  return payload;
 }
 
 export function createHttpApi(base: string): CopilotApi {
@@ -103,6 +148,27 @@ export function createHttpApi(base: string): CopilotApi {
           `&clinician_id=${clinicianId}`,
       );
       return normalizeObservationSeries(raw);
+    },
+
+    async proposeWrite(clinicianId, patientId, kind, metric, rawValue, unit) {
+      const raw = await requestWrite(base, '/v1/writes', {
+        clinician_id: clinicianId,
+        patient_id: patientId,
+        kind,
+        metric,
+        raw_value: rawValue,
+        unit,
+      });
+      return normalizeProposedWrite(raw);
+    },
+
+    async confirmWrite(clinicianId, patientId, candidate, idempotencyKey) {
+      const raw = await requestWrite(
+        base,
+        `/v1/writes/${encodeURIComponent(idempotencyKey)}/confirm`,
+        { clinician_id: clinicianId, patient_id: patientId, candidate },
+      );
+      return normalizeCommittedWrite(raw);
     },
   };
 }

@@ -249,6 +249,12 @@ export function App(): JSX.Element {
                 busy={rounds.busy}
                 onDone={handleDone}
                 fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
+                proposeWrite={(kind, metric, rawValue, unit) =>
+                  api.proposeWrite(CLINICIAN_ID, card.patient_id, kind, metric, rawValue, unit)
+                }
+                confirmWrite={(candidate, idempotencyKey) =>
+                  api.confirmWrite(CLINICIAN_ID, card.patient_id, candidate, idempotencyKey)
+                }
               />
               <ChatPanel
                 given={entry?.given ?? `patient ${card.patient_id}`}
@@ -259,6 +265,12 @@ export function App(): JSX.Element {
                   void chat.send(card.patient_id, message);
                 }}
                 fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
+                proposeWrite={(kind, metric, rawValue, unit) =>
+                  api.proposeWrite(CLINICIAN_ID, card.patient_id, kind, metric, rawValue, unit)
+                }
+                confirmWrite={(candidate, idempotencyKey) =>
+                  api.confirmWrite(CLINICIAN_ID, card.patient_id, candidate, idempotencyKey)
+                }
               />
             </div>
           </main>

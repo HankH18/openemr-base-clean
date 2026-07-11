@@ -957,6 +957,311 @@
   color: var(--ink-soft);
 }
 
+/* ---------------------------------------------------- direct-edit dialog */
+
+/* The "Edit" affordance trailing a writable-vital claim. Mirrors the
+   trend/provenance chips, but carries the petrol accent on its glyph so it
+   reads as an action, not a citation. */
+.edit-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.edit-chip[data-hovered] {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+.edit-chip[data-pressed] {
+  background: var(--accent-soft);
+}
+
+.edit-chip-icon {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.edit-chip-text {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.edit-chip[data-hovered] .edit-chip-text {
+  color: var(--accent);
+}
+
+.edit-pop[data-entering] {
+  animation: pop-in 140ms ease-out;
+}
+
+.edit-pop[data-exiting] {
+  animation: pop-out 100ms ease-in;
+}
+
+.edit-pop-dialog {
+  width: 336px;
+  max-width: calc(100vw - 24px);
+  padding: 16px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+.edit-form {
+  display: block;
+}
+
+.edit-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 4px;
+}
+
+.edit-kicker {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.edit-kicker--ok {
+  color: var(--ok);
+}
+
+.edit-kicker--muted {
+  color: var(--ink-faint);
+}
+
+.edit-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 560;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.edit-sub {
+  margin: 6px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.edit-prose {
+  margin: 10px 0 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.edit-strong {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* The "On file" / committed-record key-value block. */
+.edit-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.edit-meta > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.edit-meta dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.edit-meta dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.edit-field-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.edit-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.edit-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--raised);
+  color: var(--ink);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+}
+
+.edit-input[data-focused] {
+  border-color: var(--accent);
+}
+
+.edit-input[data-disabled] {
+  opacity: 0.55;
+}
+
+/* The unit is LOCKED — a static pill with a lock glyph, never an input. */
+.edit-unit {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  font-family: var(--font-data);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.edit-unit-lock {
+  width: 9px;
+  height: 11px;
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The propose echo-back: from → to, with the new value emphasised. */
+.edit-echo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-echo-from {
+  font-size: 13px;
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+.edit-echo-arrow {
+  color: var(--ink-faint);
+}
+
+.edit-echo-to {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* Soft, overridable range warning — amber, never blocks confirm. */
+.edit-warn {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 2px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.edit-warn p {
+  margin: 0;
+}
+
+.edit-warn p + p {
+  margin-top: 5px;
+}
+
+/* Hard rejection / commit failure — critical, blocks the flow. */
+.edit-errors {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  background: var(--critical-soft);
+  color: var(--critical);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.edit-errors p {
+  margin: 0;
+}
+
+.edit-errors p + p {
+  margin-top: 5px;
+}
+
+.edit-notice {
+  margin: 0 0 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
 .trend-loading {
   animation: soft-pulse 1.2s ease-in-out infinite;
 }

@@ -11,12 +11,14 @@ import {
   type ChatResponse,
   type Claim,
   type ClaimSeverity,
+  type CommittedWrite,
   type ConversationMessage,
   type DeteriorationAlert,
   type Freshness,
   type ObservationSeries,
   type ObservationSeriesPoint,
   type PatientCard,
+  type ProposedWrite,
   type ReferenceRange,
   type RefreshOutcome,
   type RoundView,
@@ -24,6 +26,9 @@ import {
   type TrendDirection,
   type Verification,
   type VerificationAction,
+  type WriteCandidate,
+  type WriteVerdict,
+  type WriteVitalCandidate,
 } from './types';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -281,6 +286,165 @@ export function normalizeObservationSeries(v: unknown): ObservationSeries {
     reference_range: normalizeReferenceRange(v['reference_range']),
     points,
   };
+}
+
+// ------------------------------------------------------------ write-back
+
+/** Keep only the string members of a wire array; anything else is dropped. */
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) {
+    return [];
+  }
+  return v.filter((item): item is string => typeof item === 'string');
+}
+
+/** A `{value:number}` id box, preserving any extra fields for verbatim round-trip. */
+function normalizeIdBox(v: unknown, context: string): { value: number } {
+  const value = normalizeId(v, context);
+  return isRecord(v) ? { ...v, value } : { value };
+}
+
+/**
+ * The typed vital reading inside a candidate. Spreads the raw object first so
+ * any server-side field the UI does not model survives the round-trip, then
+ * overlays the three fields the echo-back card reads with guaranteed types.
+ */
+function normalizeVitalCandidate(v: unknown): WriteVitalCandidate | null {
+  if (!isRecord(v)) {
+    return null;
+  }
+  return {
+    ...v,
+    metric: asString(v['metric'], 'candidate.vital.metric'),
+    value: asNumber(v['value'], 'candidate.vital.value'),
+    unit: asString(v['unit'], 'candidate.vital.unit'),
+  };
+}
+
+/**
+ * The candidate is an OPAQUE blob that must be re-sent verbatim in confirm, so
+ * the raw object is spread through untouched; only the enumerated fields are
+ * overlaid with tolerant, typed reads (their normalized forms reproduce the
+ * same JSON on the wire).
+ */
+function normalizeCandidate(v: unknown): WriteCandidate {
+  if (!isRecord(v)) {
+    fail('write.candidate');
+  }
+  return {
+    ...v,
+    kind: typeof v['kind'] === 'string' ? v['kind'] : '',
+    patient_id: normalizeIdBox(v['patient_id'], 'candidate.patient_id'),
+    clinician_id: normalizeIdBox(v['clinician_id'], 'candidate.clinician_id'),
+    idempotency_key: asString(v['idempotency_key'], 'candidate.idempotency_key'),
+    entry_mode: typeof v['entry_mode'] === 'string' ? v['entry_mode'] : '',
+    vital: normalizeVitalCandidate(v['vital']),
+    medication: isRecord(v['medication']) ? v['medication'] : null,
+  };
+}
+
+/** The deterministic write verdict, read tolerantly (absent → an empty pass). */
+function normalizeWriteVerdict(v: unknown): WriteVerdict {
+  if (!isRecord(v)) {
+    return { kind: '', metric: null, blocked: false, warnings: [], errors: [] };
+  }
+  return {
+    kind: typeof v['kind'] === 'string' ? v['kind'] : '',
+    metric: typeof v['metric'] === 'string' ? v['metric'] : null,
+    blocked: v['blocked'] === true,
+    warnings: asStringArray(v['warnings']),
+    errors: asStringArray(v['errors']),
+  };
+}
+
+export function normalizeProposedWrite(v: unknown): ProposedWrite {
+  if (!isRecord(v)) {
+    fail('proposed write');
+  }
+  return {
+    candidate: normalizeCandidate(v['candidate']),
+    verdict: normalizeWriteVerdict(v['verdict']),
+    effective_time: looseString(v['effective_time']),
+    notice: looseString(v['notice']),
+  };
+}
+
+export function normalizeCommittedWrite(v: unknown): CommittedWrite {
+  if (!isRecord(v)) {
+    fail('committed write');
+  }
+  const encounter = v['encounter_id'];
+  return {
+    resource_kind: looseString(v['resource_kind']),
+    new_id: looseString(v['new_id']),
+    encounter_id: typeof encounter === 'string' ? encounter : null,
+    committed_at: looseString(v['committed_at']),
+  };
+}
+
+/**
+ * Pull the human-readable violations out of a 400 write-rejection body. Tolerant
+ * of the shapes a FastAPI service may emit — a bare `{detail: "…"}`, a validation
+ * list `{detail: [{msg}]}`, or a domain `{errors: […]}` / `{verdict: {errors}}`.
+ */
+export function extractWriteErrors(body: unknown): string[] {
+  const out: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value === 'string' && value.trim() !== '') {
+      out.push(value);
+    }
+  };
+  const fromList = (list: unknown): void => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    for (const item of list) {
+      if (typeof item === 'string') {
+        push(item);
+      } else if (isRecord(item)) {
+        push(item['msg']);
+      }
+    }
+  };
+
+  if (typeof body === 'string') {
+    push(body);
+    return out;
+  }
+  if (!isRecord(body)) {
+    return out;
+  }
+
+  fromList(body['errors']);
+  if (isRecord(body['verdict'])) {
+    fromList(body['verdict']['errors']);
+  }
+  const detail = body['detail'];
+  if (typeof detail === 'string') {
+    push(detail);
+  } else if (Array.isArray(detail)) {
+    fromList(detail);
+  } else if (isRecord(detail)) {
+    fromList(detail['errors']);
+    push(detail['message']);
+    push(detail['msg']);
+  }
+  return out;
+}
+
+/** Best-effort human message for a 503 disabled response; undefined → use the default. */
+export function extractDisabledMessage(body: unknown): string | undefined {
+  if (!isRecord(body)) {
+    return undefined;
+  }
+  const detail = body['detail'];
+  if (typeof detail === 'string' && detail.trim() !== '') {
+    return detail;
+  }
+  if (isRecord(detail) && typeof detail['message'] === 'string' && detail['message'].trim() !== '') {
+    return detail['message'];
+  }
+  return undefined;
 }
 
 export function normalizeConversation(v: unknown): ConversationMessage[] {

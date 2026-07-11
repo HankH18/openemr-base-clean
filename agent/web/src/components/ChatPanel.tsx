@@ -3,6 +3,7 @@ import { Button, Input, TextField } from 'react-aria-components';
 import type { ObservationSeries, Verification } from '../api/types';
 import type { ChatMessage } from '../state/useChat';
 import { ClaimList } from './ClaimList';
+import type { ConfirmWrite, ProposeWrite } from './EditRecordDialog';
 
 type FetchTrend = (metric: string) => Promise<ObservationSeries>;
 
@@ -23,9 +24,13 @@ function answerClass(message: ChatMessage): string {
 function Answer({
   message,
   fetchTrend,
+  proposeWrite,
+  confirmWrite,
 }: {
   message: ChatMessage;
   fetchTrend?: FetchTrend;
+  proposeWrite?: ProposeWrite;
+  confirmWrite?: ConfirmWrite;
 }): JSX.Element {
   const action = message.verification?.action;
   return (
@@ -44,7 +49,13 @@ function Answer({
       <p className={message.pending ? 'msg-a-body pending-pulse' : 'msg-a-body'}>{message.text}</p>
       {message.claims.length > 0 ? (
         <div className="msg-a-claims">
-          <ClaimList claims={message.claims} dense fetchTrend={fetchTrend} />
+          <ClaimList
+            claims={message.claims}
+            dense
+            fetchTrend={fetchTrend}
+            proposeWrite={proposeWrite}
+            confirmWrite={confirmWrite}
+          />
         </div>
       ) : null}
       {message.correlationId !== null ? (
@@ -65,6 +76,8 @@ export function ChatPanel({
   suggestions,
   onSend,
   fetchTrend,
+  proposeWrite,
+  confirmWrite,
 }: {
   given: string;
   messages: ChatMessage[];
@@ -72,6 +85,9 @@ export function ChatPanel({
   suggestions: string[];
   onSend: (message: string) => void;
   fetchTrend?: FetchTrend;
+  /** Physician direct-edit callbacks, bound to this patient at the App seam. */
+  proposeWrite?: ProposeWrite;
+  confirmWrite?: ConfirmWrite;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -117,7 +133,13 @@ export function ChatPanel({
               {message.text}
             </div>
           ) : (
-            <Answer message={message} key={message.id} fetchTrend={fetchTrend} />
+            <Answer
+              message={message}
+              key={message.id}
+              fetchTrend={fetchTrend}
+              proposeWrite={proposeWrite}
+              confirmWrite={confirmWrite}
+            />
           ),
         )}
       </div>

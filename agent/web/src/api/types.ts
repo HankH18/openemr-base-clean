@@ -137,6 +137,91 @@ export interface ConversationMessage {
   content: string;
 }
 
+// ------------------------------------------------------------ write-back
+
+/**
+ * The two record kinds a physician can direct-edit. Phase 1 only surfaces
+ * `vital` in the UI; `medication` is contract-complete but not yet editable
+ * from the drill-down.
+ */
+export type WriteKind = 'vital' | 'medication';
+
+/**
+ * Deterministic verdict from the server-side write-verification pass. For a
+ * human direct-edit, an out-of-range value is a SOFT `warning` (surfaced,
+ * still confirmable); `blocked` + `errors` is a hard stop (unparseable value,
+ * unknown metric, wrong unit) — normally delivered as a 400.
+ */
+export interface WriteVerdict {
+  kind: string;
+  metric: string | null;
+  blocked: boolean;
+  warnings: string[];
+  errors: string[];
+}
+
+/**
+ * The typed vital reading inside a candidate — the only part of the candidate
+ * the UI reads (for the echo-back card). The metric/value/unit are server-
+ * parsed and authoritative.
+ */
+export interface WriteVitalCandidate {
+  metric: string;
+  value: number;
+  unit: string;
+}
+
+/**
+ * The parsed write candidate. Treated as an OPAQUE blob that is round-tripped
+ * verbatim into the confirm call — the UI only reads `idempotency_key` (for the
+ * confirm URL) and `vital.value`/`vital.unit` (for display). The index
+ * signature preserves any server-side fields the client does not model, so
+ * confirm re-sends the exact candidate the server proposed.
+ */
+export interface WriteCandidate {
+  kind: string;
+  patient_id: { value: number };
+  clinician_id: { value: number };
+  idempotency_key: string;
+  entry_mode: string;
+  vital: WriteVitalCandidate | null;
+  medication: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+/** Response to `POST /v1/writes` — the structured echo-back to confirm against. */
+export interface ProposedWrite {
+  candidate: WriteCandidate;
+  verdict: WriteVerdict;
+  effective_time: string;
+  notice: string;
+}
+
+/** Response to `POST /v1/writes/{idempotency_key}/confirm` — the committed record. */
+export interface CommittedWrite {
+  resource_kind: string;
+  new_id: string;
+  encounter_id: string | null;
+  committed_at: string;
+}
+
+/** Request body for `POST /v1/writes`. */
+export interface ProposeWriteRequest {
+  clinician_id: number;
+  patient_id: number;
+  kind: WriteKind;
+  metric: string;
+  raw_value: string;
+  unit: string;
+}
+
+/** Request body for `POST /v1/writes/{idempotency_key}/confirm`. */
+export interface ConfirmWriteRequest {
+  clinician_id: number;
+  patient_id: number;
+  candidate: WriteCandidate;
+}
+
 /** Raised by adapters when the service replies with a non-2xx or a bad shape. */
 export class ApiError extends Error {
   public readonly status: number | null;
@@ -145,5 +230,32 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+  }
+}
+
+/**
+ * Write-back is turned off server-side (503). A distinct type so the UI can
+ * show the "editing is disabled" state instead of a generic failure.
+ */
+export class WriteDisabledError extends ApiError {
+  public constructor(message = 'Direct-edit is disabled on this deployment') {
+    super(message, 503);
+    this.name = 'WriteDisabledError';
+  }
+}
+
+/**
+ * The write was rejected at the parse/verify gate (400): unparseable value,
+ * unknown metric, or a unit that does not match the metric. Carries the
+ * specific violations so the dialog can surface them verbatim.
+ */
+export class WriteRejectedError extends ApiError {
+  public readonly errors: string[];
+
+  public constructor(errors: string[]) {
+    const [first] = errors;
+    super(first ?? 'That value could not be recorded', 400);
+    this.name = 'WriteRejectedError';
+    this.errors = errors.length > 0 ? errors : ['That value could not be recorded'];
   }
 }

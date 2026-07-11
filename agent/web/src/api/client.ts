@@ -9,11 +9,15 @@ import type {
   AdvanceResult,
   ChatRequest,
   ChatResponse,
+  CommittedWrite,
   ConversationMessage,
   DeteriorationAlert,
   ObservationSeries,
+  ProposedWrite,
   RefreshOutcome,
   RoundView,
+  WriteCandidate,
+  WriteKind,
 } from './types';
 import { createMockApi } from './mock';
 import { createHttpApi } from './http';
@@ -46,6 +50,32 @@ export interface CopilotApi {
     patientId: number,
     metric: string,
   ): Promise<ObservationSeries>;
+  /**
+   * Step 1 of the physician direct-edit gate: parse a human-typed vital into a
+   * verified candidate and return the structured echo-back to confirm against.
+   * Throws `WriteDisabledError` (503) when write-back is off, or
+   * `WriteRejectedError` (400) carrying the specific violations for a bad
+   * value/unit. Does NOT commit anything.
+   */
+  proposeWrite(
+    clinicianId: number,
+    patientId: number,
+    kind: WriteKind,
+    metric: string,
+    rawValue: string,
+    unit: string,
+  ): Promise<ProposedWrite>;
+  /**
+   * Step 2: commit the exact candidate the physician reviewed. The `candidate`
+   * is round-tripped verbatim and the `idempotencyKey` keys the confirm URL so
+   * a double-click cannot create a duplicate record.
+   */
+  confirmWrite(
+    clinicianId: number,
+    patientId: number,
+    candidate: WriteCandidate,
+    idempotencyKey: string,
+  ): Promise<CommittedWrite>;
 }
 
 export function createApi(): CopilotApi {

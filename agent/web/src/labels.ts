@@ -75,6 +75,137 @@ export function isNumericObservation(claim: Claim): boolean {
   return trimmed !== '' && Number.isFinite(Number(trimmed));
 }
 
+// ---------------------------------------------------------- writable vitals
+
+/**
+ * The closed set of vitals a physician may direct-edit in Phase 1. Mirrors the
+ * backend `WritableMetric` StrEnum exactly — the value sent as the `metric`
+ * field of a propose request. Only vitals are editable in Phase 1.
+ */
+export type WritableMetric =
+  | 'heart_rate'
+  | 'spo2'
+  | 'systolic_bp'
+  | 'diastolic_bp'
+  | 'respiratory_rate'
+  | 'temperature'
+  | 'weight'
+  | 'height';
+
+export interface WritableMetricSpec {
+  metric: WritableMetric;
+  /** Fixed doctor-facing label shown in the edit dialog (never editable). */
+  label: string;
+  /** The unit sent with the write and shown LOCKED — never a free-text field. */
+  unit: string;
+  /**
+   * Absolute physiologic plausibility bounds. A value outside is a SOFT
+   * warning for a human direct-edit — surfaced, still confirmable. Used by the
+   * mock adapter to demo the amber banner offline; the live gate lives server-side.
+   */
+  min: number;
+  max: number;
+  /** Lowercased label forms that identify this metric in an Observation claim. */
+  aliases: string[];
+}
+
+/** The write-metric registry — the single source of label/unit/bounds/aliases. */
+export const WRITABLE_METRICS: Record<WritableMetric, WritableMetricSpec> = {
+  heart_rate: {
+    metric: 'heart_rate',
+    label: 'Heart rate',
+    unit: 'bpm',
+    min: 20,
+    max: 220,
+    aliases: ['heart rate', 'pulse'],
+  },
+  spo2: {
+    metric: 'spo2',
+    label: 'Oxygen saturation',
+    unit: '%',
+    min: 50,
+    max: 100,
+    aliases: ['oxygen saturation', 'spo2', 'spo₂', 'o2 saturation'],
+  },
+  systolic_bp: {
+    metric: 'systolic_bp',
+    label: 'Systolic blood pressure',
+    unit: 'mmHg',
+    min: 50,
+    max: 260,
+    aliases: ['systolic blood pressure', 'systolic bp', 'systolic'],
+  },
+  diastolic_bp: {
+    metric: 'diastolic_bp',
+    label: 'Diastolic blood pressure',
+    unit: 'mmHg',
+    min: 20,
+    max: 160,
+    aliases: ['diastolic blood pressure', 'diastolic bp', 'diastolic'],
+  },
+  respiratory_rate: {
+    metric: 'respiratory_rate',
+    label: 'Respiratory rate',
+    unit: 'breaths/min',
+    min: 4,
+    max: 60,
+    aliases: ['respiratory rate', 'respiration'],
+  },
+  temperature: {
+    metric: 'temperature',
+    label: 'Temperature',
+    unit: '°F',
+    min: 90,
+    max: 113,
+    aliases: ['temperature', 'temp'],
+  },
+  weight: {
+    metric: 'weight',
+    label: 'Weight',
+    unit: 'lb',
+    min: 1,
+    max: 1000,
+    aliases: ['weight'],
+  },
+  height: {
+    metric: 'height',
+    label: 'Height',
+    unit: 'in',
+    min: 10,
+    max: 100,
+    aliases: ['height'],
+  },
+};
+
+/**
+ * The `WritableMetric` a claim is editable as, or null. Only a numeric
+ * Observation whose leading metric label matches a writable-vital alias
+ * qualifies — labs (Troponin, Potassium, …) and non-observations never do, so
+ * the "Edit" affordance appears exactly where a new vital record can be written.
+ * The alias is matched at a word boundary so "Heart rate trending up, 92 → 118…"
+ * still resolves to `heart_rate`.
+ */
+export function writableMetric(claim: Claim): WritableMetric | null {
+  if (claim.source_ref.resource_type !== 'Observation') {
+    return null;
+  }
+  if (!isNumericObservation(claim)) {
+    return null;
+  }
+  const label = observationMetric(claim).trim().toLowerCase();
+  if (label === '') {
+    return null;
+  }
+  for (const spec of Object.values(WRITABLE_METRICS)) {
+    for (const alias of spec.aliases) {
+      if (label === alias || label.startsWith(`${alias} `)) {
+        return spec.metric;
+      }
+    }
+  }
+  return null;
+}
+
 /** Trim, lowercase, and drop trailing dots so medication values compare cleanly. */
 function normalizeMedicationValue(value: string): string {
   return value.trim().toLowerCase().replace(/\.+$/, '').trim();

@@ -2,7 +2,8 @@ import { useCallback, useState, type ReactNode } from 'react';
 import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
 import type { Claim, ClaimSeverity, ObservationSeries, TrendDirection } from '../api/types';
 import { claimTone, type ClaimTone } from '../fmt';
-import { humanizeLabel, isNumericObservation, observationMetric } from '../labels';
+import { humanizeLabel, isNumericObservation, observationMetric, writableMetric } from '../labels';
+import { EditRecordDialog, type ConfirmWrite, type ProposeWrite } from './EditRecordDialog';
 import { MetricChart } from './MetricChart';
 import { ProvenanceChip } from './ProvenanceChip';
 
@@ -186,25 +187,46 @@ export function ClaimList({
   claims,
   dense = false,
   fetchTrend,
+  proposeWrite,
+  confirmWrite,
 }: {
   claims: Claim[];
   dense?: boolean;
   /** When provided, numeric Observation claims gain a "View trend" chart. */
   fetchTrend?: FetchTrend;
+  /**
+   * When both are provided, claims whose metric is a writable vital gain an
+   * "Edit" affordance (propose → echo-back → confirm). Bound to the current
+   * patient + clinician at the App seam, exactly like `fetchTrend`.
+   */
+  proposeWrite?: ProposeWrite;
+  confirmWrite?: ConfirmWrite;
 }): JSX.Element {
+  const canEdit = proposeWrite !== undefined && confirmWrite !== undefined;
   return (
     <ul className={dense ? 'claims claims--dense' : 'claims'}>
-      {claims.map((claim, i) => (
-        <li className="claim" key={`${claim.source_ref.resource_id}-${i}`}>
-          <span className="claim-text">{claimText(claim)}</span>
-          <span className="claim-tools">
-            {fetchTrend !== undefined && isNumericObservation(claim) ? (
-              <TrendChip claim={claim} fetchTrend={fetchTrend} />
-            ) : null}
-            <ProvenanceChip source={claim.source_ref} />
-          </span>
-        </li>
-      ))}
+      {claims.map((claim, i) => {
+        const editMetric = canEdit ? writableMetric(claim) : null;
+        return (
+          <li className="claim" key={`${claim.source_ref.resource_id}-${i}`}>
+            <span className="claim-text">{claimText(claim)}</span>
+            <span className="claim-tools">
+              {fetchTrend !== undefined && isNumericObservation(claim) ? (
+                <TrendChip claim={claim} fetchTrend={fetchTrend} />
+              ) : null}
+              {editMetric !== null && proposeWrite !== undefined && confirmWrite !== undefined ? (
+                <EditRecordDialog
+                  claim={claim}
+                  metric={editMetric}
+                  proposeWrite={proposeWrite}
+                  confirmWrite={confirmWrite}
+                />
+              ) : null}
+              <ProvenanceChip source={claim.source_ref} />
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }

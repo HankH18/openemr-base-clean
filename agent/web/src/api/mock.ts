@@ -11,16 +11,21 @@ import type { CopilotApi } from './client';
 import { ALERT_REASON_1005, COHORT, type ChatFact, type CohortPatient, type CohortPhase } from './cohort';
 import { patientName } from '../census';
 import { newCorrelationId } from '../ids';
+import { WRITABLE_METRICS, type WritableMetric } from '../labels';
 import {
   ApiError,
+  WriteRejectedError,
   type ChatRequest,
   type ChatResponse,
   type Claim,
+  type CommittedWrite,
   type ConversationMessage,
   type DeteriorationAlert,
   type PatientCard,
+  type ProposedWrite,
   type RefreshOutcome,
   type RoundView,
+  type WriteCandidate,
 } from './types';
 
 const DETERIORATION_AFTER_MS = 12_000;
@@ -58,6 +63,8 @@ export function createMockApi(): CopilotApi {
   const recheckedAt = new Map<number, number>();
   const conversations = new Map<number, ConversationMessage[]>();
   let nextConversationId = 9001;
+  /** idempotency_key → the record already committed for it (double-confirm safe). */
+  const committedWrites = new Map<string, CommittedWrite>();
 
   function maybeFireDeterioration(): void {
     if (deteriorationFired || session === null) {
@@ -323,6 +330,81 @@ export function createMockApi(): CopilotApi {
         return empty;
       }
       return { ...match[1], patient_id: patientId };
+    },
+
+    async proposeWrite(clinicianId, patientId, kind, metric, rawValue, unit) {
+      await delay(jitter(420, 320));
+      requirePatient(patientId);
+
+      const spec = WRITABLE_METRICS[metric as WritableMetric] as
+        | (typeof WRITABLE_METRICS)[WritableMetric]
+        | undefined;
+      if (spec === undefined) {
+        // Unknown metric — hard block, exactly like the server-side gate.
+        throw new WriteRejectedError([`"${metric}" is not an editable vital.`]);
+      }
+      if (unit !== spec.unit) {
+        throw new WriteRejectedError([
+          `Unit for ${spec.label.toLowerCase()} must be ${spec.unit}, not "${unit}".`,
+        ]);
+      }
+      const value = Number(rawValue.trim());
+      if (rawValue.trim() === '' || !Number.isFinite(value)) {
+        throw new WriteRejectedError([`"${rawValue}" is not a numeric ${spec.label.toLowerCase()}.`]);
+      }
+
+      // Out-of-physiologic-range is a SOFT warning for a human direct-edit —
+      // surfaced, still confirmable — never a hard block.
+      const warnings =
+        value < spec.min || value > spec.max
+          ? [
+              `${value} ${spec.unit} is outside the usual range ` +
+                `(${spec.min}–${spec.max} ${spec.unit}). Confirm this is correct.`,
+            ]
+          : [];
+
+      const candidate: WriteCandidate = {
+        kind,
+        patient_id: { value: patientId },
+        clinician_id: { value: clinicianId },
+        idempotency_key: `mock-${newCorrelationId()}`,
+        entry_mode: 'human_direct',
+        vital: { metric: spec.metric, value, unit: spec.unit },
+        medication: null,
+      };
+
+      const proposed: ProposedWrite = {
+        candidate,
+        verdict: {
+          kind,
+          metric: spec.metric,
+          blocked: false,
+          warnings,
+          errors: [],
+        },
+        effective_time: new Date().toISOString(),
+        notice:
+          'This creates a NEW record dated now; it does not overwrite prior values.',
+      };
+      return proposed;
+    },
+
+    async confirmWrite(_clinicianId, _patientId, candidate, idempotencyKey) {
+      await delay(jitter(520, 360));
+      // Idempotent: a retried/double-clicked confirm returns the same record.
+      const existing = committedWrites.get(idempotencyKey);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const suffix = Math.floor(Math.random() * 9000 + 1000);
+      const committed: CommittedWrite = {
+        resource_kind: candidate.kind === 'medication' ? 'medication' : 'vital',
+        new_id: `${candidate.kind}-${suffix}`,
+        encounter_id: candidate.kind === 'medication' ? null : `enc-${suffix}`,
+        committed_at: new Date().toISOString(),
+      };
+      committedWrites.set(idempotencyKey, committed);
+      return committed;
     },
   };
 }
