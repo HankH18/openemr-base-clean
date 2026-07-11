@@ -45,7 +45,7 @@ from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability, current_correlation_id
-from copilot.rounds.summary import _group_observations, _unit
+from copilot.rounds.summary import _unit, group_observations
 
 _logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ async def observation_series(
     # then keep every group whose label matches the requested metric. Merging
     # across groups is defensive: two raw code displays can humanize to one label.
     matched: list[Mapping[str, Any]] = []
-    for raw_label, group in _group_observations(resources).items():
+    for raw_label, group in group_observations(resources).items():
         if humanize_label(raw_label) == metric:
             matched.extend(group)
 

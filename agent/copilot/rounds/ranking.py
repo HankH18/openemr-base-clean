@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from copilot.domain.contracts import VerificationDomainFlag
 from copilot.domain.primitives import PatientId, ResourceType
+from copilot.rounds.summary import group_observations
 from copilot.verification.core import build_context_from_resources
 from copilot.verification.rules import critical_lab
 
@@ -60,7 +61,7 @@ def assess_patient(
 
     Deterministic: the same resources always yield the same score and reason.
     """
-    context = build_context_from_resources(resources)
+    context = build_context_from_resources(_latest_per_metric(resources))
     flags = critical_lab(context)
     critical = [f for f in flags if f.severity == "critical"]
     warning = [f for f in flags if f.severity == "warning"]
@@ -84,6 +85,31 @@ def assess_patient(
         acuity_score=NORMAL_SCORE,
         rank_reason="No abnormal findings on the latest labs.",
     )
+
+
+def _latest_per_metric(resources: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Collapse each metric's time series to its latest reading; keep the rest.
+
+    Acuity must reflect the patient's *current* clinical state, so every metric
+    contributes at most one flag — its newest reading — never a worse historical
+    point. A patient whose sodium fell to 118 two days ago but has since
+    corrected to 124 is a "sodium 124" patient here, not a "sodium 118" one.
+
+    The grouping is the summary's own (:func:`group_observations`, sorted
+    latest-first by clinical timestamp), so the acuity view and the chart-summary
+    card cite the identical reading per metric. Non-Observation resources pass
+    through untouched (a claim may still cite any of them); non-latest and
+    non-groundable Observations are dropped — a valueless Observation carries no
+    flag, so dropping it changes nothing.
+    """
+    latest_ids = {
+        str(group[0].get("id")) for group in group_observations(resources).values()
+    }
+    return [
+        res
+        for res in resources
+        if res.get("resourceType") != "Observation" or str(res.get("id")) in latest_ids
+    ]
 
 
 def rank(assessments: Sequence[AcuityAssessment]) -> list[AcuityAssessment]:

@@ -43,7 +43,7 @@ def build_summary_claims(resources: Sequence[Mapping[str, Any]]) -> list[Claim]:
     claims: list[Claim] = []
 
     # Observations → one-per-metric (latest reading) + a trend vs the prior one.
-    for group in _group_observations(observations).values():
+    for group in group_observations(observations).values():
         claim = _observation_claim(group)
         if claim is not None:
             claims.append(claim)
@@ -81,7 +81,7 @@ def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 1
     flag / OpenEMR ``abnormal``) or moved vs the prior reading. Returns ``[]``
     when the data carries no timestamps to anchor the window. Deterministic.
     """
-    groups = _group_observations(resources)
+    groups = group_observations(resources)
     times = [t for group in groups.values() for res in group if (t := _effective(res)) is not None]
     if not times:
         return []
@@ -141,8 +141,14 @@ def _dedupe_medications(claims: list[Claim]) -> list[Claim]:
     return result
 
 
-def _group_observations(resources: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
-    """Group groundable Observations by metric label, each sorted latest-first."""
+def group_observations(resources: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    """Group groundable Observations by metric label, each sorted latest-first.
+
+    The metric label is the one :func:`describe_resource` derives, so callers
+    that group here agree on both *which* Observations count and *which* reading
+    is latest — the chart summary, the deterioration-change view, the per-metric
+    series endpoint, and the acuity ranking all collapse identically.
+    """
     groups: dict[str, list[Mapping[str, Any]]] = {}
     for res in resources:
         if res.get("resourceType") != "Observation" or res.get("id") is None:
