@@ -162,6 +162,9 @@ services:
       # bare-IP demo (auth_mode=disabled) is unchanged.
       COPILOT_OAUTH_AUTHORIZE_URL: ${COPILOT_OAUTH_AUTHORIZE_URL:-http://openemr/oauth2/default/authorize}
       COPILOT_SMART_APP_CLIENT_ID: ${SMART_APP_CLIENT_ID:-}
+      # Secret for the confidential SMART (login) client — client_secret_basic
+      # auth on the token exchange. Secrets-manager/.env only; never committed.
+      COPILOT_SMART_APP_CLIENT_SECRET: ${SMART_APP_CLIENT_SECRET:-}
       COPILOT_BACKEND_SERVICES_CLIENT_ID: ${BACKEND_SERVICES_CLIENT_ID:-}
       COPILOT_BACKEND_SERVICES_SCOPES: ${BACKEND_SERVICES_SCOPES:-}
       COPILOT_BACKEND_SERVICES_PRIVATE_KEY_PATH: /run/secrets/backend-key.pem
