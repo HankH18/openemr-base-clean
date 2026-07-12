@@ -45,17 +45,66 @@ The gate is **all-or-nothing**: all three creds set ⇒ tracing on; any blank �
 4. Note the **host** for your region — EU: `https://cloud.langfuse.com`,
    US: `https://us.cloud.langfuse.com`.
 
-### Option B — Self-host on the droplet (docker)
+### Option B — Self-hosted (droplet)
 
-Only if data must stay on your VM (heavier — adds Postgres + ClickHouse + Redis):
+Use this when PHI-adjacent trace data (patient/clinician ids in span metadata)
+must stay on the org's own infra. The deploy compose ships a self-hosted
+Langfuse stack **built in and off by default** — two services (`langfuse` +
+its own `langfuse-postgres`, on a private `observability` network, never
+published) gated behind the `observability` **profile**. A plain
+`docker compose up` does not start them, so the default demo is unchanged.
+
+The image is pinned to a **Langfuse v2 server** (`langfuse/langfuse:2`,
+2.95.11) to match the SDK pin `langfuse>=2.55,<3`. v2 needs only Postgres —
+v3 additionally requires ClickHouse + Redis + object storage (MinIO), which
+is out of scope here; do not bump the major without adding them.
+
+**1. Set the self-host secrets in the deploy `.env`** (they fail loud if left
+blank — Postgres refuses an empty password, Langfuse refuses a missing
+`NEXTAUTH_SECRET`/`SALT`):
 
 ```bash
-git clone https://github.com/langfuse/langfuse.git && cd langfuse
-docker compose up -d
+ssh root@198.199.68.21
+cd /root/openemr-base-clean
+# openssl rand -base64 32  # generate a fresh value for each of the three:
+#   LANGFUSE_POSTGRES_PASSWORD=...
+#   NEXTAUTH_SECRET=...
+#   SALT=...
+nano .env
 ```
 
-Open `http://<droplet-ip>:3000`, create a project, copy the keys. Host becomes
-`http://<droplet-ip>:3000`. For a demo, **Option A is simpler**.
+**2. Bring up the profile:**
+
+```bash
+docker compose -f docker-compose.deploy.yml --env-file .env \
+  --profile observability up -d
+```
+
+**3. Create a project + mint keys via an SSH tunnel** (the UI is not publicly
+exposed — recommended for least exposure). Uncomment the loopback `ports:`
+block on the `langfuse` service in `docker-compose.deploy.yml`
+(`127.0.0.1:3000:3000`, never `0.0.0.0`), recreate it, then from your Mac:
+
+```bash
+ssh -L 3000:127.0.0.1:3000 root@198.199.68.21
+# open http://localhost:3000 → sign up (first user), create an organization +
+# project → Settings → API Keys → Create → copy the pk-lf-… and sk-lf-… keys.
+```
+
+**4. Point the agent at the in-network instance.** Set these three in `.env`
+(the host is the compose service name, reachable from the agent over the
+`agent` network — no host port needed) and recreate the agent:
+
+```bash
+#   LANGFUSE_HOST=http://langfuse:3000
+#   LANGFUSE_PUBLIC_KEY=pk-lf-...
+#   LANGFUSE_SECRET_KEY=sk-lf-...
+docker compose -f docker-compose.deploy.yml --env-file .env up -d --build agent
+```
+
+To stop the self-hosted stack without touching the demo:
+`docker compose -f docker-compose.deploy.yml --profile observability down`
+(the `langfuse_db` volume persists trace data across restarts).
 
 ---
 

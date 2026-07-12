@@ -326,3 +326,114 @@ Point DNS at the droplet, `docker compose up -d caddy`, and the UI is at
 IP-only demo, swap the site label for `:443` + add `tls internal`, or serve on `:80`.
 
 _This replaces the deferred-TLS follow-up in §9 for the agent/UI surface._
+
+---
+
+## 12. Cut over to HTTPS at a real domain (opt-in)
+
+The default deploy runs plain HTTP on `:80` at the bare droplet IP (`Caddyfile.example`).
+That keeps working unchanged. **HTTPS is a hard prerequisite for per-physician SMART
+login** (`Secure` cookies, OAuth-over-TLS, https redirect URIs). When you have a domain,
+cut over with the steps below — nothing here changes until you deliberately swap the
+Caddyfile.
+
+**12.1 — DNS + firewall (operator, not code).** Create an A-record and make sure both
+ACME ports are reachable:
+
+```
+agentforge.<your-domain>.   A   <droplet-ip>
+```
+
+DigitalOcean droplets have no firewall by default, so `:80` and `:443` are already open.
+If you added a cloud firewall or `ufw`, allow inbound **80 and 443** (Caddy needs `:80`
+for the ACME HTTP-01 challenge + the http→https redirect, and `:443` for TLS).
+
+**12.2 — Set the https origin everywhere (single source of truth).** In `.env`, set BOTH
+to the *same* https origin — a mismatch is the silent SMART/redirect-URI failure class
+this runbook already warns about for `SITE_ADDR_OATH` (§10):
+
+```bash
+SITE_ADDR_OATH=https://agentforge.<your-domain>          # OpenEMR's advertised issuer + redirect validation + JWT aud
+COPILOT_PUBLIC_BASE_URL=https://agentforge.<your-domain> # builds the SMART redirect_uri + post-login redirect
+```
+
+The registered SMART app redirect URI (see PRODUCTION_GRADE_PLAN.md §A.8) must be exactly
+`${COPILOT_PUBLIC_BASE_URL}/v1/auth/callback`. CORS stays empty — the SPA and API are
+same-origin behind Caddy, so cookies are first-party and no CORS middleware is needed.
+
+**12.3 — Switch Caddy to the domain site.** The compose file already publishes `:443`
+alongside `:80` (no compose edit needed), and `caddy_data` already persists the cert.
+Copy the HTTPS variant over the live `Caddyfile` (gitignored), set your domain + a fresh
+password hash, and redeploy just caddy + agent:
+
+```bash
+cd /root/openemr-base-clean
+cp Caddyfile.https.example Caddyfile
+#  - replace agentforge.example.com with your real domain
+#  - replace the password hash:
+docker run --rm caddy caddy hash-password --plaintext 'YOUR-PASSWORD'
+docker compose -f docker-compose.deploy.yml --env-file .env up -d caddy agent
+```
+
+Caddy provisions a Let's Encrypt cert on the first hit and auto-renews it; the cert
+persists in `caddy_data`. Plain-HTTP `:80` requests are auto-redirected to https. The
+`@api`/SPA routing and the `basic_auth` guard are identical to the `:80` file — only the
+site label changed. Verify: `curl -I https://agentforge.<your-domain>/` returns `200` and
+the cert is Let's Encrypt (not `tls internal`).
+
+> **Rollback:** `cp Caddyfile.example Caddyfile` and re-run the `up -d caddy` line to
+> return to the bare-IP `:80` demo. Certs in `caddy_data` are untouched.
+
+## 13. Self-hosted Langfuse on the droplet (opt-in)
+
+By default observability points at Langfuse **Cloud** (or is off entirely). To keep
+PHI-adjacent trace data on the org's own infra, bring up the self-hosted stack — two
+services gated behind the `observability` compose profile, so a plain `docker compose up`
+never starts them and the default demo is unchanged:
+
+```bash
+docker compose -f docker-compose.deploy.yml --env-file .env \
+  --profile observability up -d
+```
+
+Set `LANGFUSE_POSTGRES_PASSWORD`, `NEXTAUTH_SECRET`, and `SALT` in `.env` first (they fail
+loud if empty). Then create a project in the self-hosted UI (reach it via SSH tunnel —
+it is **not** publicly exposed), mint a public/secret key pair, and set
+`LANGFUSE_HOST=http://langfuse:3000` + the two keys in `.env`, then recreate the agent.
+The pinned image is a **Langfuse v2** server (matches the `langfuse>=2.55,<3` SDK; v3 would
+need ClickHouse/Redis/object storage — out of scope). Full runbook + tunnel command:
+`agent/LANGFUSE_SETUP.md` → "Self-hosted (droplet)".
+
+## 14. Encryption at rest
+
+Three layers, with an explicit split between **what the software does** and **what the
+operator must own**. Do not over-claim the platform layer.
+
+**14.1 — Application-layer token encryption (software).** When per-physician SMART login
+is enabled (`COPILOT_AUTH_MODE=smart`), the physicians' OpenEMR OAuth access/refresh tokens
+— the crown-jewel secret — are encrypted at rest with a Fernet key before being stored in
+the agent database, and are never sent to the browser or written to a log. This is
+genuinely customer-controlled and independent of the hosting platform. Generate the key
+and put it in `.env` as `COPILOT_SESSION_ENC_KEY` (secrets-manager only; never commit):
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+**14.2 — DigitalOcean encrypted block-storage volume (operator step).** `postgres:16-alpine`
+has no built-in TDE and MariaDB engine-level encryption needs a keyfile+plugin, so the
+realistic single-VM control is **disk-level**. The achievable customer-managed win: attach
+a **DigitalOcean Block Storage volume** (DO encrypts these at rest) and relocate the DB
+named volumes (`db`, `agent_db`, and — if you enabled it — `langfuse_db`) or the whole
+Docker data-root (`/var/lib/docker`) onto it. This is an operator action, not something the
+compose file can do for you. (Stronger and heavier: LUKS full-disk encryption on the
+droplet — document as an option, not a default.)
+
+**14.3 — DO platform disk encryption (do NOT over-claim).** DigitalOcean encrypts droplet
+disks at the platform/data-center level, but that is **not customer-managed** and must not
+be presented as a customer-controlled safeguard. Only 14.1 (token encryption) and 14.2
+(encrypted block volume) are controls the deploying org actually holds keys to / manages.
+
+> Compliance framing (technical-safeguard map, BAAs, operator-owned administrative and
+> physical safeguards) is tracked separately in the compliance write-up
+> (PRODUCTION_GRADE_PLAN.md §7 / `COMPLIANCE.md`).

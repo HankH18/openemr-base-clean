@@ -8,7 +8,10 @@ values are in gitignored `.env` files or handed off separately.
 
 ## Public demo (droplet)
 
-- **App URL:** http://198.199.68.21/
+- **App URL:** http://198.199.68.21/ (plain HTTP, bare IP — the default deploy).
+  HTTPS at a real domain is prepared and opt-in: once a DNS A-record exists, copy
+  `Caddyfile.https.example` → `Caddyfile` for automatic Let's Encrypt TLS (compose
+  already publishes `:443`). See `DEPLOY.md` → "Cut over to HTTPS".
 - **Guard:** HTTP basic-auth, username **`demo`** (password handed off separately;
   it lives only as a bcrypt hash in the droplet's gitignored `Caddyfile`). Rotate
   with `caddy hash-password` → update `/root/openemr-base-clean/Caddyfile` →
@@ -18,7 +21,12 @@ values are in gitignored `.env` files or handed off separately.
   cohort seed on the droplet — see `DEPLOY.md` → "Finish live data on the droplet".
 - **Observability:** Langfuse Cloud — https://cloud.langfuse.com (your
   *AgentForge-Gauntlet* project). Chat/rounds appear under Tracing → Traces,
-  keyed by the `X-Correlation-ID` response header.
+  keyed by the `X-Correlation-ID` response header. A **self-hosted** alternative
+  (keeps PHI-adjacent traces on the droplet) is built into the deploy compose,
+  off by default behind the `observability` profile — bring it up with
+  `--profile observability`, access the UI via SSH tunnel (not publicly exposed),
+  and set `LANGFUSE_HOST=http://langfuse:3000`. See `agent/LANGFUSE_SETUP.md`
+  → "Self-hosted (droplet)".
 - **Ingress model:** Caddy is the sole public listener on `:80`. It serves the
   React SPA and reverse-proxies `/v1/*`, `/health`, `/ready`, `/docs`,
   `/openapi.json` → internal `agent:8000`. OpenEMR is **not** publicly exposed.
@@ -79,5 +87,5 @@ cd agent/web && VITE_API_BASE_URL=http://localhost:8000 npm run dev   # http://l
 | Co-Pilot UI | http://198.199.68.21/ (guard `demo` / handoff) | http://localhost:5173 |
 | Agent API | same-origin `…/v1/*`, `/ready`, `/docs` | http://localhost:8000 |
 | OpenEMR | internal only | http://localhost:8300 · https://localhost:9300 (admin/pass) |
-| Langfuse | cloud.langfuse.com (AgentForge-Gauntlet) | same (if keys set in `.env.local`) |
+| Langfuse | cloud.langfuse.com (AgentForge-Gauntlet); self-host opt-in via `--profile observability` (SSH tunnel) | same (if keys set in `.env.local`) |
 | Secrets | droplet `/root/openemr-base-clean/.env` + `secrets/` + `Caddyfile` | `agent/.env.local` + `agent/secrets/` |

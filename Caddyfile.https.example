@@ -1,0 +1,48 @@
+# HTTPS (domain) ingress for the AgentForge demo — OPT-IN, not the default.
+#
+# The default deploy uses `Caddyfile.example` (plain HTTP on :80 at a bare IP).
+# This variant swaps the `:80` site label for a real domain, which makes Caddy
+# provision and renew a Let's Encrypt certificate automatically (ACME HTTP-01
+# needs inbound :80 AND :443 — both are published by docker-compose.deploy.yml).
+# Plain-HTTP :80 requests are auto-redirected to https. Routing + the basic_auth
+# guard are byte-for-byte the same as the :80 file; only the site label changes.
+#
+# Switch to this file ONLY after you have (see DEPLOY.md "Cut over to HTTPS"):
+#   1. Created a DNS A-record   agentforge.<your-domain>  ->  <droplet-ip>
+#   2. Ensured inbound :80 AND :443 reach the droplet.
+#   3. Set BOTH of these to the SAME https origin in .env (single source of
+#      truth — a mismatch is the silent SMART/redirect-URI failure class):
+#        SITE_ADDR_OATH=https://agentforge.<your-domain>
+#        COPILOT_PUBLIC_BASE_URL=https://agentforge.<your-domain>
+#
+# Then, on the droplet:
+#   cp Caddyfile.https.example Caddyfile          # Caddyfile is gitignored
+#   #  - replace agentforge.example.com with your real domain
+#   #  - replace the password hash (generate one with the command below)
+#   docker run --rm caddy caddy hash-password --plaintext 'YOUR-PASSWORD'
+#   docker compose -f docker-compose.deploy.yml --env-file .env up -d caddy agent
+#
+# Certificates persist in the caddy_data volume across restarts. The basic_auth
+# guard stays during cutover; it can be dropped once per-physician SMART login
+# gates the app.
+
+agentforge.example.com {
+	basic_auth {
+		demo $2a$14$REPLACE_WITH_OUTPUT_OF_CADDY_HASH_PASSWORD
+	}
+
+	# Agent API → internal agent service (same-origin; the SPA calls /v1/*)
+	@api {
+		path /v1/* /health /ready /openapi.json /docs /docs/*
+	}
+	handle @api {
+		reverse_proxy agent:8000
+	}
+
+	# Everything else → the SPA, with client-side routing fallback
+	handle {
+		root * /srv/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

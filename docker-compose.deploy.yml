@@ -170,9 +170,22 @@ services:
       COPILOT_ANTHROPIC_MODEL_SYNTHESIS: ${ANTHROPIC_MODEL_SYNTHESIS:-claude-sonnet-5}
       COPILOT_ANTHROPIC_MODEL_GATING: ${ANTHROPIC_MODEL_GATING:-claude-haiku-4-5-20251001}
       COPILOT_POLLER_ENABLED: ${POLLER_ENABLED:-false}
+      # Langfuse (observability). Cloud by default (set the keys in .env). To
+      # keep PHI-adjacent traces on the droplet, bring up the self-hosted
+      # services below with `--profile observability` and set
+      # LANGFUSE_HOST=http://langfuse:3000 (+ keys minted in that UI) in .env.
+      # All three blank ⇒ tracing is a silent no-op (unchanged default).
       COPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       COPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       COPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Per-physician SMART login + at-rest posture. All defaults below match
+      # copilot/config.py's defaults, so an unset .env leaves the container's
+      # config byte-for-byte identical to today (no login; identity from the
+      # request). Set them only when opting into HTTPS + SMART (see DEPLOY.md).
+      COPILOT_PUBLIC_BASE_URL: ${COPILOT_PUBLIC_BASE_URL:-}
+      COPILOT_AUTH_MODE: ${COPILOT_AUTH_MODE:-disabled}
+      COPILOT_SESSION_ENC_KEY: ${COPILOT_SESSION_ENC_KEY:-}
+      COPILOT_AUDIT_RETENTION_YEARS: ${COPILOT_AUDIT_RETENTION_YEARS:-6}
     volumes:
       # Backend Services client private key (PEM). Create it BEFORE `up`-ing the
       # agent (see DEPLOY.md §10): scripts/register_backend_client.py writes it to
@@ -181,14 +194,100 @@ services:
     networks:
       - agent
 
+  # ---- Self-hosted Langfuse (OPT-IN: `--profile observability`) -------
+  #
+  # Keeps PHI-adjacent trace data (patient/clinician ids in span metadata)
+  # on the org's own infra instead of Langfuse Cloud. Both services are gated
+  # behind the `observability` profile, so a plain `docker compose up` does
+  # NOT start them — the default bare-IP demo is unchanged, and no unset-secret
+  # crash-loop or idle resource use occurs. Opt in explicitly:
+  #
+  #   docker compose -f docker-compose.deploy.yml --env-file .env \
+  #     --profile observability up -d
+  #
+  # then set LANGFUSE_HOST=http://langfuse:3000 (+ the public/secret keys you
+  # mint in the self-hosted UI) in .env and recreate the agent. Full runbook:
+  # agent/LANGFUSE_SETUP.md ("Self-hosted (droplet)").
+  #
+  # Pinned to a Langfuse v2 server image to match the SDK pin
+  # (langfuse>=2.55,<3, see pyproject.toml). v2 needs only Postgres. v3
+  # additionally requires ClickHouse + Redis + object storage (MinIO) and is a
+  # separate, larger decision — do NOT bump the major here without adding them.
+  langfuse-postgres:
+    image: postgres:16-alpine
+    platform: linux/amd64
+    profiles: ["observability"]
+    restart: always
+    environment:
+      POSTGRES_USER: langfuse
+      # Empty default keeps `docker compose config` parsing without secrets.
+      # The postgres image REFUSES to initialize with an empty password, so a
+      # forgotten value fails loud at `--profile observability up` time rather
+      # than booting insecurely. Set it in .env before enabling the profile.
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-}
+      POSTGRES_DB: langfuse
+    volumes:
+      # Separate volume — Langfuse trace data must NOT share agent-postgres.
+      - langfuse_db:/var/lib/postgresql/data
+    networks:
+      # Internal-only; NOT reachable from the broad `agent` network and never
+      # published to the host.
+      - observability
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  langfuse:
+    # Langfuse v2 (2.95.11) pinned by manifest-list digest for immutability,
+    # matching the digest-pin convention used for mariadb/openemr above.
+    image: langfuse/langfuse:2@sha256:85c278dcab96c15db94191a5c1664f85aba2d7fb6771a00e99681c902c4b7015
+    platform: linux/amd64
+    profiles: ["observability"]
+    restart: always
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD:-}@langfuse-postgres:5432/langfuse
+      # Set BOTH in .env before enabling the profile (`openssl rand -base64 32`
+      # each). Empty defaults keep `config` parsing; Langfuse refuses to start
+      # without them, so a forgotten value fails loud rather than insecurely.
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      SALT: ${SALT:-}
+      # UI origin. Default assumes SSH-tunnel-only access (recommended — no
+      # public ingress). If you later front the UI with Caddy, set
+      # LANGFUSE_NEXTAUTH_URL to that public https URL.
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      TELEMETRY_ENABLED: "false"
+    networks:
+      # On `observability` to reach its own Postgres, and on `agent` so the
+      # agent can POST traces to http://langfuse:3000. The agent reaches the
+      # UI/API in-network at http://langfuse:3000 with no host publish needed.
+      - observability
+      - agent
+    # NO public ingress. To view the UI, bind the port to the droplet's
+    # LOOPBACK ONLY (never 0.0.0.0) by uncommenting the block below, recreate
+    # the service, then tunnel from your Mac:
+    #   ssh -L 3000:127.0.0.1:3000 root@<droplet-ip>   # then open http://localhost:3000
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+
   # ---- caddy (public ingress) -----------------------------------------
   #
-  # Sole public entrypoint on :80. Serves the built React SPA (mounted from
+  # Sole public entrypoint. Serves the built React SPA (mounted from
   # ./agent/web/dist) and reverse-proxies the agent's API (/v1/*, /health,
-  # /ready, /docs) to the internal agent:8000. Plain HTTP for a bare-IP demo;
-  # point a domain at it for Caddy auto-HTTPS. A site-wide basic_auth guard
+  # /ready, /docs) to the internal agent:8000. A site-wide basic_auth guard
   # (see ./Caddyfile) keeps the chat API — which spends the Anthropic budget —
   # off the open internet.
+  #
+  # DEFAULT: plain HTTP on :80 at a bare IP (copy Caddyfile.example ->
+  # Caddyfile). :443 is ALSO published below so the OPT-IN domain/auto-HTTPS
+  # variant (copy Caddyfile.https.example -> Caddyfile, after a DNS A-record
+  # exists) can serve Let's Encrypt TLS + ACME with no compose change. Until
+  # you switch to the domain Caddyfile, :443 simply goes unused — publishing
+  # it is harmless and does not alter the running :80 demo.
   caddy:
     image: caddy:2-alpine
     platform: linux/amd64
@@ -198,6 +297,7 @@ services:
         condition: service_started
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./agent/web/dist:/srv/dist:ro
@@ -209,6 +309,9 @@ services:
 networks:
   internal: {}
   agent: {}
+  # Isolates the self-hosted Langfuse stack (opt-in `observability` profile).
+  # Only created when that profile is up; unused by the default demo.
+  observability: {}
 
 volumes:
   db: {}
@@ -218,3 +321,6 @@ volumes:
   agent_db: {}
   caddy_data: {}
   caddy_config: {}
+  # Self-hosted Langfuse Postgres data (opt-in `observability` profile).
+  # Separate from agent_db — Langfuse trace data never shares agent-postgres.
+  langfuse_db: {}
