@@ -5,9 +5,13 @@ grounded in the code; where a feature is built but switched off in the live demo
 says so plainly. Glance at this while you film.
 
 > **Two things to internalize before you hit record.**
-> 1. **The live demo has no login.** Identity is a hardcoded demo clinician
->    (`Dr. N. Ellery — Hospitalist`, id `42`; `agent/web/src/census.ts`). Per-physician
->    SMART sign-in is fully built but **gated off** (`auth_mode` defaults to `disabled`).
+> 1. **The live demo opens with a real login.** Per-physician SMART-on-FHIR sign-in is
+>    **LIVE** (`COPILOT_AUTH_MODE=smart` on the droplet): loading the URL lands you on the
+>    OpenEMR SMART sign-in — no basic-auth prompt, no bare IP. Sign in with your **OpenEMR
+>    admin credentials** (`OE_USER` / `OE_PASS` from the droplet `.env`), approve consent,
+>    and you're in the app authenticated as that clinician — identity, reads, and any writes
+>    run under your own delegated token. (The offline mock instead uses a hardcoded demo
+>    clinician, `Dr. N. Ellery — Hospitalist`, id `42`; `agent/web/src/census.ts`.)
 > 2. **The core promise is "grounded, verified, sickest-first."** Every claim cites a
 >    real record; the agent withholds rather than guesses; the queue is ranked by acuity,
 >    not room number.
@@ -32,16 +36,24 @@ uncertainty.
 
 | | Live public demo | Offline mock (fully reproducible) |
 |---|---|---|
-| **URL** | http://198.199.68.21/ | http://localhost:5173 (after `npm run dev`) |
-| **Guard** | HTTP basic-auth — user `demo`, password handed off separately (see `ACCESS.md`) | none |
+| **URL** | https://agentforge.hankholcomb.com | http://localhost:5173 (after `npm run dev`) |
+| **Access** | per-physician **SMART sign-in** (OpenEMR admin creds — see `ACCESS.md`) | none |
 | **Backend** | real agent + Claude + OpenEMR FHIR | in-browser mock, no backend |
 | **Census** | 15-patient census (`census.ts`) | 5-patient cohort (`cohort.ts`) |
 
-- **Live URL + credentials:** the basic-auth username is `demo`; the password is **handed
-  off separately and is not stored in git** (only a bcrypt hash lives in the droplet's
-  `Caddyfile`). Get the current value from `ACCESS.md` → "Public demo" or the droplet
-  operator. Plain HTTP over a bare IP, so expect the browser "not secure" note — fine for a
-  demo.
+- **Live URL + login:** open **`https://agentforge.hankholcomb.com`** (HTTPS via Caddy +
+  Let's Encrypt — a valid cert, so no browser warning). There is **no basic-auth prompt and
+  no bare IP** anymore. The first and only gate is the **OpenEMR SMART sign-in**: sign in
+  with your **OpenEMR admin credentials** (`OE_USER` / `OE_PASS` from the droplet's
+  gitignored `.env` — get the value from the operator; it is not in git), approve the
+  consent screen, and you land in the app authenticated as that clinician. This is a **real
+  delegated SMART-on-FHIR login to a genuine EHR** — identity, reads, and any writes run
+  under your own delegated token. `COPILOT_AUTH_MODE=smart` is set on the droplet.
+- **The login page is on-brand:** an AgentForge restyle (`custom/assets`) hides the
+  "Patient Login" button and the "Email if required" field, paints the sign-in button in
+  the AgentForge accent, and sets an **"AgentForge — Clinical Co-Pilot"** wordmark above
+  "Sign In" — while staying recognizably OpenEMR, which nicely reinforces the
+  real-delegated-auth story. Upgrade-safe; no core OpenEMR file is edited.
 - **Live data is seeded and verified** (checked 2026-07-12): the droplet's OpenEMR holds the
   full 15-patient census (54 lab results, 25 medications), and the temporal / trend / acuity
   features were validated against it. If the live site ever shows the "record service is
@@ -163,23 +175,29 @@ one-liner · **(d)** the patient/data that makes it land.
 - **(d)** **Denise Alvarez (1015)** — NSTEMI, troponin **2.34** ng/mL, the seed's rising
   troponin series. (In the offline mock the troponin trend lives on Ernest Vaughn 1001.)
 
-### 3.7 Severity + trend-direction color-coding
+### 3.7 Metric indicators: value-movement arrow + satisfaction-scaled name
 
-- **(a)** Colors are **grounded in the record**, never invented:
-  - **Metric label color** — from the record's abnormal flag: `critical` (HH/LL/vhigh/vlow/
-    critical_*) → red, `warning` (H/L/high/low) → amber, normal → default ink.
-  - **Trend arrow (↑/↓) color** — from the latest-vs-prior distance to the reference band:
-    `improving` → the positive token, `worsening` → red or amber matching the severity,
-    `steady`/unknown → neutral (no false signal). Logic in `summary.py` (`_classify_severity`,
-    `_classify_trend`) and `ClaimList.tsx`.
-  - **Acuity meter band** — ≥7.5 critical, ≥4 guarded, <4 routine (`fmt.ts`). Note: **green is
-    reserved for verification** ("served"), so a low-acuity patient reads as neutral, not green.
-- **(b)** Point at a critical lab (red label) vs an in-range one (neutral), and at a worsening
-  ↑ arrow (red) — say what each color means.
-- **(c)** *"Red isn't decoration — it's the record's own critical flag. The arrows show
-  direction only when the data supports one; an in-range wiggle stays neutral."*
-- **(d)** **Marcus Webb (1003)** (critical DKA labs in red) or **June Okafor (1004)** after the
-  alert (critical lactate).
+- **(a)** Every metric row carries two grounded indicators, both **read from the record**,
+  never invented:
+  - **Metric-name color — a green→amber→red satisfaction scale** from the record's own
+    abnormal flag: `normal` (in range) → **green**, `warning` (H/L/high/low) → **amber**,
+    `critical` (HH/LL/vhigh/vlow/critical_*) → **red**. Non-observation claims (meds,
+    conditions) stay default ink.
+  - **Value-movement arrow** after the value — drawn from the structured `value_direction`
+    (not parsed from text): **↑** if the value rose vs the prior reading, **↓** if it fell,
+    **—** if there's no prior or no change. Its **color** comes from the range-relative
+    `trend_direction`: **green when moving toward the reference range** (`improving`), **red
+    when moving away** (`worsening`), neutral for steady / no range / no prior (and always
+    for `—`). Color always ships **paired with the glyph**, so it is never the sole signal.
+    Logic in `summary.py` (`_classify_severity`, `_classify_trend`) and `ClaimList.tsx`.
+  - **Acuity meter band** — ≥7.5 critical, ≥4 guarded, <4 routine (`fmt.ts`); unchanged.
+- **(b)** Point at a critical lab (red name) vs an in-range one (green name), and at a
+  worsening ↑ (red) vs a value moving back toward range (green ↓ or ↑) — say what each means.
+- **(c)** *"The name tells you where the value sits — green in range, amber caution, red
+  critical. The arrow tells you which way it's moving — green toward the safe range, red
+  away from it. Both come straight from the record's own flags and prior readings."*
+- **(d)** **Marcus Webb (1003)** (critical DKA labs — red names, worsening arrows) or
+  **June Okafor (1004)** after the alert (critical lactate).
 
 ### 3.8 The deterioration alert + rerank (physician-in-control)
 
@@ -200,24 +218,28 @@ one-liner · **(d)** the patient/data that makes it land.
   actually carries that critical lactate, so jumping lands on a card that corroborates the
   banner. The round opens on Marcus (1003), so June is always unseen when the alert fires.
 
-### 3.9 Physician write-back (propose → confirm, append-only) — GATED OFF in the live demo
+### 3.9 Physician write-back (propose → confirm, append-only) — BUILT, NOT SHOWN in the UI
 
-- **(a)** Numeric **writable-vital** claims (heart rate, SpO₂, systolic/diastolic BP,
-  respiratory rate, temperature, weight, height — `labels.ts` `WRITABLE_METRICS`) get an
-  **"Edit"** chip. The flow is a two-step gate: **Review change** proposes the edit and the
-  server returns a **structured echo-back** (unit locked, never agent prose), then **Confirm &
-  save** commits it as a **NEW dated record** — append-only, prior values untouched
-  (`EditRecordDialog.tsx`; routes `agent/copilot/api/routes/writes.py`; gate
-  `verification/writes.py`). **Labs are not editable**, so the chip only appears on vitals.
-- **(b)** Find a vital claim with an **"Edit"** chip and click it.
-- **(c)** *"A physician can correct a vital — but it's propose-then-confirm against a
-  locked-unit echo-back, and it appends a new dated record; it never overwrites history."*
-- **(d)** **Live demo:** write-back is **flag-gated OFF** (`writeback_enabled` defaults to
-  `False`), so clicking **Edit** shows an honest **"Direct edit is off — Record write-back is
-  disabled on this deployment. Nothing was written."** That *is* the demo point: the safety gate
-  is on. To show the full propose→confirm→**"Saved"** path working, use the **offline mock** on
-  a vital claim (e.g. the heart-rate claim on the mock's deteriorating patient), where the mock
-  adapter simulates the write end-to-end.
+- **(a)** A propose→confirm write-back path is fully built. Numeric **writable-vital** claims
+  (heart rate, SpO₂, systolic/diastolic BP, respiratory rate, temperature, weight, height —
+  `labels.ts` `WRITABLE_METRICS`) *can* carry an **"Edit"** affordance whose flow is a two-step
+  gate: **Review change** proposes the edit and the server returns a **structured echo-back**
+  (unit locked, never agent prose), then **Confirm & save** commits it as a **NEW dated
+  record** — append-only, prior values untouched (`EditRecordDialog.tsx`; routes
+  `agent/copilot/api/routes/writes.py`; gate `verification/writes.py`). Labs are never editable.
+- **(b)** Nothing to click on camera — the affordance is **not present**.
+- **(c)** *"The chart is read-only in this build. A propose-then-confirm, locked-unit,
+  append-only write-back is built and tested, but it's held back for the roadmap — the demo
+  only reads."*
+- **(d)** **The direct-edit "Edit" affordance is removed from the UI by product decision** —
+  neither displayed nor functional, in **either** the live app or the offline mock: `App.tsx`
+  simply does not thread the `proposeWrite`/`confirmWrite` callbacks into `ClaimList`, so its
+  `canEdit` stays false and no chip ever renders. The propose→confirm code and
+  `EditRecordDialog` are **retained intact for the roadmap** (re-enabling is a one-line
+  change). **Backend write-back also remains OFF** (`writeback_enabled` defaults to `False`);
+  a write that reached the server would return an honest **"Record write-back is disabled on
+  this deployment. Nothing was written."** So the story is simply: this build reads, it does
+  not write.
 
 ### 3.10 Observability + audit (for the buyer)
 
@@ -239,25 +261,31 @@ one-liner · **(d)** the patient/data that makes it land.
 
 A coherent storyline that strings the features together. Narrate the italic one-liners above.
 
-1. **Open on the ranked queue** — load the app; call out the loading line ("Reading 15
+1. **Sign in for real** — load **`https://agentforge.hankholcomb.com`**; you hit the
+   AgentForge-styled **OpenEMR SMART sign-in** (no basic-auth). Sign in with the OpenEMR admin
+   credentials and approve consent. Call it out: *"This is a real delegated SMART-on-FHIR login
+   to a genuine EHR — I'm authenticated as this clinician, and every read runs under my own
+   token."* *(§2)*
+2. **Open on the ranked queue** — the app loads; call out the loading line ("Reading 15
    charts — sickest first") and that it lands on **Marcus Webb, DKA, acuity ~9.0**, not a
    dashboard. *(§3.1)*
-2. **Read the grounded card** — walk the acuity reason, the one-row-per-metric summary, and
+3. **Read the grounded card** — walk the acuity reason, the one-row-per-metric summary, and
    "since you last saw her." *(§3.2)*
-3. **Prove the provenance** — click a **✓** chip to reveal the exact recorded value +
+4. **Prove the provenance** — click a **✓** chip to reveal the exact recorded value +
    timestamp; say it's re-verified live. *(§3.3)*
-4. **Ask a real question, then an impossible one** — **"Latest glucose?"** → *served* with a
+5. **Ask a real question, then an impossible one** — **"Latest glucose?"** → *served* with a
    citation; **"Any MRI report?"** → *withheld*. This is the trust money-shot. *(§3.4)* Add a
    temporal ask ("meds in the last 24 hours") if on the live agent. *(§3.5)*
-5. **Show a trend + the color language** — jump to **Denise Alvarez (1015)**, open the
-   **troponin trend**, and explain red = the record's own critical flag, ↑ = grounded
-   worsening. *(§3.6, §3.7)*
-6. **Trigger the deterioration rerank** — click **"Re-check charts,"** the **June Okafor**
+6. **Show a trend + the indicator language** — jump to **Denise Alvarez (1015)**, open the
+   **troponin trend**, and explain the metric name's green→amber→red scale and the movement
+   arrow (green toward range, red away). *(§3.6, §3.7)*
+7. **Trigger the deterioration rerank** — click **"Re-check charts,"** the **June Okafor**
    banner appears (lactate 4.2, acuity 9.3); **Jump to June**, watch the queue re-rank; land on
    her corroborating card. *(§3.8)*
-7. **(Optional) Write-back gate** — click an **Edit** chip to show the **"Direct edit is off"**
-   safety gate (or demo the full propose→confirm on the offline mock). *(§3.9)*
-8. **Close on the promise** — "grounded, access-controlled, honest about uncertainty — it never
+8. **(Optional) Read-only stance** — note there's **no Edit affordance anywhere**: a full
+   propose→confirm, append-only write-back is built and tested but held back for the roadmap,
+   and backend write-back is off. This build reads, it does not write. *(§3.9)*
+9. **Close on the promise** — "grounded, access-controlled, honest about uncertainty — it never
    guesses," and point at the `corr` id for auditability. *(§3.10)*
 
 > **Offline mock differences (if you film localhost instead of live).** The mock is a
@@ -265,38 +293,43 @@ A coherent storyline that strings the features together. Narrate the italic one-
 > Webb. Its **native** deteriorating patient is **Lillian Cho (1005, sepsis/lactate)**, surfaced
 > after ~12 s or on "Re-check charts." Note the top bar shows a **"Demo data"** tag in mock mode.
 > The starter questions and trend series map to the 5 mock patients (troponin on 1001, lactate/
-> heart-rate on 1005). Write-back's full propose→confirm→"Saved" path **works** in the mock (the
-> live deployment gates it off). Narrate the mock's names if you record there.
+> heart-rate on 1005). The mock has **no SMART sign-in** — it opens straight on the cohort — and
+> the **Edit affordance is absent here too** (removed app-wide; the propose→confirm write-back
+> code still exists but nothing renders it). Narrate the mock's names if you record there.
 
 ---
 
-## 5. Production-grade architecture (built, gated off)
+## 5. Production-grade architecture (built — now partly live)
 
-Real, tested code that is **off by default** so the demo stays a simple no-login experience.
-Full HIPAA §164.312 mapping in `agent/COMPLIANCE.md`; design in
+Real, tested hardening code. On the reference droplet (`agentforge.hankholcomb.com`)
+**per-physician SMART login, delegated tokens, token-at-rest encryption, and HTTPS are now
+LIVE**; write-back and self-hosted Langfuse remain opt-in. A fresh deploy still defaults to the
+simpler off state. Full HIPAA §164.312 mapping in `agent/COMPLIANCE.md`; design in
 `agent/research/PRODUCTION_GRADE_PLAN.md`. You can speak to all of this honestly:
 
 - **Per-physician SMART login** — an OpenEMR-delegated `authorization_code` + PKCE flow, an
   opaque httpOnly server-side session, `fhirUser → ClinicianId` auto-provisioning, and
-  idle/absolute session timeouts (automatic logoff). Behind `auth_mode` (default `disabled`).
-  In `smart` mode **every data route takes identity from the session** (401 no session / 403 on
-  a mismatched `clinician_id`) — the request can no longer assert who it is.
+  idle/absolute session timeouts (automatic logoff). **LIVE on the reference droplet**
+  (`COPILOT_AUTH_MODE=smart`); a fresh deploy defaults to `disabled`. In `smart` mode **every
+  data route takes identity from the session** (401 no session / 403 on a mismatched
+  `clinician_id`) — the request can no longer assert who it is.
 - **Delegated per-physician tokens** — in `smart` mode interactive reads/writes call OpenEMR
   under the **logged-in physician's own** SMART token, so **OpenEMR's native audit** attributes
-  each action to that individual (least-privilege). The background poller keeps a scoped system
-  (Backend Services) token by design.
+  each action to that individual (least-privilege) — **active on the droplet now**. The
+  background poller keeps a scoped system (Backend Services) token by design.
 - **Token-at-rest encryption** — physician OAuth tokens are Fernet-encrypted in the session
   store (`SessionCrypto`); the browser holds only an opaque hashed cookie (a
-  Backend-for-Frontend "token never touches the browser" property). Built, inert until
-  `auth_mode=smart`.
+  Backend-for-Frontend "token never touches the browser" property). **Active on the droplet**
+  now that `auth_mode=smart`.
 - **Append-only audit + 6-yr retention** — the audit trail has **no UPDATE/DELETE path**; the
   retention sweep is report-only with a hard 6-year floor and **no delete statement against
   `audit_log` anywhere in the codebase**. Correlation ids tie every row to its request.
 - **Self-hostable Langfuse** — tracing is a no-op without keys; the deploy compose can bring up
   a **self-hosted** Langfuse (SSH-tunnel access) to keep PHI-adjacent trace metadata on the
-  org's own infrastructure.
-- **HTTPS** — automatic Let's Encrypt TLS is prepared (`Caddyfile.https.example`) and opt-in
-  once a domain's DNS exists; the reference deploy runs plain HTTP behind the basic-auth guard.
+  org's own infrastructure. Opt-in.
+- **HTTPS** — automatic Let's Encrypt TLS is **live** on the reference deploy
+  (`agentforge.hankholcomb.com`, `Caddyfile.https.example`), with SMART login as the access
+  gate and **no basic-auth guard**. A fresh deploy can still opt into plain HTTP on a bare IP.
 - **Honest boundary (`COMPLIANCE.md`)** — AgentForge **implements technical safeguards**;
   it does **not** by itself make a deployment HIPAA-compliant. The BAAs (Anthropic + ZDR,
   hosting), administrative and physical safeguards, and operational hardening are the deploying
@@ -328,10 +361,12 @@ demographics-only, so there'd be nothing to reason over — this is documented i
 ever.**
 
 **What does "production-grade" mean here — is any of it vaporware?**
-It's **built and unit-tested code that is switched off by default** (see §5), not slideware —
-285 backend tests, a green E2E acceptance suite, an eval dataset, a cost analysis, and a HIPAA
-technical-safeguard mapping. What remains is **operator enablement** (flip `auth_mode`, register
-a SMART client, stand up HTTPS), not new development. The demo runs simple on purpose.
+It's **built and unit-tested code** (see §5), not slideware — 285 backend tests, a green E2E
+acceptance suite, an eval dataset, a cost analysis, and a HIPAA technical-safeguard mapping. On
+the reference droplet the operator-enablement steps are **already done**: SMART login is on
+(`COPILOT_AUTH_MODE=smart`), a confidential SMART client is registered, and HTTPS is live — so
+the delegated-auth story is real, not hypothetical. What genuinely remains off is **write-back**
+(built, not shown); self-hosted Langfuse is opt-in.
 
 **Why an agent and not just a sorted list?**
 A static view can't do acuity ranking **plus** grounded narrative synthesis **plus**
@@ -341,4 +376,4 @@ summarize → answer → surface a deterioration → advance). Those are agent b
 **Is the doctor ever out of the loop?**
 No. The deterioration alert is a **non-modal offer** ("Jump" or "Stay") — never a forced
 navigation — and write-back is **propose → confirm** against a locked echo-back, append-only,
-and off by default in the live demo.
+and **off in this build** (the Edit affordance isn't even shown — the chart is read-only).

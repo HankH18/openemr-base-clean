@@ -475,6 +475,17 @@ flags are set, so the demo behaves identically to before the rebuild.
 
 ## 16. Enable per-physician SMART login (prerequisites + current limitation)
 
+> **As deployed (reference droplet) — this is live, not hypothetical.** The reference
+> deployment at **`https://agentforge.hankholcomb.com`** already runs everything in this
+> section: HTTPS via Caddy + Let's Encrypt (§12), `COPILOT_AUTH_MODE=smart` with the
+> confidential SMART app client registered and enabled (§16.1–16.3), and the AgentForge
+> login restyle (`custom/assets/css/agentforge-login.css`, autoloaded via
+> `custom/assets/custom.yaml` and served through Caddy's `/custom/*` proxy). There is **no
+> basic-auth guard** — the per-physician SMART sign-in is the sole access gate, and users
+> sign in with their OpenEMR credentials (`OE_USER` / `OE_PASS`). The steps below are the
+> generic runbook that produced it; a fresh deploy still defaults to `auth_mode=disabled`,
+> so follow them against your own domain to reproduce it.
+
 > **Read this before enabling.** SMART login is built end-to-end behind
 > `COPILOT_AUTH_MODE` (default `disabled`): the `/v1/auth/*` routes + `/v1/auth/status`,
 > the encrypted server-side session store, PKCE, token refresh, `fhirUser →

@@ -8,17 +8,21 @@ values are in gitignored `.env` files or handed off separately.
 
 ## Public demo (droplet)
 
-- **App URL:** http://198.199.68.21/ (plain HTTP, bare IP — the default deploy).
-  HTTPS at a real domain is prepared and opt-in: once a DNS A-record exists, copy
-  `Caddyfile.https.example` → `Caddyfile` for automatic Let's Encrypt TLS (compose
-  already publishes `:443`). See `DEPLOY.md` → "Cut over to HTTPS".
-- **Guard:** HTTP basic-auth, username **`demo`** (password handed off separately;
-  it lives only as a bcrypt hash in the droplet's gitignored `Caddyfile`). Rotate
-  with `caddy hash-password` → update `/root/openemr-base-clean/Caddyfile` →
-  `docker compose -f docker-compose.deploy.yml up -d caddy`.
-- **Status:** the UI, the guard, and `/ready` (all four deps green incl. Langfuse)
-  are live. **Live patient data (rounds/chat) is pending** the backend-OAuth +
-  cohort seed on the droplet — see `DEPLOY.md` → "Finish live data on the droplet".
+- **App URL:** https://agentforge.hankholcomb.com (HTTPS via Caddy + automatic
+  Let's Encrypt TLS — a valid cert, no browser warning). The old
+  `http://198.199.68.21` bare-IP URL is retired.
+- **Access:** **per-physician SMART sign-in** (`COPILOT_AUTH_MODE=smart` on the
+  droplet) — there is **no basic-auth guard**. Loading the URL lands on the OpenEMR
+  SMART sign-in; sign in with the **OpenEMR admin credentials** (`OE_USER` /
+  `OE_PASS` from the droplet's gitignored `.env`, handed off separately — never in
+  git), approve the consent screen, and you're authenticated as that clinician —
+  identity, reads, and any writes run under that delegated token. The OpenEMR login
+  page carries an AgentForge restyle (`custom/assets`: "AgentForge — Clinical
+  Co-Pilot" wordmark, accent sign-in button, patient-login/email hidden), served
+  publicly because Caddy proxies `/custom/*` for the login page.
+- **Status:** the UI, per-physician SMART login, live patient data (rounds/chat over
+  the seeded 15-patient census), and `/ready` (all deps green incl. Langfuse) are
+  live.
 - **Observability:** Langfuse Cloud — https://cloud.langfuse.com (your
   *AgentForge-Gauntlet* project). Chat/rounds appear under Tracing → Traces,
   keyed by the `X-Correlation-ID` response header. A **self-hosted** alternative
@@ -27,10 +31,15 @@ values are in gitignored `.env` files or handed off separately.
   `--profile observability`, access the UI via SSH tunnel (not publicly exposed),
   and set `LANGFUSE_HOST=http://langfuse:3000`. See `agent/LANGFUSE_SETUP.md`
   → "Self-hosted (droplet)".
-- **Ingress model:** Caddy is the sole public listener on `:80`. It serves the
-  React SPA and reverse-proxies `/v1/*`, `/health`, `/ready`, `/docs`,
-  `/openapi.json` → internal `agent:8000`. OpenEMR is **not** publicly exposed.
-- **Ops:** `ssh root@198.199.68.21`; deploy dir `/root/openemr-base-clean`;
+- **Ingress model:** Caddy is the sole public listener, serving TLS on `:443` with
+  `:80` auto-redirected to https. It serves the React SPA, reverse-proxies the agent
+  API (`/v1/*`, `/health`, `/ready`, `/docs`, `/openapi.json`) → internal
+  `agent:8000`, and — required for SMART login — proxies OpenEMR's OAuth2/login
+  surface (`/oauth2/*`, `/public/*`, `/library/*`, `/custom/*`, `/apis/*`, `/sites/*`)
+  → internal `openemr`. OpenEMR's **admin UI (`/interface/*`) is not publicly
+  routed** — only the login/OAuth/FHIR surface is.
+- **Ops:** `ssh root@agentforge.hankholcomb.com` (or the droplet IP); deploy dir
+  `/root/openemr-base-clean`;
   `docker compose -f docker-compose.deploy.yml ps`. Secrets live in that dir's
   gitignored `.env` (OpenEMR admin `OE_USER`/`OE_PASS`, DB passwords, Anthropic +
   Langfuse keys) and `secrets/backend-key.pem`. OpenEMR's own admin UI is
@@ -84,8 +93,8 @@ cd agent/web && VITE_API_BASE_URL=http://localhost:8000 npm run dev   # http://l
 
 | | Public (droplet) | Local |
 |---|---|---|
-| Co-Pilot UI | http://198.199.68.21/ (guard `demo` / handoff) | http://localhost:5173 |
+| Co-Pilot UI | https://agentforge.hankholcomb.com (SMART sign-in, OpenEMR admin creds) | http://localhost:5173 |
 | Agent API | same-origin `…/v1/*`, `/ready`, `/docs` | http://localhost:8000 |
-| OpenEMR | internal only | http://localhost:8300 · https://localhost:9300 (admin/pass) |
+| OpenEMR | internal; OAuth2/login + FHIR surface proxied for SMART login (admin UI not routed) | http://localhost:8300 · https://localhost:9300 (admin/pass) |
 | Langfuse | cloud.langfuse.com (AgentForge-Gauntlet); self-host opt-in via `--profile observability` (SSH tunnel) | same (if keys set in `.env.local`) |
 | Secrets | droplet `/root/openemr-base-clean/.env` + `secrets/` + `Caddyfile` | `agent/.env.local` + `agent/secrets/` |
