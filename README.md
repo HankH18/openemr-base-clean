@@ -11,16 +11,19 @@ patient data **only** through OpenEMR's FHIR/REST API — no read path bypasses 
 authorization.
 
 - **Agent service** — `agent/` (Python 3.12 · FastAPI · Pydantic v2 · SQLAlchemy/Postgres ·
-  Anthropic). Chat, rounds, background poller, deterministic fail-closed verification, memory
-  with provenance. 285 tests; full E2E acceptance suite green.
+  Anthropic Claude — synthesis `claude-sonnet-5`, gating `claude-haiku-4-5`). Chat, rounds,
+  background poller, deterministic fail-closed verification, memory with provenance, temporal
+  Q&A, per-metric observation series, plus per-physician SMART login and physician write-back
+  (both flag-gated; write-back defaults OFF). 511 tests passing; full E2E acceptance suite green.
 - **Web UI** — `agent/web/` (React 18 · Vite · TypeScript · React Aria Components). The
   "Rounds Co-Pilot" panel: grounded cards with provenance chips, cited chat with
-  served/withheld/degraded states, deterioration alerts. Light + dark.
+  served/withheld/degraded states, per-metric trend charts, deterioration alerts, and (in SMART
+  mode) a physician sign-in gate. Light + dark.
 - **Docs** — [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`AUDIT.md`](AUDIT.md) ·
   [`USERS.md`](USERS.md) · [`COST_ANALYSIS.md`](COST_ANALYSIS.md) ·
-  [`OBSERVABILITY.md`](OBSERVABILITY.md) · [`ACCESS.md`](ACCESS.md) ·
-  [`DEPLOY.md`](DEPLOY.md) · [`NOTES.md`](NOTES.md) · [`demo/SCRIPT.md`](demo/SCRIPT.md) ·
-  build log [`RUNLOG.md`](RUNLOG.md).
+  [`OBSERVABILITY.md`](OBSERVABILITY.md) · [`agent/COMPLIANCE.md`](agent/COMPLIANCE.md) ·
+  [`ACCESS.md`](ACCESS.md) · [`DEPLOY.md`](DEPLOY.md) · [`NOTES.md`](NOTES.md) ·
+  demo companion [`demo/DEMO_GUIDE.md`](demo/DEMO_GUIDE.md) · build log [`RUNLOG.md`](RUNLOG.md).
 
 ## Quick start
 
@@ -30,18 +33,22 @@ cd docker/development-easy && docker compose up --detach --wait
 
 # Agent service (Python 3.12)
 cd agent && uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e '.[dev]'
-pytest -q                                   # 285 passing, deterministic (no key/server needed)
-uvicorn copilot.api.app:app --port 8000     # /health, /ready, /v1/rounds/*, /v1/chat
+pytest -q                                   # 511 passing (+2 LLM evals skip without a key); deterministic, no server needed
+uvicorn copilot.api.app:app --port 8000     # /health, /ready, /v1/auth/*, /v1/rounds/*, /v1/chat, /v1/writes, /v1/patients/{id}/observations
 
 # Rounds Co-Pilot UI (runs standalone on the seeded demo cohort — no backend needed)
 cd agent/web && npm install && npm run dev
 # point it at the live service: set VITE_API_BASE_URL (see agent/web/README.md)
 ```
 
-**Operator actions to go fully live** (need credentials; intentionally not committed):
+**Operator actions to enable each capability** (need credentials; intentionally not committed):
 `ANTHROPIC_API_KEY` (swaps the deterministic stub agent for live Claude), SMART client
-registrations (chat + backend-services poller), Langfuse creds, and deploy. **Demo data only —
-never real PHI.**  _Deployed URL: **http://198.199.68.21/** — basic-auth user `demo` (password shared separately)._
+registrations (per-physician App Launch login + backend-services poller), Langfuse creds. Two
+capabilities are flag-gated: per-physician SMART login (`COPILOT_AUTH_MODE`, default `disabled`
+in code; **ON** in the live deploy) and physician write-back (`COPILOT_WRITEBACK_ENABLED`,
+default **OFF** everywhere — roadmap). **Demo data only — never real PHI.**  _Deployed URL:
+**https://agentforge.hankholcomb.com** — per-physician SMART login (sign in with an OpenEMR
+physician account; demo credentials handed off separately, see [`ACCESS.md`](ACCESS.md))._
 
 ## Submission deliverables
 
@@ -53,8 +60,8 @@ never real PHI.**  _Deployed URL: **http://198.199.68.21/** — basic-auth user 
 | Agent architecture | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | **Eval dataset + results** | [`agent/evals/`](agent/evals/) — 10-case hermetic suite ([`eval_dataset.jsonl`](agent/evals/eval_dataset.jsonl)), runner ([`run_evals.py`](agent/evals/run_evals.py)), recorded results [`EVAL_RESULTS.md`](agent/evals/EVAL_RESULTS.md) (10/10), plus LLM-backed [`test_grounding_evals.py`](agent/evals/test_grounding_evals.py) |
 | **AI cost analysis** | [`COST_ANALYSIS.md`](COST_ANALYSIS.md) — actual dev spend + 100 / 1K / 10K / 100K projections + per-tier architecture changes |
-| Deployed application | **http://198.199.68.21/** (live; basic-auth `demo`) |
-| **Demo video** | ▶ [Loom walkthrough](https://www.loom.com/share/762e2fa76307493594f48862e8cccee5) ([`demo/VIDEO.md`](demo/VIDEO.md)) · shot list [`demo/SCRIPT.md`](demo/SCRIPT.md) |
+| Deployed application | **https://agentforge.hankholcomb.com** (live; per-physician SMART login) |
+| **Demo video** | ▶ [Loom walkthrough](https://www.loom.com/share/762e2fa76307493594f48862e8cccee5) ([`demo/VIDEO.md`](demo/VIDEO.md)) · recording companion [`demo/DEMO_GUIDE.md`](demo/DEMO_GUIDE.md) |
 | Observability + rigor (bonus) | [`OBSERVABILITY.md`](OBSERVABILITY.md) · load test [`loadtest/RESULTS.md`](loadtest/RESULTS.md) · API collections [`api-collection/`](api-collection/) |
 
 <!-- ────────────────────────────────────────────────────────────────────── -->

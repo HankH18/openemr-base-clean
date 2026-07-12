@@ -2,8 +2,8 @@
 
 **▶ Watch the walkthrough: https://www.loom.com/share/762e2fa76307493594f48862e8cccee5**
 
-A recorded walkthrough of the **live** deployment (http://198.199.68.21/) showing the
-Rounds Co-Pilot end to end:
+A recorded walkthrough of the deployed Rounds Co-Pilot (live at
+**https://agentforge.hankholcomb.com**, per-physician SMART login) end to end:
 
 - **Sickest-first triage** — the agent ranks the clinician's full patient census and
   opens on the most acute patient (Marcus Webb, DKA) instead of a dashboard.

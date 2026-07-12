@@ -1,17 +1,20 @@
 # Demo Script — AgentForge Clinical Co-Pilot (3–5 min)
 
-**You (the human) record and narrate this.** This version films the **live** public
-deployment (real Claude, real OpenEMR OAuth + FHIR). A fully-offline mock fallback is
-noted at the end if you'd rather record with no dependencies.
+> **Superseded — [`DEMO_GUIDE.md`](DEMO_GUIDE.md) is the current recording companion.**
+> It has the feature-by-feature walkthrough grounded in the code, with the exact on-screen
+> specifics (opening patient, provenance chips, trend chart, the "Re-check charts"
+> deterioration trigger, write-back gate) and which beats are live vs. mock. This file is
+> kept for the high-level narration arc only; where the two disagree, DEMO_GUIDE.md wins.
 
-## Pre-flight (before recording)
-- Open **http://198.199.68.21/** in Chrome (~1440px wide). Basic-auth guard: **`demo` /
-  `7c3327a3a10edd26de009cce`**. (Plain HTTP over a bare IP — expect the browser "not
-  secure" note; fine for a demo.)
-- The UI opens on the sickest patient: **Marcus Webb — MRN 1003, Bed 03-A**, acuity
-  **9.0/10**, ranked for critical DKA labs. A red **DETERIORATION** banner for **June
-  Okafor** (lactate 4.2) sits at the top; **June Okafor** and **Lillian Cho** show **ALERT**
-  in the queue.
+**You (the human) record and narrate this.** Film the **live** deployment (real Claude,
+real OpenEMR OAuth + FHIR) or the fully-offline mock fallback noted at the end.
+
+## Access (before recording)
+- Open **https://agentforge.hankholcomb.com** in Chrome (~1440px wide). Access is
+  **per-physician SMART login** — sign in with an OpenEMR physician account (demo credentials
+  handed off separately; see [`../ACCESS.md`](../ACCESS.md)).
+- The UI opens on the sickest patient (**Marcus Webb — MRN 1003, Bed 03-A**, acuity ~9.0,
+  ranked for critical DKA labs) and advances by acuity, not room number.
 - Dark-mode toggle is top-right if you want to show the theme.
 - **Synthetic demo data only. No real PHI.** Give the first load ~30–60s (it synthesizes
   the cohort live via Claude on first `rounds/start`).
@@ -36,8 +39,9 @@ noted at the end if you'd rather record with no dependencies.
   5.7 mEq/L, glucose 386 mg/dL, bicarbonate 12 mEq/L."
 > "It doesn't hand you a dashboard. It opens on your most acute patient — a DKA picture in
 > active treatment — with a grounded chart summary. Every line cites the exact source
-> record." *(Point at the `OBSERVATION fc000000-…-090017` provenance chips beside each
-> claim — those are live FHIR resource IDs.)*
+> record." *(Point at the ✓ provenance chip beside each claim — clicking one reveals the
+> exact source resource, recorded value, and timestamp; chips name the resource type, not a
+> raw UUID.)*
 
 **2:15–3:15 — Grounded drill-down + the trust story (UC-2, UC-7).**
 - In "Ask the chart," ask **"What are the most concerning labs, and are any critical?"** → a
@@ -50,8 +54,9 @@ noted at the end if you'd rather record with no dependencies.
 > harm a patient, so the system withholds instead of guessing."
 
 **3:15–4:15 — Proactive deterioration + hand-off (UC-5, UC-3).**
-- Point at the **DETERIORATION** banner: **June Okafor** — a patient you *haven't seen yet*
-  — flagged for a critically-high lactate (4.2). Show the **Jump to June** offer.
+- Click **Re-check charts** (top bar) to raise the alert, then point at the **DETERIORATION**
+  banner: **June Okafor** — a patient you *haven't seen yet* — flagged for a critically-high
+  lactate (4.2). Show the **Jump to June** offer.
 > "The co-pilot surfaces a not-yet-seen patient who's crossing a critical threshold and
 > offers a jump — you decide. Hit **Done** and it advances by acuity, not by room number."
 
