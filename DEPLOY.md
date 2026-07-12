@@ -474,19 +474,25 @@ flags are set, so the demo behaves identically to before the rebuild.
 
 ## 16. Enable per-physician SMART login (prerequisites + current limitation)
 
-> **Read this before enabling.** The SMART login **backbone** ships in the agent
-> (behind `COPILOT_AUTH_MODE`, default `disabled`): the `/v1/auth/*` routes, the
-> encrypted server-side session store, PKCE, token refresh, `fhirUser →
-> ClinicianId` mapping, and automatic-logoff TTL enforcement all work. **What is
-> NOT yet built is the Phase-2 route cutover** — the interactive data routes
-> (`chat`, `rounds`, `observations`, `writes`) do **not** yet read the clinician
-> identity from the authenticated session; they still take `clinician_id` from
-> the request. So turning `COPILOT_AUTH_MODE=smart` on today gives you a working
-> physician login (session, logout, idle timeout, token-at-rest encryption, the
-> "token never touches the browser" property) but does **not** yet enforce
-> per-physician identity on the data path. Do not represent it as full
-> per-physician access control until Phase 2 lands (see PRODUCTION_GRADE_PLAN.md
-> §Phase 2). Until then, keep the network/ingress controls from §11/§12.
+> **Read this before enabling.** SMART login is now built end-to-end behind
+> `COPILOT_AUTH_MODE` (default `disabled`): the `/v1/auth/*` routes + `/v1/auth/status`,
+> the encrypted server-side session store, PKCE, token refresh, `fhirUser →
+> ClinicianId` mapping, automatic-logoff TTL, the frontend "Sign in with OpenEMR"
+> gate, **and the data-route cutover**. In `smart` mode the interactive routes
+> (`chat`, `rounds`, `observations`, `writes`, `alerts`, `refresh`) take the
+> clinician identity from the authenticated **session** — `401` without a valid
+> session, `403` if a request tries to assert a different `clinician_id`. So
+> turning `COPILOT_AUTH_MODE=smart` on gives real per-physician login **and**
+> identity enforcement on the data path, and the agent's own `audit_log`
+> attributes every action to the logged-in physician.
+>
+> **The one remaining gap is the delegated-token cutover** (the deferred Phase-2
+> bonus): interactive reads/writes still use the shared system / Backend-Services
+> token, so OpenEMR's *own native* audit does not yet attribute them to the
+> individual physician — the agent-side audit does. Least-privilege per-physician
+> tokens + OpenEMR-native attribution land when that cutover ships
+> (PRODUCTION_GRADE_PLAN.md §Phase 2). Keep the network/ingress controls from
+> §11/§12 regardless.
 
 Prerequisites: §12 (HTTPS at a real domain — `Secure` cookies require TLS) and
 §15 (the new agent image + migrations applied).

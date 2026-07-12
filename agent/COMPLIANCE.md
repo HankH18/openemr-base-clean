@@ -57,8 +57,8 @@ Two facts about data flow shape everything below:
 
 | §164.312 provision | Status | Where in code |
 |---|---|---|
-| (a)(1) Access control | **Partial** — fail-closed authorization gate implemented; per-physician login backbone **implemented, gated OFF**; data-route cutover pending | `copilot/auth/authorization.py`; `copilot/auth/service.py`; `config.py:auth_mode` (default `disabled`) |
-| (a)(2)(i) Unique user identification | **Implemented — gated OFF** (SMART login backbone); request-supplied `clinician_id` still keys the data routes until the Phase-2 cutover | `copilot/auth/{service,identity,session}.py`, `api/routes/auth.py`, `api/deps.py`, `migrations/0004` |
+| (a)(1) Access control | **Implemented — gated OFF** — fail-closed authorization gate + per-physician login + data-route identity enforcement in smart mode; only the delegated-token cutover is deferred | `copilot/auth/*`; `api/deps.py:resolve_acting_clinician`; `config.py:auth_mode` (default `disabled`) |
+| (a)(2)(i) Unique user identification | **Implemented — gated OFF** — SMART login; in smart mode every data route takes identity from the session (401 no session / 403 on mismatch), not the request | `copilot/auth/{service,identity,session}.py`, `api/routes/{auth,chat,rounds,observations,writes}.py`, `api/deps.py`, `migrations/0004` |
 | (a)(2)(iii) Automatic logoff | **Implemented — gated OFF** — idle + absolute TTL enforced in the session store | `copilot/auth/service.py:resolve_session`; `config.py:session_idle_seconds`, `session_absolute_seconds` |
 | (a)(2)(iv) Encryption/decryption | **Implemented** — outbound TLS active; token-at-rest Fernet encryption **implemented, gated OFF** | `config.py:tls_verify` (default `True`); `copilot/auth/session.py:SessionCrypto`; `config.py:session_enc_key` |
 | (b) Audit controls | **Implemented** — append-only trail; retention sweep implemented (report-only, 6-yr floor) | `memory/models.py:AuditLogRow`, `memory/repository.py:record_audit`, `api/middleware.py`, `memory/retention.py` |
@@ -103,20 +103,27 @@ migration `0004`), Fernet token encryption + opaque hashed session cookies
 (`AuthService.ensure_smart_ready`) refuses `auth_mode=smart` unless
 `public_base_url` is `https://…` and the session key + client id are set.
 
-**The remaining gap (Phase 2 — the route cutover).** The `current_clinician`
-dependency is **not yet wired into the interactive data routes** (chat, rounds,
-observations, writes). So even with `auth_mode=smart`, logging in establishes an
-authenticated session, but those routes still read `clinician_id` from the
-request until the Phase-2 cutover threads the session identity through them (see
-`agent/research/PRODUCTION_GRADE_PLAN.md` §Phase 2). Additionally, SMART login
-requires browser-facing HTTPS (Decision B) and an OpenEMR client registration
-(operator step), and **it is not enabled in the current demo** (`auth_mode`
-defaults to `disabled`). Unique per-physician identification on the data path,
-and the corresponding native OpenEMR write attribution, become fully real only
-once the cutover lands and `auth_mode=smart` is enabled over HTTPS.
+**Data-route enforcement (Phase 2 — done).** In `smart` mode the interactive
+routes (chat, rounds, observations, writes, and the clinician-scoped alerts /
+refresh) now take the acting clinician from the authenticated session via
+`api/deps.py:resolve_acting_clinician` — `401` without a valid session, `403` if
+a request tries to assert a different `clinician_id`. The session is
+authoritative; the request-supplied id can no longer be trusted. Enabling
+`auth_mode=smart` therefore gives real per-physician identity enforcement on the
+data path, and the agent's own `audit_log` attributes each action to the
+logged-in physician.
 
-> **Interim deployment guidance.** Until per-physician SMART login is wired into
-> the data routes and enabled over HTTPS, treat AgentForge as a **single-tenant,
+**What remains.** (1) The *delegated-token* cutover: interactive reads/writes
+still use the shared system / Backend-Services token, so OpenEMR's *own native*
+audit does not yet attribute them to the individual physician (the agent-side
+audit does) — least-privilege per-physician tokens land when that ships
+(`agent/research/PRODUCTION_GRADE_PLAN.md` §Phase 2, deferred bonus). (2)
+Enablement is an operator step: SMART login needs browser-facing HTTPS
+(Decision B) and an OpenEMR client registration, and **it is off in the current
+demo** (`auth_mode` defaults to `disabled`).
+
+> **Interim deployment guidance.** Until SMART login is enabled over HTTPS (it is
+> off by default in the demo), treat AgentForge as a **single-tenant,
 > trusted-network tool**: restrict network access to it (see §3, firewalling /
 > ingress auth), and rely on OpenEMR's own user accounts and ACLs for individual
 > accountability of the underlying record.
@@ -251,8 +258,8 @@ full login flow now exists — token-exchange provider
 (`fhir/auth.py:SmartAppLaunchTokenProvider`), `/v1/auth/*` routes, session store,
 and identity resolution (see (a)(2)(i)). It is inert by default: `auth_mode`
 defaults to `"disabled"`, and enabling it requires browser HTTPS + an OpenEMR
-client registration, plus the Phase-2 route cutover before the data routes
-honor the session identity. **In the current demo the software does not
+client registration. In `smart` mode the data routes now honor the session
+identity (see (a)(2)(i)). **In the current demo the software does not
 independently authenticate the end user**; it relies on the deploying
 organization to place it behind network/ingress controls and on OpenEMR's
 authentication for the record itself. This becomes an active control once
@@ -372,13 +379,15 @@ encryption of tokens at rest (a)(2)(iv), and the Backend-for-Frontend
 report-only audit-retention sweep (report-only, 6-yr floor, no delete path); and
 Langfuse tracing (no keys ⇒ no-op).
 
-**The remaining gap before per-physician identity is live on the data path — do
-not claim as live yet:** the Phase-2 route cutover (wiring `current_clinician`
-into chat/rounds/observations/writes so those routes read identity from the
-session rather than the request body), browser-facing HTTPS, and the OpenEMR
-SMART-client registration. All three are specified in
-`agent/research/PRODUCTION_GRADE_PLAN.md`. Until they land and `auth_mode=smart`
-is enabled, the demo authenticates no individual user.
+**Built but not yet enabled — do not claim as live yet:** per-physician SMART
+login now enforces identity on every data route in `smart` mode (Phase 2 done),
+but `auth_mode` defaults to `disabled` in the demo, and enabling it needs
+browser-facing HTTPS + an OpenEMR SMART-client registration (operator steps). One
+smaller piece is still deferred: the delegated-token cutover (interactive
+reads/writes on the physician's own token → OpenEMR-native per-physician
+attribution). All are specified in `agent/research/PRODUCTION_GRADE_PLAN.md`.
+Until `auth_mode=smart` is enabled over HTTPS, the demo authenticates no
+individual user.
 
 **Never the software's to claim:** the BAAs (Anthropic + ZDR, hosting), all
 §164.308 administrative safeguards, §164.310 physical safeguards, and the
