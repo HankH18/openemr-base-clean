@@ -18,6 +18,12 @@ export interface CensusEntry {
   service: string;
 }
 
+/**
+ * Fallback clinician identity for the mock/offline demo and any deploy where
+ * the backend reports `auth_mode="disabled"`. When SMART auth is active, the
+ * real clinician id and display name come from `/v1/auth/me` (see useAuth) —
+ * this constant is never used on that path.
+ */
 export const CLINICIAN_ID = 42;
 export const CLINICIAN_LABEL = 'Dr. N. Ellery — Hospitalist';
 

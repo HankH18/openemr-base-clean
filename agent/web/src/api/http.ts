@@ -19,18 +19,54 @@ import {
   normalizeRoundView,
 } from './normalize';
 import { ApiError, WriteDisabledError, WriteRejectedError, type ChatRequest } from './types';
+import { getCsrfToken, shouldRedirectOn401 } from './session';
+
+/**
+ * CSRF header for state-changing methods, when a token is available (SMART
+ * mode, authenticated). Empty in disabled/mock mode, so requests are byte-for-
+ * byte what they were before auth existed.
+ */
+function csrfHeader(method?: string): Record<string, string> {
+  const verb = (method ?? 'GET').toUpperCase();
+  if (verb === 'POST' || verb === 'PUT' || verb === 'DELETE' || verb === 'PATCH') {
+    const token = getCsrfToken();
+    if (token !== null) {
+      return { 'X-CSRF-Token': token };
+    }
+  }
+  return {};
+}
+
+/**
+ * A 401 on an authenticated SMART session means it lapsed — bounce to the OAuth
+ * login. Gated on that state (see session.ts) so a 401 on an auth-disabled
+ * deploy, or for a not-yet-signed-in SMART user, stays an ordinary ApiError and
+ * never hijacks the sign-in gate.
+ */
+function handleUnauthorized(base: string, status: number): void {
+  if (status === 401 && shouldRedirectOn401()) {
+    window.location.href = `${base}/v1/auth/login`;
+  }
+}
 
 async function request(base: string, path: string, init?: RequestInit): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(`${base}${path}`, {
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'include',
       ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...csrfHeader(init?.method),
+        ...((init?.headers as Record<string, string> | undefined) ?? {}),
+      },
     });
   } catch {
     throw new ApiError('Could not reach the record service');
   }
   if (!response.ok) {
+    handleUnauthorized(base, response.status);
     throw new ApiError(`Record service replied ${response.status}`, response.status);
   }
   try {
@@ -52,7 +88,12 @@ async function requestWrite(base: string, path: string, body: unknown): Promise<
   try {
     response = await fetch(`${base}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...csrfHeader('POST'),
+      },
       body: JSON.stringify(body),
     });
   } catch {
@@ -73,6 +114,7 @@ async function requestWrite(base: string, path: string, body: unknown): Promise<
     throw new WriteRejectedError(extractWriteErrors(payload));
   }
   if (!response.ok) {
+    handleUnauthorized(base, response.status);
     throw new ApiError(`Record service replied ${response.status}`, response.status);
   }
   if (payload === null) {

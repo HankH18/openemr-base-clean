@@ -21,6 +21,7 @@ import type {
 } from './types';
 import { createMockApi } from './mock';
 import { createHttpApi } from './http';
+import { resolveApiBase } from './base';
 
 export interface CopilotApi {
   readonly mode: 'mock' | 'live';
@@ -79,9 +80,12 @@ export interface CopilotApi {
 }
 
 export function createApi(): CopilotApi {
-  const base = import.meta.env.VITE_API_BASE_URL;
-  if (typeof base === 'string' && base.trim() !== '') {
-    return createHttpApi(base.trim().replace(/\/+$/, ''));
+  // A set, non-empty VITE_API_BASE_URL selects the live adapter; unset → mock.
+  // The base string itself is normalized by resolveApiBase (shared with the
+  // auth hook / gate so /v1/auth/* URLs match the data calls).
+  const raw = import.meta.env.VITE_API_BASE_URL;
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    return createHttpApi(resolveApiBase());
   }
   return createMockApi();
 }

@@ -14,17 +14,22 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
+from copilot.api.deps import resolve_acting_clinician
 from copilot.config import get_settings
-from copilot.domain.primitives import ClinicianId
 from copilot.worker.pipeline import RefreshPipeline
 
 router = APIRouter(prefix="/v1/rounds", tags=["rounds"])
 
 
 @router.get("/alerts", summary="Deterioration alerts for not-yet-seen critical patients")
-async def alerts(clinician_id: Annotated[int, Query(gt=0)]) -> dict[str, Any]:
+async def alerts(
+    request: Request, clinician_id: Annotated[int | None, Query(gt=0)] = None
+) -> dict[str, Any]:
+    # Identity per the auth-mode contract: disabled → the query clinician_id;
+    # smart → the session cookie (401 if none, 403 if the query id disagrees).
+    cid = await resolve_acting_clinician(get_settings(), request, clinician_id)
     pipeline = RefreshPipeline(get_settings())
-    found = await pipeline.alerts(ClinicianId(value=clinician_id))
+    found = await pipeline.alerts(cid)
     return {"alerts": [a.model_dump(mode="json") for a in found]}

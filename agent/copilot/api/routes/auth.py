@@ -92,6 +92,29 @@ async def callback(request: Request) -> RedirectResponse:
     return response
 
 
+@router.get("/status", summary="Unauthenticated auth-mode + session probe for the SPA")
+async def status(request: Request) -> dict[str, Any]:
+    """Report the deployment's ``auth_mode`` and whether this request is authed.
+
+    UNAUTHENTICATED and never errors: the SPA calls it on load to decide whether
+    to show the login gate. ``authenticated`` is true only when ``auth_mode`` is
+    ``smart`` AND the session cookie resolves to a live session. Any failure while
+    resolving is swallowed and reported as ``authenticated: false`` (fail-closed),
+    never leaking why.
+    """
+    settings = get_settings()
+    authenticated = False
+    if settings.auth_mode == "smart":
+        cookie = request.cookies.get(settings.session_cookie_name)
+        if cookie:
+            try:
+                resolved = await _service(settings).resolve_session(cookie)
+                authenticated = resolved is not None
+            except Exception:  # never let a probe error; fail closed.
+                authenticated = False
+    return {"auth_mode": settings.auth_mode, "authenticated": authenticated}
+
+
 @router.get("/me", summary="Current physician identity for the session cookie")
 async def me(request: Request) -> JSONResponse:
     settings = get_settings()

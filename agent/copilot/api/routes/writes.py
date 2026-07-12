@@ -22,9 +22,10 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
+from copilot.api.deps import resolve_acting_clinician
 from copilot.auth import is_authorized
 from copilot.config import get_settings
-from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.domain.primitives import PatientId
 from copilot.domain.writes import CommittedWrite, ProposedWrite, WriteCandidate, WriteKind
 from copilot.fhir.provider import WritebackDisabledError
 from copilot.fhir.write_client import OpenEmrWriteError
@@ -43,9 +44,13 @@ class ProposeRequest(BaseModel):
     ``metric``/``unit`` are required for a vital and ignored for a medication
     (whose ``raw_value`` is the picked/echoed drug title). No value is ever
     interpreted by a model — the deterministic parser owns it.
+
+    ``clinician_id`` is optional: in ``disabled`` mode it identifies the acting
+    clinician (as today); in ``smart`` mode the session cookie is authoritative
+    and this field, if present, is only validated against it (mismatch → 403).
     """
 
-    clinician_id: int = Field(gt=0)
+    clinician_id: int | None = Field(default=None, gt=0)
     patient_id: int = Field(gt=0)
     kind: WriteKind
     raw_value: str = Field(min_length=1)
@@ -92,8 +97,10 @@ def _input_error_detail(exc: WriteInputError) -> Any:
 
 @router.post("/writes", summary="Propose a physician write and get the echo-back to confirm")
 async def propose_write(req: ProposeRequest, request: Request) -> dict[str, Any]:
-    # Parse the raw ids into validated primitives at the boundary.
-    cid = ClinicianId(value=req.clinician_id)
+    # Parse the raw ids into validated primitives at the boundary. Identity per
+    # the auth-mode contract: disabled → the body clinician_id; smart → the
+    # session cookie (401 if none, 403 if the body id disagrees).
+    cid = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
     pid = PatientId(value=req.patient_id)
 
     # Authorization boundary (UC-6), identical to chat/observations: refuse a
@@ -132,7 +139,9 @@ async def confirm_write(
 ) -> dict[str, Any]:
     candidate = req.candidate
     # The candidate already carries typed ids (parsed at the boundary by Pydantic).
-    cid = candidate.clinician_id
+    # Identity per the auth-mode contract: disabled → the candidate's clinician_id;
+    # smart → the session cookie (401 if none, 403 if the candidate id disagrees).
+    cid = await resolve_acting_clinician(get_settings(), request, candidate.clinician_id.value)
     pid = candidate.patient_id
 
     if not await is_authorized(cid, pid):

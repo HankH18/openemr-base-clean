@@ -10,6 +10,9 @@ export function TopBar({
   recheckStatus,
   rechecking,
   showRecheck,
+  authenticated = false,
+  displayName = null,
+  onLogout,
 }: {
   mode: 'mock' | 'live';
   theme: Theme;
@@ -18,7 +21,13 @@ export function TopBar({
   recheckStatus: string | null;
   rechecking: boolean;
   showRecheck: boolean;
+  /** SMART auth signed-in state. Defaults keep the disabled/mock look unchanged. */
+  authenticated?: boolean;
+  displayName?: string | null;
+  onLogout?: () => void;
 }): JSX.Element {
+  const signedIn = authenticated && displayName !== null;
+
   return (
     <header className="topbar">
       <div className="wordmark">
@@ -44,7 +53,21 @@ export function TopBar({
       >
         {theme === 'dark' ? 'Light' : 'Dark'}
       </Button>
-      <span className="clinician">{CLINICIAN_LABEL}</span>
+      {signedIn ? (
+        <>
+          <span className="clinician">{displayName}</span>
+          <Button
+            className="btn btn--quiet"
+            onPress={() => {
+              onLogout?.();
+            }}
+          >
+            Logout
+          </Button>
+        </>
+      ) : (
+        <span className="clinician">{CLINICIAN_LABEL}</span>
+      )}
     </header>
   );
 }

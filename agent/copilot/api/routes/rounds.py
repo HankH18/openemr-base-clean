@@ -17,6 +17,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from copilot.api.deps import resolve_acting_clinician
 from copilot.auth.roles import (
     ROLE_HEADER,
     UnknownClinicalRoleError,
@@ -24,31 +25,37 @@ from copilot.auth.roles import (
     parse_role,
 )
 from copilot.config import get_settings
-from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.domain.primitives import PatientId
 from copilot.observability import Observability
 from copilot.rounds.service import NoActiveRoundError, RoundsService, RoundView
 
 router = APIRouter(prefix="/v1/rounds", tags=["rounds"])
 
 
+# ``clinician_id`` is optional on every request model: in ``disabled`` mode it
+# identifies the acting clinician (as today); in ``smart`` mode the session cookie
+# is authoritative and this field, if present, is only validated against it
+# (mismatch → 403). See ``copilot.api.deps.resolve_acting_clinician``.
+
+
 class StartRequest(BaseModel):
     """Begin a round for one clinician over an authorized patient list."""
 
-    clinician_id: int = Field(gt=0)
+    clinician_id: int | None = Field(default=None, gt=0)
     patient_ids: list[int] = Field(min_length=1)
 
 
 class AdvanceRequest(BaseModel):
     """Mark the current patient done and move to the next."""
 
-    clinician_id: int = Field(gt=0)
+    clinician_id: int | None = Field(default=None, gt=0)
     completed_patient_id: int = Field(gt=0)
 
 
 class JumpRequest(BaseModel):
     """Reposition the round's cursor to a patient already on the list."""
 
-    clinician_id: int = Field(gt=0)
+    clinician_id: int | None = Field(default=None, gt=0)
     patient_id: int = Field(gt=0)
 
 
@@ -65,6 +72,10 @@ _ROLE_REFUSED = "Your clinical role is not permitted to lead a round"
 
 @router.post("/start", summary="Begin a round; returns the sickest patient's card")
 async def start(req: StartRequest, request: Request) -> dict[str, Any]:
+    # Identity first (auth-mode contract): 401 if smart-mode has no session,
+    # 403 if a supplied clinician_id disagrees with it.
+    clinician_id = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
+
     # Role gate (feat_roles): leading a round is a rounding activity. Parse the
     # clinician's role from the header (absent → physician, backward-compatible)
     # and refuse anyone who may not lead — before any service work. Generic
@@ -77,20 +88,23 @@ async def start(req: StartRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail=_ROLE_REFUSED)
 
     obs: Observability = request.app.state.observability
-    async with obs.span("rounds.start", clinician_id=req.clinician_id):
+    async with obs.span("rounds.start", clinician_id=clinician_id.value):
         view = await _service().start(
-            ClinicianId(value=req.clinician_id),
+            clinician_id,
             [PatientId(value=pid) for pid in req.patient_ids],
         )
     return _view_body(view)
 
 
 @router.get("/current", summary="The current patient card for this clinician")
-async def current(clinician_id: Annotated[int, Query(gt=0)], request: Request) -> dict[str, Any]:
+async def current(
+    request: Request, clinician_id: Annotated[int | None, Query(gt=0)] = None
+) -> dict[str, Any]:
+    cid = await resolve_acting_clinician(get_settings(), request, clinician_id)
     obs: Observability = request.app.state.observability
-    async with obs.span("rounds.current", clinician_id=clinician_id):
+    async with obs.span("rounds.current", clinician_id=cid.value):
         try:
-            view = await _service().current(ClinicianId(value=clinician_id))
+            view = await _service().current(cid)
         except NoActiveRoundError:
             raise HTTPException(status_code=404, detail="No active rounding session") from None
     return _view_body(view)
@@ -98,11 +112,12 @@ async def current(clinician_id: Annotated[int, Query(gt=0)], request: Request) -
 
 @router.post("/advance", summary="Mark current patient done; return the next card")
 async def advance(req: AdvanceRequest, request: Request) -> dict[str, Any]:
+    cid = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
     obs: Observability = request.app.state.observability
-    async with obs.span("rounds.advance", clinician_id=req.clinician_id):
+    async with obs.span("rounds.advance", clinician_id=cid.value):
         try:
             view = await _service().advance(
-                ClinicianId(value=req.clinician_id),
+                cid,
                 PatientId(value=req.completed_patient_id),
             )
         except NoActiveRoundError:
@@ -114,12 +129,11 @@ async def advance(req: AdvanceRequest, request: Request) -> dict[str, Any]:
 
 @router.post("/jump", summary="Jump the cursor to a patient already on the round")
 async def jump(req: JumpRequest, request: Request) -> dict[str, Any]:
+    cid = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
     obs: Observability = request.app.state.observability
-    async with obs.span("rounds.jump", clinician_id=req.clinician_id):
+    async with obs.span("rounds.jump", clinician_id=cid.value):
         try:
-            view = await _service().jump(
-                ClinicianId(value=req.clinician_id), PatientId(value=req.patient_id)
-            )
+            view = await _service().jump(cid, PatientId(value=req.patient_id))
         except NoActiveRoundError:
             raise HTTPException(status_code=404, detail="No active rounding session") from None
     return _view_body(view)

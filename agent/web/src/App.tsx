@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from 'react-aria-components';
-import { createApi } from './api/client';
+import { createApi, type CopilotApi } from './api/client';
+import { logout } from './api/session';
 import type { DeteriorationAlert } from './api/types';
-import { CENSUS, CLINICIAN_ID, censusEntry } from './census';
+import { CENSUS, censusEntry } from './census';
 import { fmtClock } from './fmt';
 import { AlertBanner } from './components/AlertBanner';
 import { ChatPanel } from './components/ChatPanel';
 import { CompleteView } from './components/CompleteView';
+import { LoginGate } from './components/LoginGate';
 import { PatientHero } from './components/PatientHero';
 import { QueueRail } from './components/QueueRail';
 import { TopBar } from './components/TopBar';
 import { useAlerts } from './state/useAlerts';
+import { useAuth } from './state/useAuth';
 import { useChat } from './state/useChat';
 import { useRounds } from './state/useRounds';
-import { useTheme } from './state/theme';
+import { useTheme, type Theme } from './state/theme';
 import { suggestionsFor } from './suggestions';
 
 const EXIT_MS = 190;
@@ -43,19 +46,39 @@ function wait(ms: number): Promise<void> {
   });
 }
 
-export function App(): JSX.Element {
-  const api = useMemo(createApi, []);
+/**
+ * The rounding application proper. Mounted by `App` only once auth is settled
+ * (disabled/mock, or SMART + authenticated), so its data hooks never fire on
+ * the sign-in screen. `clinicianId` is the SMART identity when authenticated,
+ * else the mock/disabled fallback (`CLINICIAN_ID`).
+ */
+function RoundsApp({
+  api,
+  clinicianId,
+  theme,
+  onToggleTheme,
+  authenticated,
+  displayName,
+  onLogout,
+}: {
+  api: CopilotApi;
+  clinicianId: number;
+  theme: Theme;
+  onToggleTheme: () => void;
+  authenticated: boolean;
+  displayName: string | null;
+  onLogout: () => void;
+}): JSX.Element {
   const patientIds = useMemo(() => CENSUS.map((entry) => entry.id), []);
-  const { theme, toggle } = useTheme();
-  const rounds = useRounds(api, CLINICIAN_ID, patientIds);
+  const rounds = useRounds(api, clinicianId, patientIds);
   // Polling is disabled: the backend /alerts feed flags every not-yet-seen
   // patient at/above the acuity threshold, which fires on first paint for
   // statically-critical patients — but criticality is the queue RANKING's job,
   // not a deterioration banner. A deterioration is a *change* during the round,
   // surfaced deterministically by "Re-check charts" (see handleRecheck). We keep
   // the hook only for its dismiss/dismissed state.
-  const alerts = useAlerts(api, CLINICIAN_ID, false);
-  const chat = useChat(api, CLINICIAN_ID);
+  const alerts = useAlerts(api, clinicianId, false);
+  const chat = useChat(api, clinicianId);
 
   const [leaving, setLeaving] = useState(false);
   const [recheckStatus, setRecheckStatus] = useState<string | null>(null);
@@ -165,11 +188,14 @@ export function App(): JSX.Element {
       <TopBar
         mode={api.mode}
         theme={theme}
-        onToggleTheme={toggle}
+        onToggleTheme={onToggleTheme}
         onRecheck={handleRecheck}
         recheckStatus={recheckStatus}
         rechecking={rechecking}
         showRecheck={rounds.phase === 'active'}
+        authenticated={authenticated}
+        displayName={displayName}
+        onLogout={onLogout}
       />
 
       {offer !== null ? (
@@ -248,12 +274,12 @@ export function App(): JSX.Element {
                 isLast={unseenCount <= 1}
                 busy={rounds.busy}
                 onDone={handleDone}
-                fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
+                fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
                 proposeWrite={(kind, metric, rawValue, unit) =>
-                  api.proposeWrite(CLINICIAN_ID, card.patient_id, kind, metric, rawValue, unit)
+                  api.proposeWrite(clinicianId, card.patient_id, kind, metric, rawValue, unit)
                 }
                 confirmWrite={(candidate, idempotencyKey) =>
-                  api.confirmWrite(CLINICIAN_ID, card.patient_id, candidate, idempotencyKey)
+                  api.confirmWrite(clinicianId, card.patient_id, candidate, idempotencyKey)
                 }
               />
               <ChatPanel
@@ -264,12 +290,12 @@ export function App(): JSX.Element {
                 onSend={(message) => {
                   void chat.send(card.patient_id, message);
                 }}
-                fetchTrend={(metric) => api.observations(CLINICIAN_ID, card.patient_id, metric)}
+                fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
                 proposeWrite={(kind, metric, rawValue, unit) =>
-                  api.proposeWrite(CLINICIAN_ID, card.patient_id, kind, metric, rawValue, unit)
+                  api.proposeWrite(clinicianId, card.patient_id, kind, metric, rawValue, unit)
                 }
                 confirmWrite={(candidate, idempotencyKey) =>
-                  api.confirmWrite(CLINICIAN_ID, card.patient_id, candidate, idempotencyKey)
+                  api.confirmWrite(clinicianId, card.patient_id, candidate, idempotencyKey)
                 }
               />
             </div>
@@ -277,5 +303,33 @@ export function App(): JSX.Element {
         </div>
       ) : null}
     </div>
+  );
+}
+
+export function App(): JSX.Element {
+  const api = useMemo(createApi, []);
+  const auth = useAuth(api);
+  const { theme, toggle } = useTheme();
+
+  const handleLogout = useCallback(() => {
+    void logout();
+  }, []);
+
+  // LoginGate renders the app (children) unchanged in disabled/mock mode and
+  // when SMART-authenticated; it shows the sign-in screen only in SMART mode
+  // while unauthenticated. RoundsApp mounts (and its data hooks fire) only
+  // when the gate renders children.
+  return (
+    <LoginGate auth={auth}>
+      <RoundsApp
+        api={api}
+        clinicianId={auth.clinicianId}
+        theme={theme}
+        onToggleTheme={toggle}
+        authenticated={auth.authenticated}
+        displayName={auth.displayName}
+        onLogout={handleLogout}
+      />
+    </LoginGate>
   );
 }

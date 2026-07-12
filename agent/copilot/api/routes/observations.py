@@ -32,6 +32,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from copilot.agent.grounding import describe_resource, extract_temporal, humanize_label
+from copilot.api.deps import resolve_acting_clinician
 from copilot.auth import is_authorized
 from copilot.config import get_settings
 from copilot.domain.contracts import (
@@ -74,12 +75,14 @@ def _fhir_client() -> FhirClient:
 async def observation_series(
     patient_id: Annotated[int, Path(gt=0)],
     metric: Annotated[str, Query(min_length=1)],
-    clinician_id: Annotated[int, Query(gt=0)],
     request: Request,
+    clinician_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> ObservationSeries:
     # Parse the raw ids into validated primitives at the boundary.
     pid = PatientId(value=patient_id)
-    cid = ClinicianId(value=clinician_id)
+    # Identity per the auth-mode contract: disabled → the query clinician_id;
+    # smart → the session cookie (401 if none, 403 if the query id disagrees).
+    cid = await resolve_acting_clinician(get_settings(), request, clinician_id)
 
     # Authorization boundary (UC-6), identical to chat: refuse a patient the
     # clinician has not established on their rounding list — never leak. Generic

@@ -16,11 +16,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from copilot.api.deps import resolve_acting_clinician
 from copilot.api.middleware import resolve_correlation_id
 from copilot.auth import is_authorized
 from copilot.chat.service import ChatReply, ChatService
 from copilot.config import get_settings
-from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.domain.primitives import PatientId
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability
@@ -29,9 +30,14 @@ router = APIRouter(prefix="/v1", tags=["chat"])
 
 
 class ChatRequest(BaseModel):
-    """One grounded question about a patient, optionally continuing a thread."""
+    """One grounded question about a patient, optionally continuing a thread.
 
-    clinician_id: int = Field(gt=0)
+    ``clinician_id`` is optional: in ``disabled`` mode it identifies the acting
+    clinician (as today); in ``smart`` mode the session cookie is authoritative
+    and this field, if present, is only validated against it (mismatch → 403).
+    """
+
+    clinician_id: int | None = Field(default=None, gt=0)
     patient_id: int = Field(gt=0)
     message: str = Field(min_length=1)
     conversation_id: int | None = Field(default=None, gt=0)
@@ -60,7 +66,9 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     # Resolve at the boundary: a valid supplied id is honoured, anything else
     # (missing / malformed) yields a freshly generated one.
     correlation_id = resolve_correlation_id(req.correlation_id)
-    clinician_id = ClinicianId(value=req.clinician_id)
+    # Identity per the auth-mode contract: disabled → the request's clinician_id;
+    # smart → the session cookie (401 if none, 403 if the body id disagrees).
+    clinician_id = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
     patient_id = PatientId(value=req.patient_id)
 
     # Authorization boundary (UC-6): refuse a patient the clinician has not
