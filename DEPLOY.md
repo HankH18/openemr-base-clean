@@ -437,3 +437,117 @@ be presented as a customer-controlled safeguard. Only 14.1 (token encryption) an
 > Compliance framing (technical-safeguard map, BAAs, operator-owned administrative and
 > physical safeguards) is tracked separately in the compliance write-up
 > (PRODUCTION_GRADE_PLAN.md §7 / `COMPLIANCE.md`).
+
+## 15. Redeploy the agent with new backend code (rebuild + migrate)
+
+The `agent` image is **built from source** and DB migrations are **not** run
+automatically at container start — they are applied explicitly. After a code
+pull that changes `agent/` (as of `a060e42`: the SMART-login backbone + the
+audit-retention sweep — all inert while `COPILOT_AUTH_MODE=disabled` and
+`COPILOT_WRITEBACK_ENABLED=false`), rebuild the image and apply the additive
+migrations. **This is safe to run on the live demo: the new code changes no
+existing behavior.**
+
+```bash
+cd /root/openemr-base-clean
+# 1. Rebuild only the agent image from the pulled source.
+docker compose -f docker-compose.deploy.yml build agent
+# 2. Apply DB migrations. Additive only: an audit_log(at) index (0003) plus the
+#    clinician / physician_session / login_txn tables (0004) — all UNUSED until
+#    SMART login is enabled, so no existing row is touched.
+docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent upgrade head
+# 3. Restart the agent on the new image.
+docker compose -f docker-compose.deploy.yml --env-file .env up -d agent
+# 4. Verify (should still report postgres / openemr_fhir / llm ok).
+docker compose -f docker-compose.deploy.yml exec agent \
+  python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
+```
+
+The new `/v1/auth/*` routes return `404` and writes return `503` until their
+flags are set, so the demo behaves identically to before the rebuild.
+
+> **Rollback.** The migrations are additive and fully reversible without data
+> loss: `docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic
+> agent downgrade 0002` drops the new index + tables. To revert the code,
+> re-checkout the prior commit's `agent/` tree and rebuild. The previous image
+> also remains in the local Docker cache until pruned.
+
+## 16. Enable per-physician SMART login (prerequisites + current limitation)
+
+> **Read this before enabling.** The SMART login **backbone** ships in the agent
+> (behind `COPILOT_AUTH_MODE`, default `disabled`): the `/v1/auth/*` routes, the
+> encrypted server-side session store, PKCE, token refresh, `fhirUser →
+> ClinicianId` mapping, and automatic-logoff TTL enforcement all work. **What is
+> NOT yet built is the Phase-2 route cutover** — the interactive data routes
+> (`chat`, `rounds`, `observations`, `writes`) do **not** yet read the clinician
+> identity from the authenticated session; they still take `clinician_id` from
+> the request. So turning `COPILOT_AUTH_MODE=smart` on today gives you a working
+> physician login (session, logout, idle timeout, token-at-rest encryption, the
+> "token never touches the browser" property) but does **not** yet enforce
+> per-physician identity on the data path. Do not represent it as full
+> per-physician access control until Phase 2 lands (see PRODUCTION_GRADE_PLAN.md
+> §Phase 2). Until then, keep the network/ingress controls from §11/§12.
+
+Prerequisites: §12 (HTTPS at a real domain — `Secure` cookies require TLS) and
+§15 (the new agent image + migrations applied).
+
+**16.1 — Register the confidential SMART app client on the deployed OpenEMR.**
+Mirrors §10.1 but for an `authorization_code` + `refresh_token` (login) client:
+
+```bash
+SITE=$(grep '^COPILOT_PUBLIC_BASE_URL=' .env | cut -d= -f2-)   # your https origin
+docker compose -f docker-compose.deploy.yml run --rm --no-deps \
+  --entrypoint python agent scripts/register_smart_app_client.py \
+  --base-url "$SITE" --redirect-uri "$SITE/v1/auth/callback"
+```
+
+It prints a `client_id` and `client_secret`. The redirect URI must exactly equal
+`${COPILOT_PUBLIC_BASE_URL}/v1/auth/callback` (§12.2).
+
+**16.2 — Enable the client** (new clients are disabled + role `user`, which is
+what SMART login needs — do NOT promote it to `system`):
+
+```bash
+ROOT_PW=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2-)
+docker compose -f docker-compose.deploy.yml exec -T -e MYSQL_PWD="$ROOT_PW" \
+  mariadb mariadb -uroot openemr \
+  -e "UPDATE oauth_clients SET is_enabled=1 WHERE client_id='REPLACE-CLIENT-ID';"
+```
+
+Ensure each physician has an OpenEMR user with the right ACLs for what they will
+do (read; and, for writers, `encounters`/`patients-med`).
+
+**16.3 — Set the agent env and restart:**
+
+```bash
+COPILOT_AUTH_MODE=smart
+COPILOT_SMART_APP_CLIENT_ID=<printed client_id>
+COPILOT_SMART_APP_CLIENT_SECRET=<printed client_secret>   # secrets-manager only; never commit
+COPILOT_SESSION_ENC_KEY=<Fernet key from §14.1>
+COPILOT_PUBLIC_BASE_URL=https://agentforge.<your-domain>  # already set in §12.2
+# then:
+docker compose -f docker-compose.deploy.yml --env-file .env up -d agent
+```
+
+The agent refuses to boot in `smart` mode unless `COPILOT_PUBLIC_BASE_URL` is
+`https://…` and the session key + client id are present — a deliberate guard so
+`Secure` cookies can never be issued over plain HTTP. Verify login by opening
+`https://agentforge.<your-domain>/v1/auth/login` — it should redirect to
+OpenEMR's authorize screen.
+
+## 17. Business Associate Agreements & governance (organization-owned)
+
+These are **not** the software's to satisfy and must be handled by the deploying
+organization before real PHI flows (full detail: `agent/COMPLIANCE.md` §3):
+
+- **Anthropic BAA + zero-data-retention.** The agent sends PHI to the Claude API
+  for synthesis and chat. Execute Anthropic's BAA and enable ZDR for the
+  API key the agent uses (`COPILOT_ANTHROPIC_API_KEY`). Without both, sending PHI
+  to the API is not permissible.
+- **DigitalOcean BAA** (or the chosen host's) covering the droplet + volumes.
+- **Any other PHI-touching subprocessor** (a hosted Langfuse instead of the
+  self-hosted §13, log aggregation, monitoring) — covered by BAA or must not
+  receive PHI.
+- **§164.308 / §164.310** administrative and physical safeguards (risk analysis,
+  workforce training, contingency/backup, incident response, facility controls)
+  — organization policy, outside this codebase.
