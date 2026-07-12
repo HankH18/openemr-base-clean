@@ -38,7 +38,7 @@ agentforge.example.com {
 	# /public/* and /library/* serve the login/consent page assets (css/js/fonts).
 	# Must precede the SPA catch-all.
 	@openemr {
-		path /oauth2/* /public/* /library/* /custom/* /apis/* /sites/*
+		path /oauth2/* /public/* /library/* /custom/*
 	}
 	handle @openemr {
 		reverse_proxy openemr
