@@ -19,6 +19,7 @@ reply.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -59,9 +60,19 @@ class ChatReply(BaseModel):
 class ChatService:
     """Serve-time orchestration for a single grounded chat turn."""
 
-    def __init__(self, settings: Settings, observability: Observability | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        observability: Observability | None = None,
+        *,
+        fhir_client_factory: Callable[[], FhirClient] | None = None,
+    ) -> None:
         self._settings = settings
         self._obs: Observability = observability or NoopObservability()
+        # Optional per-request reader factory. In ``smart`` mode the route injects
+        # a factory that builds the physician's delegated per-session client; when
+        # absent (disabled mode) the client falls back to the system-token path.
+        self._fhir_client_factory = fhir_client_factory
 
     async def chat(
         self,
@@ -206,10 +217,15 @@ class ChatService:
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a chat turn.
 
-        Real Backend Services token when configured, else a stub bearer — see
-        ``copilot.fhir.provider.build_token_provider``. Both the agent's reads
+        Smart mode: the route-injected factory builds the physician's delegated
+        per-session client, so OpenEMR attributes the read to that physician.
+        Otherwise (disabled mode): the environment-appropriate system client —
+        real Backend Services token when configured, else a stub bearer (see
+        ``copilot.fhir.provider.build_token_provider``). Both the agent's reads
         and the serve-time verifier's re-fetch share this client for the turn.
         """
+        if self._fhir_client_factory is not None:
+            return self._fhir_client_factory()
         return build_fhir_client(self._settings)
 
 

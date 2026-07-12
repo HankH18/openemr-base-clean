@@ -26,13 +26,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 
 from copilot.agent.grounding import describe_resource, extract_temporal, humanize_label
-from copilot.api.deps import resolve_acting_clinician
+from copilot.api.deps import resolve_acting_context
 from copilot.auth import is_authorized
 from copilot.config import get_settings
 from copilot.domain.contracts import (
@@ -42,7 +43,7 @@ from copilot.domain.contracts import (
 )
 from copilot.domain.primitives import ClinicianId, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
-from copilot.fhir.provider import build_fhir_client
+from copilot.fhir.provider import build_fhir_client, build_fhir_client_for_session
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability, current_correlation_id
@@ -57,15 +58,28 @@ router = APIRouter(prefix="/v1", tags=["observations"])
 # an empty string so the chart never colours a normal point.
 _NORMAL_FLAGS = frozenset({"", "n", "no", "normal"})
 
+# Per-request physician-session id, set by the route in smart mode so the
+# zero-arg ``_fhir_client`` seam can build the physician's delegated per-session
+# reader without changing its signature (tests monkeypatch that zero-arg seam).
+# ``None`` (disabled mode / no session) ⇒ the shared system-token reader.
+_session_id_ctx: ContextVar[str | None] = ContextVar("observations_session_id", default=None)
+
 
 def _fhir_client() -> FhirClient:
     """Build the FHIR reader for one series fetch.
 
-    Real Backend Services token when configured, else a stub bearer — see
-    ``copilot.fhir.provider.build_token_provider``. A module-level seam so tests
+    Smart mode: when a physician session id is set for this request, build the
+    physician's delegated per-session client, so OpenEMR attributes the read to
+    that physician. Otherwise (disabled mode): the environment-appropriate system
+    client — real Backend Services token when configured, else a stub bearer (see
+    ``copilot.fhir.provider.build_token_provider``). A module-level seam so tests
     can substitute an in-memory double.
     """
-    return build_fhir_client(get_settings())
+    settings = get_settings()
+    session_id = _session_id_ctx.get()
+    if session_id is not None:
+        return build_fhir_client_for_session(settings, session_id)
+    return build_fhir_client(settings)
 
 
 @router.get(
@@ -81,8 +95,10 @@ async def observation_series(
     # Parse the raw ids into validated primitives at the boundary.
     pid = PatientId(value=patient_id)
     # Identity per the auth-mode contract: disabled → the query clinician_id;
-    # smart → the session cookie (401 if none, 403 if the query id disagrees).
-    cid = await resolve_acting_clinician(get_settings(), request, clinician_id)
+    # smart → the session cookie (401 if none, 403 if the query id disagrees). The
+    # session id (smart mode) selects the physician's delegated read token.
+    acting = await resolve_acting_context(get_settings(), request, clinician_id)
+    cid = acting.clinician_id
 
     # Authorization boundary (UC-6), identical to chat: refuse a patient the
     # clinician has not established on their rounding list — never leak. Generic
@@ -91,11 +107,17 @@ async def observation_series(
         raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
 
     obs: Observability = request.app.state.observability
-    async with (
-        obs.span("observations.series", clinician_id=cid.value, patient_id=pid.value),
-        _fhir_client() as fhir,
-    ):
-        bundle = await fhir.search(ResourceType.Observation, {"patient": str(pid)})
+    # Bind the physician session (smart mode) so the zero-arg ``_fhir_client``
+    # seam builds the delegated per-session reader; always reset it afterwards.
+    ctx_token = _session_id_ctx.set(acting.session_id)
+    try:
+        async with (
+            obs.span("observations.series", clinician_id=cid.value, patient_id=pid.value),
+            _fhir_client() as fhir,
+        ):
+            bundle = await fhir.search(ResourceType.Observation, {"patient": str(pid)})
+    finally:
+        _session_id_ctx.reset(ctx_token)
 
     resources = _bundle_resources(bundle)
 

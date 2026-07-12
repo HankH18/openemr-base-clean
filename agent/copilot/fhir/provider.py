@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 
+from copilot.auth.service import build_session_token_provider
 from copilot.config import Settings
 from copilot.domain.primitives import ResourceType, utcnow
 from copilot.fhir.auth import (
@@ -96,6 +97,26 @@ class _PatientMappedFhirClient(FhirClient):
 def build_fhir_client(settings: Settings) -> FhirClient:
     """FhirClient wired to the environment-appropriate token provider (+ patient map)."""
     provider = build_token_provider(settings)
+    return _wrap_fhir_client(settings, provider)
+
+
+def build_fhir_client_for_session(settings: Settings, session_id: str) -> FhirClient:
+    """FhirClient wired to the logged-in physician's delegated session token.
+
+    Interactive request path ONLY — never the poller/background path. The token
+    is served from the physician's encrypted server session (a
+    :class:`SessionTokenProvider` bound to ``session_id``), so OpenEMR's own
+    native audit attributes each read to that individual physician rather than to
+    the shared system read client. Reachable only from a smart-mode route that has
+    already resolved a live session; ``build_session_token_provider`` reuses the
+    exact DB-backed load/save injection the provider expects.
+    """
+    provider = build_session_token_provider(settings, session_id)
+    return _wrap_fhir_client(settings, provider)
+
+
+def _wrap_fhir_client(settings: Settings, provider: TokenProvider) -> FhirClient:
+    """Wrap a token provider in a ``FhirClient`` (+ optional patient-id map)."""
     if settings.fhir_patient_id_template:
         return _PatientMappedFhirClient(
             settings.fhir_base_url,
@@ -155,9 +176,23 @@ def build_write_client(settings: Settings) -> OpenEmrWriteClient:
     poller is a hard invariant (``research/WRITEBACK_PHASE1_PLAN.md`` §2.4).
     """
     provider = build_write_token_provider(settings)
-    return OpenEmrWriteClient(
-        _write_api_base_url(settings), provider, verify=settings.tls_verify
-    )
+    return OpenEmrWriteClient(_write_api_base_url(settings), provider, verify=settings.tls_verify)
+
+
+def build_write_client_for_session(settings: Settings, session_id: str) -> OpenEmrWriteClient:
+    """Standard-API write client wired to the physician's delegated session token.
+
+    Interactive request path ONLY — never the poller. GUARDED on
+    ``writeback_enabled`` (belt-and-braces with the route's 503) but, unlike the
+    disabled-mode password grant, needs NO dedicated write credentials: the
+    physician's own SMART token already carries the ``api:oemr user/*.crus`` write
+    scopes, so OpenEMR attributes the write to that individual physician. Raises
+    ``WritebackDisabledError`` (route → 503) when write-back is off.
+    """
+    if not settings.writeback_enabled:
+        raise WritebackDisabledError("write-back is disabled (COPILOT_WRITEBACK_ENABLED=false)")
+    provider = build_session_token_provider(settings, session_id)
+    return OpenEmrWriteClient(_write_api_base_url(settings), provider, verify=settings.tls_verify)
 
 
 def _write_api_base_url(settings: Settings) -> str:

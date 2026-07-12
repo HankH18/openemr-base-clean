@@ -17,18 +17,24 @@ Mounted automatically by ``copilot.api.app.register_routers`` (module-level
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field
 
-from copilot.api.deps import resolve_acting_clinician
+from copilot.api.deps import resolve_acting_clinician, resolve_acting_context
 from copilot.auth import is_authorized
 from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
 from copilot.domain.writes import CommittedWrite, ProposedWrite, WriteCandidate, WriteKind
-from copilot.fhir.provider import WritebackDisabledError
-from copilot.fhir.write_client import OpenEmrWriteError
+from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import (
+    WritebackDisabledError,
+    build_fhir_client_for_session,
+    build_write_client_for_session,
+)
+from copilot.fhir.write_client import OpenEmrWriteClient, OpenEmrWriteError
 from copilot.observability import Observability
 from copilot.writeback.service import WriteInputError, WriteService
 
@@ -68,8 +74,32 @@ class ConfirmRequest(BaseModel):
     candidate: WriteCandidate
 
 
-def _service(observability: Observability) -> WriteService:
-    return WriteService(get_settings(), observability)
+def _service(
+    observability: Observability,
+    *,
+    write_client_factory: Callable[[], OpenEmrWriteClient] | None = None,
+    read_client_factory: Callable[[], FhirClient] | None = None,
+) -> WriteService:
+    return WriteService(
+        get_settings(),
+        observability,
+        write_client_factory=write_client_factory,
+        read_client_factory=read_client_factory,
+    )
+
+
+def _write_factory(session_id: str | None) -> Callable[[], OpenEmrWriteClient] | None:
+    """A per-session write-client factory in smart mode; ``None`` (password path) otherwise."""
+    if session_id is None:
+        return None
+    return lambda: build_write_client_for_session(get_settings(), session_id)
+
+
+def _read_factory(session_id: str | None) -> Callable[[], FhirClient] | None:
+    """A per-session read-back factory in smart mode; ``None`` (system path) otherwise."""
+    if session_id is None:
+        return None
+    return lambda: build_fhir_client_for_session(get_settings(), session_id)
 
 
 def _proposed_body(proposed: ProposedWrite, idempotency_key: str) -> dict[str, Any]:
@@ -141,7 +171,9 @@ async def confirm_write(
     # The candidate already carries typed ids (parsed at the boundary by Pydantic).
     # Identity per the auth-mode contract: disabled → the candidate's clinician_id;
     # smart → the session cookie (401 if none, 403 if the candidate id disagrees).
-    cid = await resolve_acting_clinician(get_settings(), request, candidate.clinician_id.value)
+    # The session id (smart mode) selects the physician's delegated write token.
+    acting = await resolve_acting_context(get_settings(), request, candidate.clinician_id.value)
+    cid = acting.clinician_id
     pid = candidate.patient_id
 
     if not await is_authorized(cid, pid):
@@ -151,7 +183,11 @@ async def confirm_write(
         raise HTTPException(status_code=503, detail=_DISABLED_DETAIL)
 
     try:
-        committed = await _service(request.app.state.observability).commit(
+        committed = await _service(
+            request.app.state.observability,
+            write_client_factory=_write_factory(acting.session_id),
+            read_client_factory=_read_factory(acting.session_id),
+        ).commit(
             clinician_id=cid,
             patient_id=pid,
             candidate=candidate,

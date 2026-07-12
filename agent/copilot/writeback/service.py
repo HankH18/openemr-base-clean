@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import math
 import secrets
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import lru_cache
 from typing import Any
 
@@ -114,10 +114,20 @@ class WriteService:
         settings: Settings,
         observability: Observability | None = None,
         idempotency: IdempotencyStore | None = None,
+        *,
+        write_client_factory: Callable[[], OpenEmrWriteClient] | None = None,
+        read_client_factory: Callable[[], FhirClient] | None = None,
     ) -> None:
         self._settings = settings
         self._obs: Observability = observability or NoopObservability()
         self._idempotency = idempotency or get_idempotency_store()
+        # Optional per-request client factories. In ``smart`` mode the route
+        # injects factories that build the physician's delegated per-session write
+        # + read-back clients (the physician's SMART token carries the
+        # ``api:oemr user/*.crus`` write scopes). When absent (disabled mode) both
+        # fall back to today's guarded password-grant write / system read path.
+        self._write_client_factory = write_client_factory
+        self._read_client_factory = read_client_factory
 
     # --- propose ----------------------------------------------------------
 
@@ -156,9 +166,7 @@ class WriteService:
         ):
             verdict = verify_write(candidate, mode=WriteEntryMode.human_direct)
             if verdict.blocked:
-                raise WriteInputError(
-                    "write candidate failed verification", details=verdict.errors
-                )
+                raise WriteInputError("write candidate failed verification", details=verdict.errors)
             proposed = ProposedWrite(candidate=candidate, verdict=verdict)
 
         # HIPAA §164.312(b): the proposal is a physician-attributed action on the
@@ -359,12 +367,8 @@ class WriteService:
                 vital = candidate.vital
                 if vital is None:
                     return False
-                bundle = await reader.search(
-                    ResourceType.Observation, {"patient": str(patient_id)}
-                )
-                return any(
-                    math.isclose(v, vital.value) for v in _observation_values(bundle)
-                )
+                bundle = await reader.search(ResourceType.Observation, {"patient": str(patient_id)})
+                return any(math.isclose(v, vital.value) for v in _observation_values(bundle))
             case WriteKind.medication:
                 med = candidate.medication
                 if med is None:
@@ -416,13 +420,26 @@ class WriteService:
         """The guarded Standard-API write client for this request.
 
         Built here — inside the interactive request path — never at import or in
-        the poller lifespan. ``build_write_client`` raises ``WritebackDisabledError``
-        unless write-back is enabled and configured.
+        the poller lifespan. Smart mode: the route-injected factory builds the
+        physician's delegated per-session write client (their SMART token carries
+        the write scopes), so OpenEMR attributes the write to that physician; it
+        stays guarded on ``writeback_enabled``. Otherwise (disabled mode):
+        ``build_write_client`` — the dedicated password-grant client — which
+        raises ``WritebackDisabledError`` unless write-back is enabled and
+        configured.
         """
+        if self._write_client_factory is not None:
+            return self._write_client_factory()
         return build_write_client(self._settings)
 
     def _read_client(self) -> FhirClient:
-        """The read-only FHIR client for the post-write read-back."""
+        """The read-only FHIR client for the post-write read-back.
+
+        Smart mode uses the route-injected per-session factory (physician's
+        delegated token); disabled mode uses the system-token client.
+        """
+        if self._read_client_factory is not None:
+            return self._read_client_factory()
         return build_fhir_client(self._settings)
 
 

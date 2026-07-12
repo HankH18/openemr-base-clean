@@ -14,7 +14,7 @@ fresh process resumes exactly where the last one left off.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, ConfigDict
@@ -64,8 +64,18 @@ class RoundView(BaseModel):
 class RoundsService:
     """Serve-time orchestration for the rounding loop."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fhir_client_factory: Callable[[], FhirClient] | None = None,
+    ) -> None:
         self._settings = settings
+        # Optional per-request reader factory. In ``smart`` mode the route injects
+        # a factory that builds the physician's delegated per-session client; when
+        # absent (disabled mode) the reader falls back to the system-token path.
+        # Only ``start`` fetches from FHIR — the cursor-only steps never build one.
+        self._fhir_client_factory = fhir_client_factory
 
     # --- public API -------------------------------------------------------
 
@@ -215,9 +225,14 @@ class RoundsService:
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a rounding synthesis.
 
-        Real Backend Services token when configured, else a stub bearer — see
-        ``copilot.fhir.provider.build_token_provider``.
+        Smart mode: the route-injected factory builds the physician's delegated
+        per-session client, so OpenEMR attributes the read to that physician.
+        Otherwise (disabled mode): the environment-appropriate system client —
+        real Backend Services token when configured, else a stub bearer (see
+        ``copilot.fhir.provider.build_token_provider``).
         """
+        if self._fhir_client_factory is not None:
+            return self._fhir_client_factory()
         return build_fhir_client(self._settings)
 
 

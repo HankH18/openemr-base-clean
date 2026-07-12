@@ -11,17 +11,20 @@ module-level ``router``); no edit to ``app.py`` is required.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from copilot.api.deps import resolve_acting_clinician
+from copilot.api.deps import resolve_acting_context
 from copilot.api.middleware import resolve_correlation_id
 from copilot.auth import is_authorized
 from copilot.chat.service import ChatReply, ChatService
 from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
+from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client_for_session
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability
@@ -44,8 +47,18 @@ class ChatRequest(BaseModel):
     correlation_id: str | None = None
 
 
-def _service(observability: Observability) -> ChatService:
-    return ChatService(get_settings(), observability)
+def _service(
+    observability: Observability,
+    fhir_client_factory: Callable[[], FhirClient] | None = None,
+) -> ChatService:
+    return ChatService(get_settings(), observability, fhir_client_factory=fhir_client_factory)
+
+
+def _reader_factory(session_id: str | None) -> Callable[[], FhirClient] | None:
+    """A per-session reader factory in smart mode; ``None`` (system path) otherwise."""
+    if session_id is None:
+        return None
+    return lambda: build_fhir_client_for_session(get_settings(), session_id)
 
 
 def _reply_body(reply: ChatReply) -> dict[str, Any]:
@@ -67,8 +80,10 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     # (missing / malformed) yields a freshly generated one.
     correlation_id = resolve_correlation_id(req.correlation_id)
     # Identity per the auth-mode contract: disabled → the request's clinician_id;
-    # smart → the session cookie (401 if none, 403 if the body id disagrees).
-    clinician_id = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
+    # smart → the session cookie (401 if none, 403 if the body id disagrees). The
+    # session id (smart mode) selects the physician's delegated read token.
+    acting = await resolve_acting_context(get_settings(), request, req.clinician_id)
+    clinician_id = acting.clinician_id
     patient_id = PatientId(value=req.patient_id)
 
     # Authorization boundary (UC-6): refuse a patient the clinician has not
@@ -77,7 +92,9 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     if not await is_authorized(clinician_id, patient_id):
         raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
 
-    reply = await _service(request.app.state.observability).chat(
+    reply = await _service(
+        request.app.state.observability, _reader_factory(acting.session_id)
+    ).chat(
         clinician_id=clinician_id,
         patient_id=patient_id,
         message=req.message,

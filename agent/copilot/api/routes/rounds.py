@@ -12,12 +12,13 @@ module-level ``router``); no edit to ``app.py`` is required.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from copilot.api.deps import resolve_acting_clinician
+from copilot.api.deps import resolve_acting_clinician, resolve_acting_context
 from copilot.auth.roles import (
     ROLE_HEADER,
     UnknownClinicalRoleError,
@@ -26,6 +27,8 @@ from copilot.auth.roles import (
 )
 from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
+from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client_for_session
 from copilot.observability import Observability
 from copilot.rounds.service import NoActiveRoundError, RoundsService, RoundView
 
@@ -59,8 +62,15 @@ class JumpRequest(BaseModel):
     patient_id: int = Field(gt=0)
 
 
-def _service() -> RoundsService:
-    return RoundsService(get_settings())
+def _service(fhir_client_factory: Callable[[], FhirClient] | None = None) -> RoundsService:
+    return RoundsService(get_settings(), fhir_client_factory=fhir_client_factory)
+
+
+def _reader_factory(session_id: str | None) -> Callable[[], FhirClient] | None:
+    """A per-session reader factory in smart mode; ``None`` (system path) otherwise."""
+    if session_id is None:
+        return None
+    return lambda: build_fhir_client_for_session(get_settings(), session_id)
 
 
 def _view_body(view: RoundView) -> dict[str, Any]:
@@ -73,8 +83,10 @@ _ROLE_REFUSED = "Your clinical role is not permitted to lead a round"
 @router.post("/start", summary="Begin a round; returns the sickest patient's card")
 async def start(req: StartRequest, request: Request) -> dict[str, Any]:
     # Identity first (auth-mode contract): 401 if smart-mode has no session,
-    # 403 if a supplied clinician_id disagrees with it.
-    clinician_id = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
+    # 403 if a supplied clinician_id disagrees with it. The session id (smart
+    # mode) selects the physician's delegated read token for the synthesis fetch.
+    acting = await resolve_acting_context(get_settings(), request, req.clinician_id)
+    clinician_id = acting.clinician_id
 
     # Role gate (feat_roles): leading a round is a rounding activity. Parse the
     # clinician's role from the header (absent → physician, backward-compatible)
@@ -89,7 +101,7 @@ async def start(req: StartRequest, request: Request) -> dict[str, Any]:
 
     obs: Observability = request.app.state.observability
     async with obs.span("rounds.start", clinician_id=clinician_id.value):
-        view = await _service().start(
+        view = await _service(_reader_factory(acting.session_id)).start(
             clinician_id,
             [PatientId(value=pid) for pid in req.patient_ids],
         )
