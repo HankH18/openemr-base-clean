@@ -143,7 +143,10 @@ class TestBeginLogin:
         assert q["redirect_uri"] == ["https://af.test/v1/auth/callback"]
         assert q["state"] == ["STATE-123"]
         assert q["code_challenge_method"] == ["S256"]
-        assert q["aud"] == ["https://openemr.test/apis/default/fhir"]
+        # aud is the PUBLIC FHIR base (public_base_url host + the fhir path),
+        # not the internal read URL — OpenEMR validates aud against its
+        # site_addr_oath-derived FHIR base.
+        assert q["aud"] == ["https://af.test/apis/default/fhir"]
         expected_challenge = (
             base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
             .rstrip(b"=")

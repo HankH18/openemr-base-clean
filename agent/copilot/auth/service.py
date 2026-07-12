@@ -31,7 +31,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -163,6 +163,19 @@ class AuthService:
     def redirect_uri(self) -> str:
         return f"{self.settings.public_base_url.rstrip('/')}{CALLBACK_PATH}"
 
+    def _public_fhir_aud(self) -> str:
+        """The public FHIR base OpenEMR expects as the authorize ``aud``.
+
+        OpenEMR validates the ``aud`` against the FHIR base it advertises
+        publicly (derived from ``site_addr_oath``), which is the public origin —
+        not the agent's internal read URL. In smart mode ``public_base_url`` is a
+        validated https origin (see :func:`ensure_smart_ready`); combine it with
+        the FHIR path from ``fhir_base_url`` so the ``aud`` matches while the
+        actual FHIR reads keep using the internal ``fhir_base_url`` client.
+        """
+        fhir_path = urlsplit(self.settings.fhir_base_url).path or "/apis/default/fhir"
+        return f"{self.settings.public_base_url.rstrip('/')}{fhir_path}"
+
     def _authorize_url(self, *, state: str, challenge: str, nonce: str) -> str:
         params = {
             "response_type": "code",
@@ -170,8 +183,10 @@ class AuthService:
             "redirect_uri": self.redirect_uri,
             "scope": self.settings.smart_scopes,
             "state": state,
-            # Standalone launch: aud is the FHIR base (OpenEMR requires it).
-            "aud": self.settings.fhir_base_url,
+            # Standalone launch: aud is the FHIR base as the authorization server
+            # advertises it PUBLICLY (site_addr_oath-derived), not the internal
+            # read URL — OpenEMR rejects a mismatched aud with invalid_request.
+            "aud": self._public_fhir_aud(),
             "code_challenge": challenge,
             "code_challenge_method": "S256",
             "nonce": nonce,
