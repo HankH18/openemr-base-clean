@@ -154,7 +154,13 @@ services:
       COPILOT_DATABASE_URL: postgresql+psycopg://copilot:${AGENT_POSTGRES_PASSWORD:?}@agent-postgres:5432/copilot
       COPILOT_FHIR_BASE_URL: http://openemr/apis/default/fhir
       COPILOT_OAUTH_TOKEN_URL: http://openemr/oauth2/default/token
-      COPILOT_OAUTH_AUTHORIZE_URL: http://openemr/oauth2/default/authorize
+      # The token exchange is a server-side back-channel, so it stays on the
+      # internal http://openemr host (OpenEMR does no host validation there).
+      # The AUTHORIZE url, by contrast, is where the physician's BROWSER is sent,
+      # so under SMART login it must be the PUBLIC https origin (proxied to
+      # OpenEMR by Caddy's /oauth2/* route). Defaults to the internal URL so the
+      # bare-IP demo (auth_mode=disabled) is unchanged.
+      COPILOT_OAUTH_AUTHORIZE_URL: ${COPILOT_OAUTH_AUTHORIZE_URL:-http://openemr/oauth2/default/authorize}
       COPILOT_SMART_APP_CLIENT_ID: ${SMART_APP_CLIENT_ID:-}
       COPILOT_BACKEND_SERVICES_CLIENT_ID: ${BACKEND_SERVICES_CLIENT_ID:-}
       COPILOT_BACKEND_SERVICES_SCOPES: ${BACKEND_SERVICES_SCOPES:-}

@@ -31,6 +31,21 @@ agentforge.example.com {
 		demo $2a$14$REPLACE_WITH_OUTPUT_OF_CADDY_HASH_PASSWORD
 	}
 
+	# OpenEMR OAuth2 / login surface — REQUIRED for per-physician SMART login.
+	# The physician's browser is redirected to OpenEMR's /oauth2/default/authorize
+	# and logs in there; these paths must reach OpenEMR, not the SPA. One prefix
+	# (/oauth2/*) covers authorize, provider/login, login, smart/patient-select,
+	# scope-authorize-confirm, device/code, token, jwk, .well-known, registration.
+	# /public/* and /library/* serve the login/consent page assets (css/js/fonts).
+	# Must precede the SPA catch-all. (No effect while COPILOT_AUTH_MODE=disabled —
+	# nothing hits these paths until SMART login is enabled.)
+	@openemr {
+		path /oauth2/* /public/* /library/* /apis/* /sites/*
+	}
+	handle @openemr {
+		reverse_proxy openemr
+	}
+
 	# Agent API → internal agent service (same-origin; the SPA calls /v1/*)
 	@api {
 		path /v1/* /health /ready /openapi.json /docs /docs/*
