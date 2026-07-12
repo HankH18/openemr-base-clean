@@ -183,11 +183,17 @@ class Settings(BaseSettings):
         default=(
             "openid fhirUser offline_access "
             "user/Patient.read user/Observation.read user/MedicationRequest.read "
-            "user/MedicationStatement.read user/Condition.read "
+            "user/Condition.read "
             "user/AllergyIntolerance.read user/Encounter.read "
             "user/DiagnosticReport.read "
             "api:oemr user/vital.crus user/encounter.crus user/medication.cruds"
         ),
+        # NB: MedicationStatement is intentionally omitted — OpenEMR's FHIR
+        # CapabilityStatement does not list it, so requesting user/
+        # MedicationStatement.read makes both client registration AND the
+        # authorize call fail with invalid_scope. Meds are read via
+        # MedicationRequest. Keep this set a subset of OpenEMR's supported
+        # resources (see /apis/default/fhir/metadata).
         description=(
             "Space-separated scopes requested at authorize time for the "
             "per-physician login. One authorization_code token carries both the "
