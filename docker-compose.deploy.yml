@@ -90,6 +90,12 @@ services:
       - sites:/var/www/localhost/htdocs/openemr/sites
       - assets:/var/www/localhost/htdocs/openemr/public/assets
       - logs:/var/log
+      # AgentForge OAuth2/SMART login restyle. The deployed OpenEMR is the
+      # stock openemr/openemr:flex image (not our fork's PHP), so ship the
+      # custom asset hook by bind-mounting our repo's custom/assets over the
+      # image's webroot. Header.php autoloads custom/assets/custom.yaml ->
+      # css/agentforge-login.css site-wide (read-only; OpenEMR only reads it).
+      - ./custom/assets:/var/www/localhost/htdocs/openemr/custom/assets:ro
     networks:
       - internal
       # `agent` is reserved so the Task 7 Python agent can join later
