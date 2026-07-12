@@ -266,6 +266,15 @@ function RoundsApp({
           />
           <main className="stage">
             <div className={leaving ? 'visit visit--leaving' : 'visit'} key={card.patient_id}>
+              {/*
+                Direct-edit is intentionally DISABLED by product decision — the
+                "EDIT" chip is neither displayed nor functional (see the
+                roadmap). We simply do NOT thread `proposeWrite`/`confirmWrite`
+                here, so `ClaimList`'s `canEdit` stays false and the chip never
+                renders. The prop plumbing and `EditRecordDialog` are kept intact
+                on purpose; re-enabling is a one-line change (pass the two
+                `api.proposeWrite`/`api.confirmWrite` callbacks back in).
+              */}
               <PatientHero
                 card={card}
                 entry={entry}
@@ -275,12 +284,6 @@ function RoundsApp({
                 busy={rounds.busy}
                 onDone={handleDone}
                 fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
-                proposeWrite={(kind, metric, rawValue, unit) =>
-                  api.proposeWrite(clinicianId, card.patient_id, kind, metric, rawValue, unit)
-                }
-                confirmWrite={(candidate, idempotencyKey) =>
-                  api.confirmWrite(clinicianId, card.patient_id, candidate, idempotencyKey)
-                }
               />
               <ChatPanel
                 given={entry?.given ?? `patient ${card.patient_id}`}
@@ -291,12 +294,6 @@ function RoundsApp({
                   void chat.send(card.patient_id, message);
                 }}
                 fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
-                proposeWrite={(kind, metric, rawValue, unit) =>
-                  api.proposeWrite(clinicianId, card.patient_id, kind, metric, rawValue, unit)
-                }
-                confirmWrite={(candidate, idempotencyKey) =>
-                  api.confirmWrite(clinicianId, card.patient_id, candidate, idempotencyKey)
-                }
               />
             </div>
           </main>
