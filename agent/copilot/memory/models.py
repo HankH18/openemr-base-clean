@@ -27,6 +27,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     UniqueConstraint,
     text,
@@ -46,6 +47,19 @@ def _utc_default() -> datetime:
     from datetime import datetime as _dt
 
     return _dt.now(UTC).replace(tzinfo=None)
+
+
+def _utc_aware_default() -> datetime:
+    """Timezone-aware UTC default for the auth/session tables.
+
+    The auth tables use ``DateTime(timezone=True)`` so they round-trip aware on
+    Postgres. SQLite has no tz support and returns naive values, so readers must
+    re-attach UTC (see ``copilot.auth.session.ensure_utc``) before comparing.
+    """
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    return _dt.now(UTC)
 
 
 class MemoryFileRow(Base):
@@ -161,3 +175,83 @@ class AuditLogRow(Base):
     at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utc_default, server_default=text("CURRENT_TIMESTAMP")
     )
+
+
+# --- Per-physician SMART login (auth_mode="smart"; inert while "disabled") ----
+#
+# See agent/research/PRODUCTION_GRADE_PLAN.md §1. These three tables back the
+# opaque server-side session that replaces the hardcoded demo clinician. They
+# are additive and unused while auth_mode="disabled", so the no-login demo is
+# byte-for-byte unchanged. Datetimes are timezone-aware (DateTime(timezone=True))
+# and the OAuth token material is stored ONLY as Fernet ciphertext (LargeBinary).
+
+
+class ClinicianRow(Base):
+    """Stable integer surrogate for an OpenEMR ``fhirUser`` (Practitioner).
+
+    Mints the ``ClinicianId.value`` the int-keyed tables (``rounding_cursor``,
+    ``audit_log``, ``last_seen``, ``conversation``) already use, so none of them
+    change. Auto-provisioned on first SMART login and reused thereafter.
+    """
+
+    __tablename__ = "clinician"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    fhir_user: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    openemr_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    npi: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utc_aware_default
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PhysicianSessionRow(Base):
+    """One logged-in physician session — the crown-jewel token holder.
+
+    ``session_id`` is ``sha256(cookie_value)`` (never the plaintext cookie, so a
+    DB leak yields no live cookies). The access/refresh tokens live only as
+    Fernet ciphertext. Idle + absolute expiry implement automatic logoff
+    (§164.312(a)(2)(iii)).
+    """
+
+    __tablename__ = "physician_session"
+
+    session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    clinician_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("clinician.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    access_token_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    access_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    scope: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    fhir_user: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utc_aware_default
+    )
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utc_aware_default
+    )
+    absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class LoginTxnRow(Base):
+    """Short-lived server-side login transaction (OAuth ``state`` + PKCE verifier).
+
+    Persisted at ``begin_login`` and consumed (deleted) at the callback. Keyed on
+    the opaque ``state`` that round-trips through OpenEMR, binding the callback to
+    the request that started it; ``code_verifier`` proves PKCE possession.
+    """
+
+    __tablename__ = "login_txn"
+
+    state: Mapped[str] = mapped_column(String(128), primary_key=True)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(64), nullable=False)
+    redirect_target: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utc_aware_default
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

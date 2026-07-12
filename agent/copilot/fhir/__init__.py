@@ -15,8 +15,10 @@ from copilot.fhir.auth import (
     BackendServicesTokenProvider,
     OAuthToken,
     ResourceOwnerPasswordTokenProvider,
+    SessionTokenProvider,
     SmartAppLaunchTokenProvider,
     StaticTokenProvider,
+    TokenAcquisitionError,
     TokenProvider,
 )
 from copilot.fhir.client import FhirClient, FhirClientError
@@ -30,7 +32,9 @@ __all__ = [
     "OpenEmrWriteClient",
     "OpenEmrWriteError",
     "ResourceOwnerPasswordTokenProvider",
+    "SessionTokenProvider",
     "SmartAppLaunchTokenProvider",
     "StaticTokenProvider",
+    "TokenAcquisitionError",
     "TokenProvider",
 ]

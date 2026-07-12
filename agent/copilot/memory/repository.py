@@ -23,10 +23,13 @@ from copilot.domain.primitives import (
 )
 from copilot.memory.models import (
     AuditLogRow,
+    ClinicianRow,
     ConversationRow,
     LastSeenRow,
+    LoginTxnRow,
     MemoryFileRow,
     MessageRow,
+    PhysicianSessionRow,
     RoundingCursorRow,
     SyncStateRow,
 )
@@ -233,6 +236,167 @@ class MemoryRepository:
         )
         return result.scalar_one_or_none()
 
+    # --- clinician mapping (SMART login) ---------------------------------
+    #
+    # The int-keyed tables (rounding_cursor/audit_log/last_seen/conversation)
+    # are unchanged; this table just mints the stable integer surrogate for an
+    # OpenEMR fhirUser. Unused while auth_mode="disabled".
+
+    async def get_clinician_by_fhir_user(self, fhir_user: str) -> ClinicianRow | None:
+        result = await self._session.execute(
+            select(ClinicianRow).where(ClinicianRow.fhir_user == fhir_user)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_clinician(
+        self,
+        *,
+        fhir_user: str,
+        openemr_username: str | None,
+        display_name: str | None,
+        npi: str | None,
+    ) -> ClinicianRow:
+        """Auto-provision a clinician on first login; returns the new row (with id)."""
+        row = ClinicianRow(
+            fhir_user=fhir_user,
+            openemr_username=openemr_username,
+            display_name=display_name,
+            npi=npi,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def set_clinician_last_login(self, clinician_id: int, at: datetime) -> None:
+        result = await self._session.execute(
+            select(ClinicianRow).where(ClinicianRow.id == clinician_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return
+        row.last_login_at = at
+        await self._session.flush()
+
+    # --- physician_session (opaque server session) -----------------------
+
+    async def create_physician_session(
+        self,
+        *,
+        session_id: str,
+        clinician_id: int,
+        access_token_enc: bytes,
+        refresh_token_enc: bytes | None,
+        access_expires_at: datetime,
+        scope: str | None,
+        fhir_user: str,
+        created_at: datetime,
+        absolute_expires_at: datetime,
+    ) -> None:
+        self._session.add(
+            PhysicianSessionRow(
+                session_id=session_id,
+                clinician_id=clinician_id,
+                access_token_enc=access_token_enc,
+                refresh_token_enc=refresh_token_enc,
+                access_expires_at=access_expires_at,
+                scope=scope,
+                fhir_user=fhir_user,
+                created_at=created_at,
+                last_used_at=created_at,
+                absolute_expires_at=absolute_expires_at,
+                revoked=False,
+            )
+        )
+        await self._session.flush()
+
+    async def get_physician_session(self, session_id: str) -> PhysicianSessionRow | None:
+        result = await self._session.execute(
+            select(PhysicianSessionRow).where(PhysicianSessionRow.session_id == session_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def touch_physician_session(self, session_id: str, last_used_at: datetime) -> None:
+        """Sliding-window refresh of ``last_used_at`` on activity."""
+        row = await self.get_physician_session(session_id)
+        if row is None:
+            return
+        row.last_used_at = last_used_at
+        await self._session.flush()
+
+    async def rotate_physician_session_token(
+        self,
+        session_id: str,
+        *,
+        access_token_enc: bytes,
+        refresh_token_enc: bytes | None,
+        access_expires_at: datetime,
+        scope: str | None,
+    ) -> None:
+        """Persist a rotated access/refresh token back to the session row.
+
+        OpenEMR rotates refresh tokens, so the freshly-issued material replaces
+        the prior ciphertext in place; the opaque cookie (and PK) are unchanged.
+        """
+        row = await self.get_physician_session(session_id)
+        if row is None:
+            return
+        row.access_token_enc = access_token_enc
+        if refresh_token_enc is not None:
+            row.refresh_token_enc = refresh_token_enc
+        row.access_expires_at = access_expires_at
+        if scope is not None:
+            row.scope = scope
+        await self._session.flush()
+
+    async def revoke_physician_session(self, session_id: str) -> None:
+        row = await self.get_physician_session(session_id)
+        if row is None:
+            return
+        row.revoked = True
+        await self._session.flush()
+
+    # --- login_txn (short-lived OAuth state + PKCE verifier) -------------
+
+    async def create_login_txn(
+        self,
+        *,
+        state: str,
+        code_verifier: str,
+        nonce: str,
+        redirect_target: str | None,
+        created_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        self._session.add(
+            LoginTxnRow(
+                state=state,
+                code_verifier=code_verifier,
+                nonce=nonce,
+                redirect_target=redirect_target,
+                created_at=created_at,
+                expires_at=expires_at,
+            )
+        )
+        await self._session.flush()
+
+    async def consume_login_txn(self, state: str) -> LoginTxnRow | None:
+        """Fetch-and-delete a login transaction (single use).
+
+        Returns the row (detached, attributes loaded) so the caller can read the
+        ``code_verifier``/``redirect_target``; deletes it so a ``state`` can never
+        be replayed. Returns ``None`` when the state is unknown.
+        """
+        row = await self.get_login_txn(state)
+        if row is None:
+            return None
+        await self._session.delete(row)
+        await self._session.flush()
+        return row
+
+    async def get_login_txn(self, state: str) -> LoginTxnRow | None:
+        result = await self._session.execute(select(LoginTxnRow).where(LoginTxnRow.state == state))
+        return result.scalar_one_or_none()
+
 
 # --- (de)serialization ------------------------------------------------------
 
@@ -252,9 +416,7 @@ def _claim_to_json(c: Claim) -> dict[str, Any]:
             "last_updated": c.source_ref.last_updated.isoformat()
             if c.source_ref.last_updated
             else None,
-            "timestamp": c.source_ref.timestamp.isoformat()
-            if c.source_ref.timestamp
-            else None,
+            "timestamp": c.source_ref.timestamp.isoformat() if c.source_ref.timestamp else None,
         },
     }
 

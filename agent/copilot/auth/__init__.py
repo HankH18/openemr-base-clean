@@ -11,7 +11,25 @@ surface enforces it in ``copilot.api.routes.chat``.
 """
 
 from copilot.auth.authorization import is_authorized
+from copilot.auth.service import (
+    AuthConfigError,
+    AuthService,
+    BeginLogin,
+    LoginCallbackError,
+    LoginResult,
+    ResolvedSession,
+    build_session_token_provider,
+    ensure_smart_ready,
+)
 
 __all__ = [
+    "AuthConfigError",
+    "AuthService",
+    "BeginLogin",
+    "LoginCallbackError",
+    "LoginResult",
+    "ResolvedSession",
+    "build_session_token_provider",
+    "ensure_smart_ready",
     "is_authorized",
 ]

@@ -23,8 +23,8 @@ ARCHITECTURE §Security).
 from __future__ import annotations
 
 import secrets
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
@@ -44,6 +44,10 @@ class OAuthToken:
     expires_at: datetime  # timezone-aware UTC
     refresh_token: str | None = None
     scope: str | None = None
+    # OpenID Connect id_token from an authorization_code exchange (SMART login).
+    # Present only on the login exchange; carries the fhirUser/sub identity
+    # claims. Never populated for client_credentials/password grants.
+    id_token: str | None = None
 
     def is_fresh(self, now: datetime | None = None) -> bool:
         """True while the token is still safely usable."""
@@ -89,6 +93,10 @@ class SmartAppLaunchTokenProvider:
     redirect_uri: str
     authorization_code: str
     client_secret: str | None = None  # confidential clients only
+    # PKCE (RFC 7636) verifier — sent on the code exchange when the authorize
+    # request carried the matching S256 code_challenge. Optional and backward
+    # compatible: pre-PKCE callers leave it None and the field is simply omitted.
+    code_verifier: str | None = field(default=None, repr=False)
     http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
@@ -111,9 +119,73 @@ class SmartAppLaunchTokenProvider:
         }
         if self.client_secret:
             data["client_secret"] = self.client_secret
+        if self.code_verifier:
+            data["code_verifier"] = self.code_verifier
         async with self.http_client_factory(timeout=10.0) as client:
             resp = await client.post(self.token_url, data=data)
         return _parse_token_response(resp)
+
+    async def _refresh(self, refresh_token: str) -> OAuthToken:
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.client_id,
+        }
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
+        async with self.http_client_factory(timeout=10.0) as client:
+            resp = await client.post(self.token_url, data=data)
+        return _parse_token_response(resp)
+
+
+# --- Session-backed (per-physician SMART login) -----------------------------
+
+
+@dataclass
+class SessionTokenProvider:
+    """Serve a logged-in physician's token from an encrypted server session.
+
+    Satisfies the :class:`TokenProvider` protocol so ``FhirClient`` /
+    ``OpenEmrWriteClient`` consume it unchanged. Unlike the other providers it
+    does not cache in-memory: the source of truth is the ``physician_session``
+    row, so every request loads the current (decrypted) token via the injected
+    ``load_token`` callable. When the cached access token is stale (or ``force``),
+    it refreshes with the stored refresh token and **persists the rotated token
+    back** via ``save_token`` — OpenEMR rotates refresh tokens, so the loser of a
+    race must re-read rather than reuse.
+
+    DB access is injected as two small awaitable callables (``load_token`` /
+    ``save_token``) rather than importing a global session scope, keeping this
+    module free of persistence imports and the refresh-rotation path unit
+    testable without a database.
+    """
+
+    token_url: str
+    client_id: str
+    load_token: Callable[[], Awaitable[OAuthToken | None]]
+    save_token: Callable[[OAuthToken], Awaitable[None]]
+    client_secret: str | None = field(default=None, repr=False)
+    http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
+
+    async def get_token(self, force: bool = False) -> OAuthToken:
+        current = await self.load_token()
+        if current is None:
+            raise TokenAcquisitionError("no active physician session token")
+        if not force and current.is_fresh():
+            return current
+        if not current.refresh_token:
+            # Nothing to refresh with. If it is still (barely) fresh, hand it
+            # back; otherwise the physician must re-authenticate.
+            if current.is_fresh():
+                return current
+            raise TokenAcquisitionError("physician session token expired; no refresh token")
+        refreshed = await self._refresh(current.refresh_token)
+        # OpenEMR MAY omit a new refresh_token on rotation; keep the prior one so
+        # a subsequent refresh still has a credential to present.
+        if refreshed.refresh_token is None:
+            refreshed = replace(refreshed, refresh_token=current.refresh_token)
+        await self.save_token(refreshed)
+        return refreshed
 
     async def _refresh(self, refresh_token: str) -> OAuthToken:
         data = {
@@ -274,4 +346,5 @@ def _parse_token_response(resp: httpx.Response) -> OAuthToken:
         expires_at=datetime.now(UTC) + timedelta(seconds=expires_in),
         refresh_token=body.get("refresh_token"),
         scope=body.get("scope"),
+        id_token=body.get("id_token"),
     )

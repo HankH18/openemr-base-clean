@@ -9,6 +9,7 @@ against a real backend.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +74,16 @@ class Settings(BaseSettings):
             "Comma-separated allowed CORS origins for a split-origin UI (or a "
             "local browser demo). Empty ⇒ no CORS middleware; the same-origin "
             "proxy deploy needs none."
+        ),
+    )
+    public_base_url: str = Field(
+        default="",
+        description=(
+            "Public origin the browser reaches the app at, e.g. "
+            "'https://agentforge.example.com'. Single source of truth for the "
+            "SMART redirect_uri (${public_base_url}/v1/auth/callback) and the "
+            "post-login redirect. Empty ⇒ SMART login cannot be enabled (a "
+            "startup check refuses auth_mode=smart without an https origin)."
         ),
     )
 
@@ -142,6 +153,72 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Auth / session (per-physician SMART login) -----------------------
+    #
+    # See agent/research/PRODUCTION_GRADE_PLAN.md §1. The whole SMART login
+    # re-architecture is staged behind auth_mode. Default "disabled" keeps the
+    # current no-login demo byte-for-byte unchanged: identity comes from the
+    # request (body/query clinician_id) exactly as today. "smart" resolves the
+    # clinician from an opaque server-side session established by the SMART
+    # authorization_code flow, and interactive reads/writes ride the logged-in
+    # physician's delegated token. The poller ALWAYS keeps the system token.
+
+    auth_mode: Literal["disabled", "smart"] = Field(
+        default="disabled",
+        description=(
+            "Identity model. 'disabled' (default) ⇒ clinician_id comes from the "
+            "request, no login — the current demo. 'smart' ⇒ per-physician SMART "
+            "login; identity from a server-side session. Refuses to enable "
+            "without an https public_base_url."
+        ),
+    )
+    smart_app_client_secret: str = Field(
+        default="",
+        description=(
+            "Secret for the CONFIDENTIAL SMART authorization_code (login) client. "
+            "Secrets-manager only; never logged. Paired with smart_app_client_id."
+        ),
+    )
+    smart_scopes: str = Field(
+        default=(
+            "openid fhirUser offline_access "
+            "user/Patient.read user/Observation.read user/MedicationRequest.read "
+            "user/MedicationStatement.read user/Condition.read "
+            "user/AllergyIntolerance.read user/Encounter.read "
+            "user/DiagnosticReport.read "
+            "api:oemr user/vital.crus user/encounter.crus user/medication.cruds"
+        ),
+        description=(
+            "Space-separated scopes requested at authorize time for the "
+            "per-physician login. One authorization_code token carries both the "
+            "user/*.read interactive reads and the api:oemr user/*.crus(d) write "
+            "surface, so it serves reads AND writes (retiring the password grant)."
+        ),
+    )
+    session_enc_key: str = Field(
+        default="",
+        description=(
+            "Fernet key (32-byte urlsafe base64) that encrypts the physician "
+            "OAuth tokens at rest in physician_session. Secrets-manager only. "
+            "Required when auth_mode=smart."
+        ),
+    )
+    session_cookie_name: str = Field(
+        default="af_session",
+        description="Name of the opaque, httpOnly session cookie.",
+    )
+    session_idle_seconds: int = Field(
+        default=1800,
+        description=(
+            "Idle timeout for a physician session (automatic logoff, "
+            "§164.312(a)(2)(iii)). Sliding — refreshed on activity."
+        ),
+    )
+    session_absolute_seconds: int = Field(
+        default=43200,
+        description="Absolute session lifetime regardless of activity (12h default).",
+    )
+
     # --- LLM --------------------------------------------------------------
 
     anthropic_api_key: str = Field(
@@ -193,6 +270,25 @@ class Settings(BaseSettings):
         description=(
             "Acuity score at or above which the deterioration-alert feature "
             "raises an alert. Consumed by the alerting path added later."
+        ),
+    )
+
+    # --- Retention (§164.312(b)) ------------------------------------------
+
+    audit_retention_years: int = Field(
+        default=6,
+        description=(
+            "Minimum retention for audit_log rows. The retention sweep REFUSES "
+            "to delete any audit row younger than this (HIPAA §164.312(b) floor "
+            "is 6 years). Never set below 6 for a compliant deployment."
+        ),
+    )
+    chat_retention_days: int = Field(
+        default=0,
+        description=(
+            "Optional retention for conversation/message PHI. 0 (default) ⇒ the "
+            "sweep never purges chat history; set a positive day count to enable "
+            "clinical-conversation purging separately from the audit floor."
         ),
     )
 

@@ -8,10 +8,13 @@ same code runs against Postgres in prod and SQLite (aiosqlite) in tests.
 from copilot.memory.db import Base, get_engine, get_session_factory, session_scope
 from copilot.memory.models import (
     AuditLogRow,
+    ClinicianRow,
     ConversationRow,
     LastSeenRow,
+    LoginTxnRow,
     MemoryFileRow,
     MessageRow,
+    PhysicianSessionRow,
     RoundingCursorRow,
     SyncStateRow,
 )
@@ -20,11 +23,14 @@ from copilot.memory.repository import MemoryRepository
 __all__ = [
     "AuditLogRow",
     "Base",
+    "ClinicianRow",
     "ConversationRow",
     "LastSeenRow",
+    "LoginTxnRow",
     "MemoryFileRow",
     "MemoryRepository",
     "MessageRow",
+    "PhysicianSessionRow",
     "RoundingCursorRow",
     "SyncStateRow",
     "get_engine",
