@@ -14,7 +14,9 @@ self-contained — nothing is imported from the frozen ``.swarm-loop`` tree.
 Cases cover the four boundary/invariant/authorization behaviors the eval doc
 calls for:
 
-- **served** — a grounded question about present data (invariant).
+- **served** — a grounded question about present data (invariant), including
+  one whose claim carries a grounded temporal ``authoredOn`` re-checked by the
+  serve-time temporal gate.
 - **withheld** — an ungroundable question, and a value that drifted vs the
   live record (boundary / fail-closed).
 - **refused** — a chat about a patient outside the clinician's rounding list,
@@ -56,8 +58,9 @@ RESULTS_JSON_PATH = EVALS_DIR / "eval_results.json"
 RESULTS_MD_PATH = EVALS_DIR / "EVAL_RESULTS.md"
 
 # Fixed "captured at" stamp so the committed artifacts are byte-stable across
-# re-runs (the fixtures are frozen, so the outcome never changes).
-CAPTURED_AT = "2026-07-10T00:00:00Z"
+# re-runs (the fixtures are frozen, so the outcome never changes). Bump this
+# only when the dataset/fixtures change, so it records the suite's provenance.
+CAPTURED_AT = "2026-07-12T00:00:00Z"
 
 
 def _configure_env(db_file: Path) -> None:
@@ -170,6 +173,16 @@ def _check_chat_body(expect: dict[str, Any], body: dict[str, Any]) -> list[str]:
         if cited_value not in values:
             failures.append(f"cited_value: expected {cited_value!r} among {sorted(values)}")
 
+    # Temporal grounding: at least one served claim must carry a non-null
+    # source_ref.timestamp (authoredOn / effectiveDateTime). Proves the claim
+    # was grounded temporally AND survived the serve-time temporal gate — a
+    # drift would have withheld it, so `verification_action: served` + this
+    # together assert the round-trip.
+    if expect.get("require_cited_timestamp"):
+        timestamps = [c["source_ref"].get("timestamp") for c in claims]
+        if not any(ts for ts in timestamps):
+            failures.append("require_cited_timestamp: expected >= 1 claim with a grounded source_ref.timestamp")
+
     forbidden = expect.get("forbidden_resource_ids")
     if forbidden is not None:
         cited_ids = {c["source_ref"]["resource_id"] for c in claims}
@@ -275,6 +288,22 @@ def _fail(case: dict[str, Any], failures: list[str]) -> dict[str, Any]:
 # --- artifacts + summary ---------------------------------------------------
 
 
+def _keyed_path_models() -> dict[str, str]:
+    """The models the *keyed / production* path uses.
+
+    Recorded for provenance only — this deterministic run exercises the
+    stub-agent path and touches no model. Read from Settings so the doc never
+    drifts from config.
+    """
+    from copilot.config import get_settings
+
+    settings = get_settings()
+    return {
+        "synthesis_and_chat": settings.anthropic_model_synthesis,
+        "gating_and_entailment": settings.anthropic_model_gating,
+    }
+
+
 def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(results)
     passed = sum(1 for r in results if r["passed"])
@@ -290,6 +319,8 @@ def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         "dataset": DATASET_PATH.name,
         "deterministic": True,
         "requires_api_key": False,
+        # Provenance only — NOT used in this deterministic run (stub-agent path).
+        "keyed_path_models": _keyed_path_models(),
         "total": total,
         "passed": passed,
         "failed": total - passed,
@@ -317,6 +348,41 @@ def _write_markdown(summary: dict[str, Any], results: list[dict[str, Any]]) -> N
         f"({summary['accuracy_pct']}% accuracy).**"
     )
     lines.append("")
+    lines.append("## Methodology")
+    lines.append("")
+    lines.append(
+        f"These grounding evals run `{summary['dataset']}` "
+        f"({summary['total']} cases) against an in-process instance of the FastAPI "
+        "app over the *same* black-box HTTP contract the acceptance suite uses, "
+        "backed by a deterministic fake OpenEMR FHIR server "
+        "(`evals/_fake_openemr.py`) and a temp-file SQLite DB. With no Anthropic "
+        "key configured the app takes its deterministic **stub-agent** path, so "
+        "every case has exactly one correct outcome — no LLM, no network, no "
+        "flakiness. Each case asserts a served/withheld/refused decision, claim "
+        "citations, temporal grounding, cross-patient isolation, or sickest-first "
+        "ranking."
+    )
+    lines.append("")
+    lines.append("Re-run (regenerates this file + `eval_results.json`, no key needed):")
+    lines.append("")
+    lines.append("```")
+    lines.append("./.venv/bin/python evals/run_evals.py")
+    lines.append("```")
+    lines.append("")
+    lines.append("## Models (keyed / production path — NOT exercised here)")
+    lines.append("")
+    models = summary.get("keyed_path_models", {})
+    lines.append(
+        "This deterministic run uses no model. In production and on the keyed eval "
+        f"path the agent uses **{models.get('synthesis_and_chat', 'n/a')}** for "
+        f"synthesis + chat and **{models.get('gating_and_entailment', 'n/a')}** for "
+        "classification / entailment. An additional LLM-judge *entailment* layer "
+        "lives in `evals/test_grounding_evals.py` (marked `@pytest.mark.llm`); it is "
+        "skipped unless `ANTHROPIC_API_KEY` is set and is **not** reflected in the "
+        "numbers above. Those LLM-graded cases need a fresh keyed run to "
+        "(re)generate — this deterministic report never fabricates them."
+    )
+    lines.append("")
     lines.append("## By category")
     lines.append("")
     lines.append("| Category | Passed | Total |")
@@ -342,6 +408,9 @@ def _write_markdown(summary: dict[str, Any], results: list[dict[str, Any]]) -> N
     lines.append("- **refused (403)** — chat about a patient outside the clinician's rounding "
                  "list, and a clinician with no session, are denied.")
     lines.append("- **no-leak / ranking** — cross-patient isolation and sickest-first ranking.")
+    lines.append("- **temporal grounding** — a claim carrying an `authoredOn` / "
+                 "`effectiveDateTime` timestamp is re-checked against the live re-fetch; "
+                 "an equal instant serves, a drift withholds.")
     lines.append("")
     RESULTS_MD_PATH.write_text("\n".join(lines))
 

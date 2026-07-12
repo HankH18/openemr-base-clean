@@ -123,6 +123,19 @@
       "id": "invariant-rounds-critical-lactate-first",
       "kind": "rounds",
       "passed": true
+    },
+    {
+      "category": "invariant",
+      "description": "A grounded MedicationRequest claim carries its authoredOn as a source_ref.timestamp; the serve-time temporal gate re-derives an equal instant from the live re-fetch, so the answer is SERVED with a grounded timestamp (a temporal-drift would have withheld it).",
+      "detail": {
+        "action": "served",
+        "claims": 1,
+        "status": 200
+      },
+      "failures": [],
+      "id": "invariant-temporal-authoredon-grounded-served",
+      "kind": "chat",
+      "passed": true
     }
   ],
   "summary": {
@@ -137,16 +150,20 @@
         "total": 3
       },
       "invariant": {
-        "passed": 4,
-        "total": 4
+        "passed": 5,
+        "total": 5
       }
     },
-    "captured_at": "2026-07-10T00:00:00Z",
+    "captured_at": "2026-07-12T00:00:00Z",
     "dataset": "eval_dataset.jsonl",
     "deterministic": true,
     "failed": 0,
-    "passed": 10,
+    "keyed_path_models": {
+      "gating_and_entailment": "claude-haiku-4-5-20251001",
+      "synthesis_and_chat": "claude-sonnet-5"
+    },
+    "passed": 11,
     "requires_api_key": false,
-    "total": 10
+    "total": 11
   }
 }

@@ -16,6 +16,10 @@ Cases (ordered by importance):
 - **Fabricated citation (no resource) → withheld.**
 - **Fabricated number (real resource, invented value) → withheld.**
 - **Unit-only mismatch is allowed (numeric equal).**
+- **Temporal grounding.** A claim carrying an ``effectiveDateTime`` timestamp
+  that matches the live re-fetch is served; a drifted timestamp is withheld.
+- **Chart-summary classification.** ``build_summary_claims`` attaches a
+  record-grounded ``severity`` + ``value_direction`` to an observation claim.
 """
 
 from __future__ import annotations
@@ -25,12 +29,20 @@ from datetime import UTC, datetime
 
 import pytest
 
-from copilot.domain.contracts import Claim, MemoryFileSummary, VerificationAction
+from copilot.domain.contracts import (
+    Claim,
+    ClaimSeverity,
+    MemoryFileSummary,
+    ValueDirection,
+    VerificationAction,
+)
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
+from copilot.rounds.summary import build_summary_claims
 from copilot.verification.core import Verifier, build_context_from_resources
 from copilot.verification.rules import default_rules
 from copilot.worker.synthesizer import StubSynthesizer, SynthesisInput
 from evals.fixtures import (
+    observation,
     pt1003_dka_bundle,
     pt1004_severe_sepsis_bundle,
     pt1006_drug_allergy_conflict_bundle,
@@ -208,6 +220,122 @@ class TestNumericEquivalence:
         )
         result = await verifier.verify_memory_file(summary, ctx)
         assert result.action == VerificationAction.served
+
+
+# --- Temporal grounding gate ----------------------------------------------
+
+
+class TestTemporalGrounding:
+    """The serve-time temporal gate: a claim's grounded clinical instant must
+    re-derive equal from the live re-fetch, or the claim fails closed.
+
+    Grounds on an Observation carrying ``effectiveDateTime`` — the value +
+    numeric checks pass in both cases, so the *only* deciding factor is whether
+    the claim's ``source_ref.timestamp`` matches what ``extract_temporal``
+    re-reads from the source.
+    """
+
+    @staticmethod
+    def _bundle() -> list[dict]:
+        return [
+            observation(
+                id="trop-timed",
+                label="Troponin I",
+                loinc="6598-7",
+                value=2.34,
+                unit="ng/mL",
+                abnormal="HH",
+                effective="2026-07-08T03:00:00Z",
+            )
+        ]
+
+    @staticmethod
+    def _summary(claim: Claim) -> MemoryFileSummary:
+        return MemoryFileSummary(
+            patient_id=PatientId(value=1015),
+            claims=[claim],
+            acuity_score=0.0,
+            rank_reason="",
+            synthesized_at=datetime(2026, 7, 8, tzinfo=UTC),
+            source_watermark=datetime(2026, 7, 8, tzinfo=UTC),
+            content_hash="a" * 64,
+        )
+
+    async def test_matching_timestamp_served(self) -> None:
+        """Claim's timestamp == the source's effectiveDateTime → served."""
+        ctx = build_context_from_resources(self._bundle())
+        verifier = Verifier(rules=())
+        claim = Claim(
+            text="Troponin I 2.34 ng/mL.",
+            source_ref=FhirReference(
+                resource_type=ResourceType.Observation,
+                resource_id="trop-timed",
+                field="valueQuantity.value",
+                value="2.34",
+                timestamp=datetime(2026, 7, 8, 3, 0, 0, tzinfo=UTC),
+            ),
+        )
+        result = await verifier.verify_memory_file(self._summary(claim), ctx)
+        assert result.action == VerificationAction.served
+        assert result.claims[0].value_match is True
+
+    async def test_drifted_timestamp_withheld(self) -> None:
+        """A claim whose timestamp differs from the live re-fetch is withheld."""
+        ctx = build_context_from_resources(self._bundle())
+        verifier = Verifier(rules=())
+        claim = Claim(
+            text="Troponin I 2.34 ng/mL.",
+            source_ref=FhirReference(
+                resource_type=ResourceType.Observation,
+                resource_id="trop-timed",
+                field="valueQuantity.value",
+                value="2.34",
+                # A full day earlier than the source's effectiveDateTime.
+                timestamp=datetime(2026, 7, 7, 3, 0, 0, tzinfo=UTC),
+            ),
+        )
+        result = await verifier.verify_memory_file(self._summary(claim), ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].value_match is False
+        assert "temporal drift" in result.claims[0].reason
+
+
+# --- Chart-summary classification (severity + value_direction) -------------
+
+
+class TestSummaryClassification:
+    """``build_summary_claims`` attaches record-grounded presentation hints to
+    an observation claim — never part of the value-match gate, but they must be
+    derived from the record's own successive values + abnormal flag.
+    """
+
+    async def test_rising_critical_observation_is_up_and_critical(self) -> None:
+        # pt1015: Troponin I rose 0.02 → 2.34 (latest flagged HH).
+        claims = build_summary_claims(pt1015_overnight_change_bundle())
+        assert len(claims) == 1
+        claim = claims[0]
+        assert claim.value_direction == ValueDirection.up
+        assert claim.severity == ClaimSeverity.critical
+        # The verbatim gate value is untouched by the classification.
+        assert claim.source_ref.value == "2.34"
+
+    async def test_falling_warning_observation_is_down_and_warning(self) -> None:
+        # A potassium that fell 6.1 → 5.2, latest flagged 'H' (mild-high warning).
+        bundle = [
+            observation(
+                id="k-late", label="Potassium", loinc="2823-3", value=5.2,
+                unit="mEq/L", abnormal="H", last_updated="2026-07-08T06:00:00Z",
+            ),
+            observation(
+                id="k-early", label="Potassium", loinc="2823-3", value=6.1,
+                unit="mEq/L", abnormal="HH", last_updated="2026-07-07T06:00:00Z",
+            ),
+        ]
+        claims = build_summary_claims(bundle)
+        assert len(claims) == 1
+        claim = claims[0]
+        assert claim.value_direction == ValueDirection.down
+        assert claim.severity == ClaimSeverity.warning
 
 
 # --- LLM-judge cases (guarded) --------------------------------------------

@@ -115,7 +115,10 @@ PATIENTS: dict[str, dict[str, list[dict[str, Any]]]] = {
     "1001": {
         "Patient": [_patient("1001")],
         "Observation": [_obs("obs-1001-trop", "Troponin I", 0.9, "ng/mL", 0.0, 0.04, "HH")],
-        "MedicationRequest": [_med("med-1001-asa", "aspirin")],
+        # authoredOn carries a clinical order time distinct from meta.lastUpdated
+        # (record-mutation time), so a grounded MedicationRequest claim's
+        # source_ref.timestamp is re-checked by the serve-time temporal gate.
+        "MedicationRequest": [_med("med-1001-asa", "aspirin", authored_on="2026-07-01T08:00:00Z")],
         "Condition": [_cond("cond-1001", "NSTEMI")],
     },
     "1002": {
