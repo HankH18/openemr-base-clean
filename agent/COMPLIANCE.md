@@ -2,11 +2,14 @@
 
 This document maps the AgentForge Clinical Co-Pilot service (`agent/`, package
 `copilot`) to the **Technical Safeguards** of the HIPAA Security Rule
-(45 CFR §164.312). It states, per safeguard, exactly what the software does
-**today**, what is present in code but **disabled by default**, and what is
-**not yet built**. It then enumerates the safeguards and obligations that
-**only the deploying organization can satisfy** — the software cannot and does
-not claim them.
+(45 CFR §164.312). It states, per safeguard, exactly what the software does,
+distinguishing two layers throughout: the **code default** (what a fresh deploy
+does out of the box) and the **reference deployment** (the live droplet at
+`https://agentforge.hankholcomb.com`, which opts several safeguards on). Where a
+control is present in code but off by default, it says so; where the reference
+deployment enables it, it says that too; and it flags what is **not yet built**.
+It then enumerates the safeguards and obligations that **only the deploying
+organization can satisfy** — the software cannot and does not claim them.
 
 Every claim below is grounded in a named module/behavior in this repository.
 Where a control is aspirational, flag-gated, or an operator responsibility, it
@@ -39,12 +42,42 @@ Two facts about data flow shape everything below:
    subprocessor handling PHI, which the deploying organization must cover by
    BAA (see §3).
 
+### The reference deployment
+
+A live reference deployment runs at `https://agentforge.hankholcomb.com` on a
+DigitalOcean droplet. Two configuration facts about it drive the "reference
+deployment" column throughout this map:
+
+- **HTTPS is live.** Caddy terminates TLS with automatically-provisioned Let's
+  Encrypt certificates (`Caddyfile.https.example`); plain-HTTP requests redirect
+  to HTTPS. There is **no basic-auth guard** — the earlier bare-IP demo's
+  `basic_auth` block has been removed.
+- **Per-physician SMART login is live.** The agent runs with
+  **`COPILOT_AUTH_MODE=smart`**, so the SMART session is the access gate:
+  interactive data routes return `401` without an authenticated session (verified
+  against the live service). Identity comes from the server-side session, not the
+  request.
+
+The crucial honest distinction: the **code default is still
+`auth_mode=disabled`** (a fresh deploy has *no* login and trusts the
+request-supplied identity — see `config.py:auth_mode`). The reference deployment
+*opts the per-physician login stack on*. So each SMART-dependent safeguard below
+is **implemented; enabled on the reference deployment; off by default in code**.
+
+Two things remain off even on the reference deployment, and are kept honest
+below: physician **write-back** (`writeback_enabled=false` ⇒ routes return `503`),
+and **self-hosted** tracing — the reference deployment currently traces to
+**Langfuse Cloud** (`us.cloud.langfuse.com`) with keys set, which makes Langfuse
+a PHI-adjacent subprocessor requiring a BAA for production (or a switch to the
+built-in self-hosted stack; see §3.1 and (b)).
+
 ### Status legend
 
 | Label | Meaning |
 |---|---|
 | **Implemented** | Code is present and active in the default configuration. |
 | **Implemented — gated OFF** | Code is present but disabled by a default-off flag; inert until an operator opts in. |
+| **Live on reference deployment** | Code is present and **off by default in code**, but the reference deployment (`agentforge.hankholcomb.com`) opts it on — so it is an **active control there**. A fresh deploy must enable it. |
 | **Config surface only** | Configuration knobs exist, but the enforcing code path is not yet built/wired. |
 | **Operator / deployment step** | Depends on infrastructure or configuration outside the application code. |
 | **Planned** | Designed in `agent/research/PRODUCTION_GRADE_PLAN.md`; no implementing code yet. |
@@ -57,14 +90,14 @@ Two facts about data flow shape everything below:
 
 | §164.312 provision | Status | Where in code |
 |---|---|---|
-| (a)(1) Access control | **Implemented — gated OFF** — fail-closed authorization gate + per-physician login + data-route identity enforcement + delegated per-physician tokens for interactive reads/writes (smart mode) | `copilot/auth/*`; `api/deps.py:resolve_acting_context`; `fhir/provider.py:build_*_for_session`; `config.py:auth_mode` |
-| (a)(2)(i) Unique user identification | **Implemented — gated OFF** — SMART login; in smart mode every data route takes identity from the session (401 no session / 403 on mismatch), not the request | `copilot/auth/{service,identity,session}.py`, `api/routes/{auth,chat,rounds,observations,writes}.py`, `api/deps.py`, `migrations/0004` |
-| (a)(2)(iii) Automatic logoff | **Implemented — gated OFF** — idle + absolute TTL enforced in the session store | `copilot/auth/service.py:resolve_session`; `config.py:session_idle_seconds`, `session_absolute_seconds` |
-| (a)(2)(iv) Encryption/decryption | **Implemented** — outbound TLS active; token-at-rest Fernet encryption **implemented, gated OFF** | `config.py:tls_verify` (default `True`); `copilot/auth/session.py:SessionCrypto`; `config.py:session_enc_key` |
-| (b) Audit controls | **Implemented** — append-only trail; retention sweep implemented (report-only, 6-yr floor) | `memory/models.py:AuditLogRow`, `memory/repository.py:record_audit`, `api/middleware.py`, `memory/retention.py` |
-| (c)(1) Integrity | **Implemented** (write path gated OFF) | `verification/core.py`, `verification/writes.py`, `fhir/write_client.py`, `writeback/service.py` |
-| (d) Person or entity authentication | **Implemented — gated OFF** — SMART login delegated to OpenEMR; not enabled in the demo | `copilot/auth/service.py`, `fhir/auth.py:{SmartAppLaunchTokenProvider,SessionTokenProvider}`, `api/routes/auth.py` |
-| (e)(1) Transmission security | **Partial** — outbound TLS + no-token-logging **implemented**; BFF token-never-in-browser **implemented, gated OFF**; browser HTTPS is a **deployment step** | `config.py:tls_verify`; `fhir/auth.py`; `copilot/auth/session.py`; Caddy (deploy) |
+| (a)(1) Access control | **Live on reference deployment** — fail-closed authorization gate + per-physician SMART login + data-route identity enforcement + delegated per-physician tokens for interactive reads/writes (smart mode); enabled on the reference deployment, off by default in code (`auth_mode=disabled`) | `copilot/auth/*`; `api/deps.py:resolve_acting_context`; `fhir/provider.py:build_*_for_session`; `config.py:auth_mode` |
+| (a)(2)(i) Unique user identification | **Live on reference deployment** — SMART login; in smart mode every data route takes identity from the session (401 no session / 403 on mismatch), not the request; enabled on the reference deployment, off by default in code | `copilot/auth/{service,identity,session}.py`, `api/routes/{auth,chat,rounds,observations,writes}.py`, `api/deps.py`, `migrations/0004` |
+| (a)(2)(iii) Automatic logoff | **Live on reference deployment** — idle + absolute TTL enforced in the session store; active under smart mode on the reference deployment, off by default in code | `copilot/auth/service.py:resolve_session`; `config.py:session_idle_seconds`, `session_absolute_seconds` |
+| (a)(2)(iv) Encryption/decryption | **Implemented** — outbound TLS active by default; token-at-rest Fernet encryption **live on the reference deployment** (smart mode), off by default in code | `config.py:tls_verify` (default `True`); `copilot/auth/session.py:SessionCrypto`; `config.py:session_enc_key` |
+| (b) Audit controls | **Implemented** — append-only trail; retention sweep implemented (report-only, 6-yr floor); distributed tracing active on the reference deployment via Langfuse **Cloud** (subprocessor — BAA required) | `memory/models.py:AuditLogRow`, `memory/repository.py:record_audit`, `api/middleware.py`, `memory/retention.py`, `observability/factory.py` |
+| (c)(1) Integrity | **Implemented** (physician write path still gated OFF — `writeback_enabled=false` ⇒ 503, on the reference deployment too) | `verification/core.py`, `verification/writes.py`, `fhir/write_client.py`, `writeback/service.py` |
+| (d) Person or entity authentication | **Live on reference deployment** — SMART login delegated to OpenEMR; enabled on the reference deployment (`auth_mode=smart`), off by default in code | `copilot/auth/service.py`, `fhir/auth.py:{SmartAppLaunchTokenProvider,SessionTokenProvider}`, `api/routes/auth.py` |
+| (e)(1) Transmission security | **Live on reference deployment** — outbound TLS + no-token-logging **implemented** (default on); browser-facing **HTTPS live** (Caddy + Let's Encrypt); BFF token-never-in-browser active under smart mode; all off by default in code / a fresh deploy must stand up HTTPS | `config.py:tls_verify`; `fhir/auth.py`; `copilot/auth/session.py`; `Caddyfile.https.example` (deploy) |
 
 The subsections below give the precise, honest detail behind each row.
 
@@ -80,17 +113,20 @@ empty authorized set and is refused. This is **fail-closed** by construction
 (no cursor ⇒ no access). Reads via the Standard/FHIR API are additionally
 constrained by whatever token the service holds and by OpenEMR's own ACLs.
 
-**The honest gap.** In the default configuration (`config.py:auth_mode`
-defaults to `"disabled"`), the `clinician_id` that the authorization gate keys
-on is **supplied by the request** (body/query), not established by an
-authenticated login. The demo therefore trusts the caller's asserted identity.
-This is a genuine limitation and is called out here plainly: **AgentForge does
-not today authenticate the individual physician.** Background reads by the
-poller run under a system (Backend Services) token and are non-interactive by
-design (`worker/runtime.py`, audited as `poller.read` with no clinician).
+**The code default (honest limitation of a fresh deploy).** In the default
+configuration (`config.py:auth_mode` defaults to `"disabled"`), the
+`clinician_id` that the authorization gate keys on is **supplied by the request**
+(body/query), not established by an authenticated login. A fresh deploy therefore
+trusts the caller's asserted identity — **out of the box AgentForge does not
+authenticate the individual physician.** This is the code default; the reference
+deployment overrides it (below). Background reads by the poller run under a
+system (Backend Services) token and are non-interactive by design regardless of
+auth mode (`worker/runtime.py`, audited as `poller.read` with no clinician).
 
-**What is implemented but gated OFF.** The per-physician SMART login backbone
-now exists in code (behind `auth_mode`, default `"disabled"`):
+**What is implemented and enabled on the reference deployment.** The
+per-physician SMART login backbone exists in code (behind `auth_mode`, default
+`"disabled"`) and is **turned on for the reference deployment**
+(`COPILOT_AUTH_MODE=smart`):
 `SmartAppLaunchTokenProvider` (`copilot/fhir/auth.py`) implements the
 physician-delegated `authorization_code` + `refresh_token` exchange with **PKCE**;
 `SessionTokenProvider` (same file) refreshes and re-encrypts the token on the
@@ -108,10 +144,11 @@ routes (chat, rounds, observations, writes, and the clinician-scoped alerts /
 refresh) now take the acting clinician from the authenticated session via
 `api/deps.py:resolve_acting_clinician` — `401` without a valid session, `403` if
 a request tries to assert a different `clinician_id`. The session is
-authoritative; the request-supplied id can no longer be trusted. Enabling
-`auth_mode=smart` therefore gives real per-physician identity enforcement on the
-data path, and the agent's own `audit_log` attributes each action to the
-logged-in physician.
+authoritative; the request-supplied id can no longer be trusted. Because the
+reference deployment runs `auth_mode=smart`, this per-physician identity
+enforcement is **active on the data path there** (verified live: interactive
+routes return `401` without a session), and the agent's own `audit_log`
+attributes each action to the logged-in physician.
 
 **Delegated per-physician tokens (done).** Interactive reads (chat, rounds-start,
 observations) and writeback commits now call OpenEMR under the logged-in
@@ -123,27 +160,34 @@ retain the system token because they drive the shared poller machinery
 and `GET /v1/rounds/alerts` (their *identity* is still session-enforced). The
 background poller is likewise system-token by design.
 
-**What remains is enablement only** (operator steps, not code): SMART login needs
-browser-facing HTTPS (Decision B) and an OpenEMR client registration, and **it is
-off in the current demo** (`auth_mode` defaults to `disabled`).
+**On the reference deployment this is enablement-complete.** The reference
+deployment has stood up the two operator prerequisites — browser-facing HTTPS
+(Caddy + Let's Encrypt, `Caddyfile.https.example`) and an OpenEMR SMART-client
+registration — and runs with `auth_mode=smart`, so per-physician identity
+enforcement is **live** there. A **fresh deploy is still login-less**
+(`auth_mode` defaults to `disabled` in code) until an operator performs the same
+enablement.
 
-> **Interim deployment guidance.** Until SMART login is enabled over HTTPS (it is
-> off by default in the demo), treat AgentForge as a **single-tenant,
-> trusted-network tool**: restrict network access to it (see §3, firewalling /
-> ingress auth), and rely on OpenEMR's own user accounts and ACLs for individual
-> accountability of the underlying record.
+> **Deployment guidance.** The reference deployment runs SMART login over HTTPS,
+> so it authenticates each physician individually. **A fresh deploy that leaves
+> `auth_mode=disabled` does not** — until SMART login is enabled over HTTPS, treat
+> such a deploy as a **single-tenant, trusted-network tool**: restrict network
+> access to it (see §3, firewalling / ingress auth), and rely on OpenEMR's own
+> user accounts and ACLs for individual accountability of the underlying record.
 
 ### (a)(2)(iii) Automatic logoff — *addressable*
 
-**Implemented — gated OFF.** The idle and absolute session-lifetime knobs exist
-(`config.py:session_idle_seconds`, default 1800 s / 30 min;
-`session_absolute_seconds`, default 43200 s / 12 h) and are now **enforced** by
-the session store: `AuthService.resolve_session` (`copilot/auth/service.py`)
-rejects a session past its idle or absolute deadline (sliding-refresh on
-activity), and logout revokes it. This machinery is inert until
-`auth_mode=smart` is enabled over HTTPS. Until then, session expiration for the
-underlying record is governed by OpenEMR's own logoff settings. Do not claim
-automatic logoff as active for AgentForge until `auth_mode=smart` is enabled.
+**Live on the reference deployment (off by default in code).** The idle and
+absolute session-lifetime knobs exist (`config.py:session_idle_seconds`, default
+1800 s / 30 min; `session_absolute_seconds`, default 43200 s / 12 h) and are
+**enforced** by the session store: `AuthService.resolve_session`
+(`copilot/auth/service.py`) rejects a session past its idle or absolute deadline
+(sliding-refresh on activity), and logout revokes it. Because the reference
+deployment runs `auth_mode=smart` over HTTPS, this machinery is **active there**.
+On a fresh deploy with `auth_mode=disabled` it is inert (no physician sessions
+exist), and session expiration for the underlying record is governed by OpenEMR's
+own logoff settings. Do not claim automatic logoff as active for a deploy that
+has not enabled `auth_mode=smart`.
 
 ### (a)(2)(iv) Encryption and decryption — *addressable*
 
@@ -154,14 +198,16 @@ both the read client and the write client honor it
 `tls_verify=False` exists only for a local self-signed dev stack and must not be
 used in production.
 
-**Implemented — gated OFF — at rest (application layer).** The
-highest-value secret (physician OAuth access + refresh tokens) is encrypted at
-rest with a Fernet key (`config.py:session_enc_key`) via `SessionCrypto`
-(`copilot/auth/session.py`); the `physician_session` table stores only Fernet
-ciphertext (`LargeBinary`) and a `sha256` hash of the session cookie, never the
-plaintext token or cookie. This is exercised by tests but inert until
-`auth_mode=smart` is enabled, because no physician session is created until
-login is on.
+**Live on the reference deployment (off by default in code) — at rest
+(application layer).** The highest-value secret (physician OAuth access +
+refresh tokens) is encrypted at rest with a Fernet key
+(`config.py:session_enc_key`) via `SessionCrypto` (`copilot/auth/session.py`);
+the `physician_session` table stores only Fernet ciphertext (`LargeBinary`) and a
+`sha256` hash of the session cookie, never the plaintext token or cookie. Because
+the reference deployment runs `auth_mode=smart`, physician sessions are created
+and this encryption is **active there**. On a fresh deploy with
+`auth_mode=disabled` it is inert (exercised by tests only), because no physician
+session is created until login is on.
 
 **Operator / deployment step — at rest (data store).** Encryption at rest for
 the agent's own PostgreSQL and for OpenEMR's MariaDB is **not** provided by the
@@ -197,12 +243,18 @@ customer-managed** and is deliberately not over-claimed here.
   validated `X-Correlation-ID` per request and echoes it on the response;
   background ticks mint their own. Every audit row stores the correlation id,
   so a trail entry can be tied back to the originating request or tick.
-- **Distributed tracing (gated OFF by default).** `observability/factory.py`
-  returns a real Langfuse tracer only when all three Langfuse env vars are set;
-  otherwise a no-op. Traces can carry patient/clinician ids in span metadata,
-  so the deployment plan calls for a **self-hosted** Langfuse to keep that data
-  on the organization's own infrastructure (`PRODUCTION_GRADE_PLAN.md` §3);
-  self-hosting is an operator step.
+- **Distributed tracing (active on the reference deployment via Langfuse
+  Cloud).** `observability/factory.py` returns a real Langfuse tracer only when
+  all three Langfuse env vars are set; otherwise a no-op. The reference
+  deployment **has those keys set and points at Langfuse Cloud**
+  (`us.cloud.langfuse.com`), so tracing is **live** there. Traces can carry
+  patient/clinician ids in span metadata, which makes **Langfuse Cloud a
+  PHI-adjacent subprocessor** — a production deployment must cover it by BAA
+  (see §3.1) or switch to the **self-hosted** Langfuse stack, which is **built
+  into the deploy compose and off by default** (`docker-compose.deploy.yml`,
+  `agent/LANGFUSE_SETUP.md`, `PRODUCTION_GRADE_PLAN.md` §3) to keep trace
+  metadata on the organization's own infrastructure. On a fresh deploy with no
+  keys, tracing is a no-op.
 
 **Retention — implemented (report-only) with a hard 6-year floor.**
 `config.py:audit_retention_years` defaults to **6** (the HIPAA §164.312(b)
@@ -226,7 +278,10 @@ an operator responsibility (see §3).
 
 **Implemented** (with the physician write path gated OFF by default —
 `config.py:writeback_enabled` defaults to `False`; `fhir/provider.py`
-raises `WritebackDisabledError` unless explicitly enabled and configured).
+raises `WritebackDisabledError` unless explicitly enabled and configured, and the
+write routes return `503` while it is off — `api/routes/writes.py`. **This
+remains off on the reference deployment too**: write-back is the one safeguard
+the reference deployment has *not* opted on).
 
 - **Deterministic read-side verification gate.** `verification/core.py`
   (`Verifier`) checks every synthesized claim against the source FHIR resource:
@@ -256,19 +311,20 @@ raises `WritebackDisabledError` unless explicitly enabled and configured).
 
 ### (d) Person or entity authentication — *required*
 
-**Implemented — gated OFF.** AgentForge delegates authentication of the
-individual physician to OpenEMR via SMART App Launch (`authorization_code` +
-PKCE), with an opaque, httpOnly, server-side session on the agent side. The
-full login flow now exists — token-exchange provider
+**Live on the reference deployment (off by default in code).** AgentForge
+delegates authentication of the individual physician to OpenEMR via SMART App
+Launch (`authorization_code` + PKCE), with an opaque, httpOnly, server-side
+session on the agent side. The full login flow exists — token-exchange provider
 (`fhir/auth.py:SmartAppLaunchTokenProvider`), `/v1/auth/*` routes, session store,
-and identity resolution (see (a)(2)(i)). It is inert by default: `auth_mode`
+and identity resolution (see (a)(2)(i)) — and the **reference deployment runs it
+with `auth_mode=smart` over HTTPS**, so physicians authenticate individually
+through OpenEMR before reaching any data route (verified live: `/v1/auth/me`
+returns `401` without a session). It is **off by default in code**: `auth_mode`
 defaults to `"disabled"`, and enabling it requires browser HTTPS + an OpenEMR
-client registration. In `smart` mode the data routes now honor the session
-identity (see (a)(2)(i)). **In the current demo the software does not
-independently authenticate the end user**; it relies on the deploying
-organization to place it behind network/ingress controls and on OpenEMR's
-authentication for the record itself. This becomes an active control once
-`auth_mode=smart` is enabled over HTTPS and the cutover lands.
+client registration. **On a fresh deploy that leaves the default, the software
+does not independently authenticate the end user** and relies on the deploying
+organization's network/ingress controls plus OpenEMR's own authentication for
+the record.
 
 ### (e)(1) Transmission security — *required*
 
@@ -280,19 +336,25 @@ authentication for the record itself. This becomes an active control once
   (`fhir/auth.py`); the write client logs status codes, never token material or
   raw server messages.
 
-**Operator / deployment step — browser edge.** HTTPS termination for
-browser-facing traffic is provided by the deployment's reverse proxy (Caddy
-with automatic Let's Encrypt certificates) and requires a real domain + DNS —
-an operator step (`PRODUCTION_GRADE_PLAN.md` §2). The current reference
-deployment runs plain HTTP behind a basic-auth guard at a bare IP, so
-**browser-facing HTTPS is not yet live** and must be stood up before the
-service is exposed to real PHI or before per-physician SMART login (whose
-`Secure` cookies require TLS) can be enabled. The "token never touches the
-browser" (Backend-for-Frontend) property **is implemented** in the SMART login
-backbone — the physician's OpenEMR token lives only in the encrypted
-server-side `physician_session`, and the browser holds only an opaque hashed
-cookie — but is inert until `auth_mode=smart` is enabled; today no physician
-token exists in the browser because no browser-side token flow exists.
+**Live on the reference deployment — browser edge.** HTTPS termination for
+browser-facing traffic is provided by the deployment's reverse proxy (Caddy with
+automatic Let's Encrypt certificates) and requires a real domain + DNS — an
+operator step (`Caddyfile.https.example`, `PRODUCTION_GRADE_PLAN.md` §2). **The
+reference deployment now runs HTTPS at `https://agentforge.hankholcomb.com`**
+(Caddy + Let's Encrypt; verified live — HTTP/2 served with a valid certificate,
+plain HTTP redirects to HTTPS), and the earlier bare-IP demo's **basic-auth guard
+has been removed**: the per-physician SMART session is the access gate instead
+(`Caddyfile.https.example` ships with no `basic_auth` block, on the rationale
+that in `smart` mode unauthenticated requests already get `401`). Browser-facing
+HTTPS must still be stood up on any fresh deploy before it is exposed to real PHI
+or before per-physician SMART login (whose `Secure` cookies require TLS) can be
+enabled. The "token never touches the browser" (Backend-for-Frontend) property
+**is implemented** in the SMART login backbone — the physician's OpenEMR token
+lives only in the encrypted server-side `physician_session`, and the browser
+holds only an opaque hashed cookie — and is **active on the reference deployment**
+because it runs `auth_mode=smart`. On a fresh deploy with `auth_mode=disabled` no
+physician token exists in the browser because no browser-side token flow exists
+at all.
 
 ---
 
@@ -313,9 +375,16 @@ organization's behalf.
 - **DigitalOcean (or the chosen host) — required.** If PHI-bearing services
   (OpenEMR, the agent DB, backups) run on DigitalOcean, the organization **must
   execute DigitalOcean's BAA** covering the hosting.
+- **Langfuse Cloud — currently in use on the reference deployment.** The
+  reference deployment traces to **Langfuse Cloud** (`us.cloud.langfuse.com`)
+  with keys set, and trace span metadata can include patient/clinician ids. A
+  production deployment that keeps Langfuse Cloud **must execute a Langfuse BAA**;
+  the alternative is the **self-hosted** Langfuse stack shipped (off by default)
+  in `docker-compose.deploy.yml` (see `agent/LANGFUSE_SETUP.md`), which keeps
+  trace metadata on the organization's own infrastructure.
 - **Any other subprocessor** that can see PHI or PHI-adjacent metadata —
-  including a hosted Langfuse instance if used instead of self-hosting, and any
-  monitoring/log aggregation — must be covered by a BAA or must not receive PHI.
+  including any monitoring/log aggregation — must be covered by a BAA or must not
+  receive PHI.
 
 ### 3.2 §164.308 Administrative safeguards
 
@@ -349,14 +418,20 @@ the organization's own physical policies. AgentForge asserts nothing here.
   Block Storage volume (or use LUKS) and relocate the DB volumes onto it; the
   application does not encrypt the database.
 - **Network/ingress controls** — do not publish the databases; restrict access
-  to the agent (and, until per-physician login is enabled, gate ingress with
-  the reverse-proxy auth guard and/or IP allow-listing).
-- **HTTPS at a real domain** before exposing PHI (§2 (e)(1)).
-- **Self-host Langfuse** if tracing is enabled, to keep trace metadata on the
-  organization's infrastructure.
+  to the agent. On a deploy that leaves `auth_mode=disabled`, gate ingress with a
+  reverse-proxy auth guard and/or IP allow-listing; once per-physician SMART
+  login is enabled (as on the reference deployment) the SMART session is the
+  access gate and the basic-auth guard is removed.
+- **HTTPS at a real domain** before exposing PHI (§2 (e)(1)) — live on the
+  reference deployment; still required on any fresh deploy.
+- **Langfuse** — if tracing is enabled, either **self-host** (the off-by-default
+  stack in `docker-compose.deploy.yml`) to keep trace metadata on the
+  organization's infrastructure, or **execute a Langfuse BAA** if using Langfuse
+  Cloud (the reference deployment currently uses Cloud — see §3.1).
 - **Secret management** — supply `anthropic_api_key`, OAuth client secrets, and
-  (when SMART ships) `session_enc_key` via a secrets manager; **rotate keys**
-  on a defined cadence; never commit secrets.
+  (for SMART login, which is live on the reference deployment) `session_enc_key`
+  via a secrets manager; **rotate keys** on a defined cadence; never commit
+  secrets.
 - **Audit-log review cadence** and monitoring of audit-write failures (audit
   writes are fail-open by design).
 - **Retention** — the audit sweep (`scripts/audit_retention_sweep.py`) is
@@ -368,33 +443,37 @@ the organization's own physical policies. AgentForge asserts nothing here.
 
 ## 4. Honest summary
 
-**Strong and real today:** append-only audit trail with correlation IDs and
-per-read/per-write trailing (§164.312(b)); deterministic, non-promptable,
-fail-closed verification of both reads and writes, append-only writes with
-confirmed-only success and no hard delete (§164.312(c)(1)); outbound TLS
-verification on by default and a strict no-secrets-in-logs rule
-(§164.312(e)(1)); a fail-closed authorization gate.
+**Strong and real on every deploy (including the code default):** append-only
+audit trail with correlation IDs and per-read/per-write trailing (§164.312(b));
+deterministic, non-promptable, fail-closed verification of both reads and writes,
+append-only writes with confirmed-only success and no hard delete
+(§164.312(c)(1)); outbound TLS verification on by default and a strict
+no-secrets-in-logs rule (§164.312(e)(1)); a fail-closed authorization gate.
 
-**Implemented but disabled by default (inert until an operator opts in):** the
-per-physician SMART login backbone — authentication (d), unique user
-identification (a)(2)(i), automatic-logoff enforcement (a)(2)(iii), Fernet
-encryption of tokens at rest (a)(2)(iv), and the Backend-for-Frontend
-"token-never-in-browser" property — all behind `auth_mode` (default
-`disabled`); the physician write-back path (`writeback_enabled=False`); the
-report-only audit-retention sweep (report-only, 6-yr floor, no delete path); and
-Langfuse tracing (no keys ⇒ no-op).
+**Live on the reference deployment (`agentforge.hankholcomb.com`), off by default
+in code:** the per-physician SMART login stack is **enabled** there
+(`auth_mode=smart` over HTTPS) — authentication (d), unique user identification
+(a)(2)(i), automatic-logoff enforcement (a)(2)(iii), Fernet encryption of tokens
+at rest (a)(2)(iv), and the Backend-for-Frontend "token-never-in-browser"
+property. In `smart` mode identity is enforced on every interactive route (401
+without a session, verified live) AND interactive reads/writes ride the
+physician's own delegated token, so OpenEMR's native audit attributes them to the
+individual physician. Browser-facing HTTPS (Caddy + Let's Encrypt) is live and
+the old basic-auth guard is removed. **All of this is off by default in code**
+(`auth_mode` defaults to `disabled`): a fresh deploy authenticates no individual
+user until an operator enables SMART login over HTTPS with an OpenEMR SMART-client
+registration (see `DEPLOY.md` §15–16 / `agent/research/PRODUCTION_GRADE_PLAN.md`).
 
-**Built but not yet enabled — do not claim as live yet:** per-physician SMART
-login (Phase 2 complete) enforces identity on every interactive route in `smart`
-mode AND routes interactive reads/writes through the physician's own delegated
-token (OpenEMR-native per-physician attribution). What remains is purely operator
-enablement: `auth_mode` defaults to `disabled` in the demo, and turning it on
-needs browser-facing HTTPS + an OpenEMR SMART-client registration (see `DEPLOY.md`
-§15–16 / `agent/research/PRODUCTION_GRADE_PLAN.md`). Until `auth_mode=smart` is
-enabled over HTTPS, the demo authenticates no individual user.
+**Still off, even on the reference deployment (kept honest):** the physician
+write-back path (`writeback_enabled=False` ⇒ routes return `503`) is the one
+safeguard not opted on anywhere. Distributed tracing is **on** at the reference
+deployment but points at **Langfuse Cloud** — a PHI-adjacent subprocessor that
+requires a BAA for production, or a switch to the built-in (off-by-default)
+self-hosted stack. The audit-retention sweep remains report-only (6-yr floor, no
+delete path).
 
-**Never the software's to claim:** the BAAs (Anthropic + ZDR, hosting), all
-§164.308 administrative safeguards, §164.310 physical safeguards, and the
-operational hardening in §3.4.
+**Never the software's to claim:** the BAAs (Anthropic + ZDR, Langfuse Cloud,
+hosting), all §164.308 administrative safeguards, §164.310 physical safeguards,
+and the operational hardening in §3.4.
 </content>
 </invoke>
