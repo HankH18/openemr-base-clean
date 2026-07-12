@@ -4,8 +4,7 @@
 # This variant swaps the `:80` site label for a real domain, which makes Caddy
 # provision and renew a Let's Encrypt certificate automatically (ACME HTTP-01
 # needs inbound :80 AND :443 — both are published by docker-compose.deploy.yml).
-# Plain-HTTP :80 requests are auto-redirected to https. Routing + the basic_auth
-# guard are byte-for-byte the same as the :80 file; only the site label changes.
+# Plain-HTTP :80 requests are auto-redirected to https.
 #
 # Switch to this file ONLY after you have (see DEPLOY.md "Cut over to HTTPS"):
 #   1. Created a DNS A-record   agentforge.<your-domain>  ->  <droplet-ip>
@@ -18,27 +17,26 @@
 # Then, on the droplet:
 #   cp Caddyfile.https.example Caddyfile          # Caddyfile is gitignored
 #   #  - replace agentforge.example.com with your real domain
-#   #  - replace the password hash (generate one with the command below)
-#   docker run --rm caddy caddy hash-password --plaintext 'YOUR-PASSWORD'
 #   docker compose -f docker-compose.deploy.yml --env-file .env up -d caddy agent
 #
-# Certificates persist in the caddy_data volume across restarts. The basic_auth
-# guard stays during cutover; it can be dropped once per-physician SMART login
-# gates the app.
+# Certificates persist in the caddy_data volume across restarts.
+#
+# NO basic_auth guard: per-physician SMART login is the access gate — in `smart`
+# mode the agent's data routes return 401 without an authenticated session, so
+# the app is never exposed unauthenticated and users hit only the OpenEMR login.
+# (If you ever run HTTPS with COPILOT_AUTH_MODE=disabled, add a
+# `basic_auth { user <bcrypt-hash> }` block back inside the site as a network
+# guard — generate the hash with
+# `docker run --rm caddy caddy hash-password --plaintext 'PW'`.)
 
 agentforge.example.com {
-	basic_auth {
-		demo $2a$14$REPLACE_WITH_OUTPUT_OF_CADDY_HASH_PASSWORD
-	}
-
 	# OpenEMR OAuth2 / login surface — REQUIRED for per-physician SMART login.
 	# The physician's browser is redirected to OpenEMR's /oauth2/default/authorize
 	# and logs in there; these paths must reach OpenEMR, not the SPA. One prefix
 	# (/oauth2/*) covers authorize, provider/login, login, smart/patient-select,
 	# scope-authorize-confirm, device/code, token, jwk, .well-known, registration.
 	# /public/* and /library/* serve the login/consent page assets (css/js/fonts).
-	# Must precede the SPA catch-all. (No effect while COPILOT_AUTH_MODE=disabled —
-	# nothing hits these paths until SMART login is enabled.)
+	# Must precede the SPA catch-all.
 	@openemr {
 		path /oauth2/* /public/* /library/* /apis/* /sites/*
 	}

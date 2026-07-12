@@ -363,23 +363,24 @@ same-origin behind Caddy, so cookies are first-party and no CORS middleware is n
 
 **12.3 — Switch Caddy to the domain site.** The compose file already publishes `:443`
 alongside `:80` (no compose edit needed), and `caddy_data` already persists the cert.
-Copy the HTTPS variant over the live `Caddyfile` (gitignored), set your domain + a fresh
-password hash, and redeploy just caddy + agent:
+Copy the HTTPS variant over the live `Caddyfile` (gitignored), set your domain, and
+redeploy just caddy + agent:
 
 ```bash
 cd /root/openemr-base-clean
 cp Caddyfile.https.example Caddyfile
 #  - replace agentforge.example.com with your real domain
-#  - replace the password hash:
-docker run --rm caddy caddy hash-password --plaintext 'YOUR-PASSWORD'
 docker compose -f docker-compose.deploy.yml --env-file .env up -d caddy agent
 ```
 
 Caddy provisions a Let's Encrypt cert on the first hit and auto-renews it; the cert
-persists in `caddy_data`. Plain-HTTP `:80` requests are auto-redirected to https. The
-`@api`/SPA routing and the `basic_auth` guard are identical to the `:80` file — only the
-site label changed. Verify: `curl -I https://agentforge.<your-domain>/` returns `200` and
-the cert is Let's Encrypt (not `tls internal`).
+persists in `caddy_data`. Plain-HTTP `:80` requests are auto-redirected to https. There
+is **no basic_auth guard** — per-physician SMART login is the access gate (in `smart`
+mode the agent's data routes return `401` without an authenticated session), so users
+hit only the OpenEMR login. (If you run HTTPS with `COPILOT_AUTH_MODE=disabled`, add a
+`basic_auth` block back to the Caddyfile as a network guard — see `Caddyfile.https.example`.)
+Verify: `curl -I https://agentforge.<your-domain>/` returns `200` and the cert is Let's
+Encrypt (not `tls internal`).
 
 > **Rollback:** `cp Caddyfile.example Caddyfile` and re-run the `up -d caddy` line to
 > return to the bare-IP `:80` demo. Certs in `caddy_data` are untouched.
