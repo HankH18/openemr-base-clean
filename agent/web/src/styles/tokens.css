@@ -45,6 +45,13 @@
      it always ships paired with a direction (secondary encoding). */
   --improving: #2f8168;
 
+  /* Muted "satisfactory" green for the metric-name severity scale
+     (normal → satisfactory). A grounded, restrained 3-step read of the row:
+     satisfactory (this token) → caution (--warning) → unsatisfactory
+     (--critical). Deliberately the same desaturated green family as --improving
+     and NOT the vivid verified green (--ok, reserved for the VERIFIED badge). */
+  --satisfactory: #2f8168;
+
   --focus: #175e77;
   --shadow-pop: 0 12px 32px rgba(22, 38, 45, 0.18);
 
@@ -83,6 +90,7 @@
     --ok: #5fc793;
     --ok-soft: #0f2e1e;
     --improving: #6cc1a8;
+    --satisfactory: #6cc1a8;
 
     --focus: #6fb8d3;
     --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);
@@ -115,6 +123,7 @@
   --ok: #5fc793;
   --ok-soft: #0f2e1e;
   --improving: #6cc1a8;
+  --satisfactory: #6cc1a8;
 
   --focus: #6fb8d3;
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);

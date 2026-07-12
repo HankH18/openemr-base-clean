@@ -238,6 +238,58 @@ def test_trend_none_for_single_reading() -> None:
     assert claim.trend_direction is None
 
 
+# --- value_direction (raw up/down/none motion, independent of the range) -----
+
+
+def test_value_direction_up_when_latest_rose() -> None:
+    resources = [
+        _obs("g1", "Glucose", 42, "2026-07-09T05:00:00Z", unit="mg/dL"),
+        _obs("g2", "Glucose", 60, "2026-07-10T05:00:00Z", unit="mg/dL"),  # latest, higher
+    ]
+    claim = _only(resources)
+    assert claim.value_direction is not None and claim.value_direction.value == "up"
+
+
+def test_value_direction_down_when_latest_fell() -> None:
+    resources = [
+        _obs("hr-2", "Heart rate", 104, "2026-07-09T05:00:00Z"),
+        _obs("hr-1", "Heart rate", 92, "2026-07-10T05:00:00Z"),  # latest, lower
+    ]
+    claim = _only(resources)
+    assert claim.value_direction is not None and claim.value_direction.value == "down"
+
+
+def test_value_direction_none_without_prior() -> None:
+    claim = _only([_obs("k1", "Potassium", 5.7, "2026-07-10T05:00:00Z", unit="mEq/L")])
+    assert claim.value_direction is not None and claim.value_direction.value == "none"
+
+
+def test_value_direction_none_when_unchanged() -> None:
+    resources = [
+        _obs("h2", "Body height", 71, "2026-07-09T05:00:00Z", unit="in"),
+        _obs("h1", "Body height", 71, "2026-07-10T05:00:00Z", unit="in"),  # unchanged
+    ]
+    claim = _only(resources)
+    assert claim.value_direction is not None and claim.value_direction.value == "none"
+
+
+def test_value_direction_independent_of_range() -> None:
+    # Latest ROSE (42 -> 60) even though it moved back toward the low band: the
+    # movement marker reports raw motion; the trend colour reports range-relative.
+    resources = [
+        _obs_rng("g1", "Glucose", 42, "2026-07-09T05:00:00Z", unit="mg/dL", low=70, high=99),
+        _obs_rng("g2", "Glucose", 60, "2026-07-10T05:00:00Z", unit="mg/dL", low=70, high=99),
+    ]
+    claim = _only(resources)
+    assert claim.value_direction is not None and claim.value_direction.value == "up"
+    assert claim.trend_direction is not None and claim.trend_direction.value == "improving"
+
+
+def test_non_observation_claim_has_no_value_direction() -> None:
+    cond = {"resourceType": "Condition", "id": "c1", "code": {"text": "NSTEMI"}}
+    assert _only([cond]).value_direction is None
+
+
 def test_classification_round_trips_through_repository() -> None:
     from copilot.memory.repository import _claim_from_json, _claim_to_json
 
@@ -249,6 +301,7 @@ def test_classification_round_trips_through_repository() -> None:
     back = _claim_from_json(_claim_to_json(claim))
     assert back.severity == claim.severity
     assert back.trend_direction == claim.trend_direction
+    assert back.value_direction == claim.value_direction
     assert back.source_ref.value == claim.source_ref.value  # value stays verbatim
 
 

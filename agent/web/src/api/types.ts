@@ -33,6 +33,15 @@ export type ClaimSeverity = 'normal' | 'warning' | 'critical';
  */
 export type TrendDirection = 'improving' | 'worsening' | 'steady';
 
+/**
+ * Which way the latest reading moved vs the prior one — the value's raw motion
+ * over time, independent of the reference range. 'up'/'down' when it changed,
+ * 'none' when unchanged or there is no prior reading. Drives the UI's movement
+ * arrow (↑/↓/—); its colour comes from `trend_direction`. Absent on
+ * non-observation claims.
+ */
+export type ValueDirection = 'up' | 'down' | 'none';
+
 /** One assertion in a summary or a chat answer. */
 export interface Claim {
   text: string;
@@ -41,6 +50,8 @@ export interface Claim {
   severity?: ClaimSeverity | null;
   /** Record-grounded trend direction; absent/null → neutral. */
   trend_direction?: TrendDirection | null;
+  /** Record-grounded value motion (↑/↓/—); absent/null → no marker. */
+  value_direction?: ValueDirection | null;
 }
 
 export interface Freshness {

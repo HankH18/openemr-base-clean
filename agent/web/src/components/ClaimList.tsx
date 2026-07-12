@@ -1,6 +1,12 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Button, Dialog, DialogTrigger, Popover } from 'react-aria-components';
-import type { Claim, ClaimSeverity, ObservationSeries, TrendDirection } from '../api/types';
+import type {
+  Claim,
+  ClaimSeverity,
+  ObservationSeries,
+  TrendDirection,
+  ValueDirection,
+} from '../api/types';
 import { claimTone, type ClaimTone } from '../fmt';
 import { humanizeLabel, isNumericObservation, observationMetric, writableMetric } from '../labels';
 import { EditRecordDialog, type ConfirmWrite, type ProposeWrite } from './EditRecordDialog';
@@ -84,84 +90,102 @@ function withBoldedValue(segment: string, value: string, tone: ClaimTone | null)
   );
 }
 
-/** Severity → the metric-label colour class (normal/absent → default ink). */
+/**
+ * Severity → the metric-name colour class, a muted green→amber→red satisfaction
+ * scale: normal is satisfactory (green), warning caution (amber), critical
+ * unsatisfactory (red). Absent severity (non-observation claims) → default ink.
+ */
 function labelSeverityClass(severity: ClaimSeverity | null | undefined): string {
-  if (severity === 'critical') {
-    return ' claim-label--critical';
+  if (severity === 'normal') {
+    return ' claim-label--normal';
   }
   if (severity === 'warning') {
     return ' claim-label--warning';
+  }
+  if (severity === 'critical') {
+    return ' claim-label--critical';
   }
   return '';
 }
 
 /**
- * Trend-arrow colour class from the grounded direction. "improving" gets the
- * distinct positive token; "worsening" reuses the reserved status hue matching
- * the claim's severity (critical vs warning); "steady"/absent stays neutral so
- * an in-range fluctuation is not dressed up as a directional signal.
+ * Colour class for the movement arrow, from the grounded range-relative trend:
+ * green moving toward the range ("improving"), red moving away ("worsening"),
+ * and a muted neutral otherwise (steady / no range / no prior). Colour always
+ * ships paired with the glyph (secondary encoding), so it is never sole signal.
  */
-function trendArrowClass(
-  direction: TrendDirection | null | undefined,
-  severity: ClaimSeverity | null | undefined,
-): string | null {
+function arrowToneClass(direction: TrendDirection | null | undefined): string {
   if (direction === 'improving') {
-    return 'claim-trend--improving';
+    return ' claim-trend--improving';
   }
   if (direction === 'worsening') {
-    return severity === 'critical' ? 'claim-trend--critical' : 'claim-trend--warning';
+    return ' claim-trend--worsening';
   }
-  return null;
+  return '';
 }
 
-// The trend arrow plus its delta run, e.g. "↓12" / "↑0.5" — a rising or falling
-// glyph followed by its (space-terminated) magnitude. A "→ no change" suffix has
-// no directional glyph and is left in default ink.
-const TREND_ARROW_RE = /[↑↓]\S*/u;
+const DIRECTION_GLYPH: Record<ValueDirection, string> = { up: '↑', down: '↓', none: '—' };
+const DIRECTION_LABEL: Record<ValueDirection, string> = {
+  up: 'value increased since prior reading',
+  down: 'value decreased since prior reading',
+  none: 'no change since prior reading',
+};
 
 /**
- * Render the post-label remainder: bold the recorded value (toned by the legacy
- * text heuristic) and, when the trend is directional, colour the ↑/↓ glyph by
- * `trendClass`. The value always precedes the trend suffix, so the pre-arrow
- * slice is where the value lives.
+ * The uniform movement marker rendered from the structured fields (never parsed
+ * from the text glyph): ↑ when the value rose, ↓ when it fell, — when unchanged
+ * or there is no prior reading. Its colour comes from `trend_direction` (toward
+ * the range → green, away → red, else neutral). Returns null when the claim
+ * carries no value-direction (non-observation claims), so meds/conditions get
+ * no marker. Leading space is bundled in so it sits cleanly after the value.
  */
-function withValueAndTrend(
-  segment: string,
-  value: string,
-  tone: ClaimTone | null,
-  trendClass: string | null,
-): ReactNode {
-  if (trendClass === null) {
-    return withBoldedValue(segment, value, tone);
+function movementArrow(claim: Claim): ReactNode {
+  const direction = claim.value_direction;
+  if (direction !== 'up' && direction !== 'down' && direction !== 'none') {
+    return null;
   }
-  const match = TREND_ARROW_RE.exec(segment);
-  if (match === null || match.index === undefined) {
-    return withBoldedValue(segment, value, tone);
-  }
-  const before = segment.slice(0, match.index);
-  const arrow = match[0];
-  const after = segment.slice(match.index + arrow.length);
   return (
     <>
-      {withBoldedValue(before, value, tone)}
-      <span className={`claim-trend ${trendClass}`}>{arrow}</span>
-      {after}
+      {' '}
+      <span
+        className={`claim-trend${arrowToneClass(claim.trend_direction)}`}
+        role="img"
+        aria-label={DIRECTION_LABEL[direction]}
+      >
+        {DIRECTION_GLYPH[direction]}
+      </span>
     </>
   );
 }
 
+// The backend appends a trend suffix to observation claims: a change-indicator
+// (↑N / ↓N / "→ no change" / "updated") optionally followed by a "· Nh since
+// prior" recency tail. The structured movement arrow is now the sole directional
+// signal, so we DROP the change-indicator glyph and KEEP the recency tail.
+const TREND_SUFFIX_RE = /\s+(?:[↑↓]\S+|→ no change|·\s*updated)(\s*·\s*\S+\s+since prior)?\s*$/u;
+
+/** Split a claim's post-label remainder into the value+unit `head` (arrow drawn
+ *  after it) and the recency `tail` (kept verbatim), dropping the legacy glyph. */
+function splitTrendSuffix(rest: string): { head: string; tail: string } {
+  const match = TREND_SUFFIX_RE.exec(rest);
+  if (match === null || match.index === undefined) {
+    return { head: rest, tail: '' };
+  }
+  return { head: rest.slice(0, match.index), tail: match[1] ?? '' };
+}
+
 /**
- * Render a claim as "Label: value …" — a humanized label (coloured by the
- * grounded severity) followed by the remainder, with the recorded value bolded
- * and the trend arrow coloured by the grounded direction. Prose claims (a long
- * or absent leading label) are rendered as-is with the value bolded. Tone is
- * always derived from the ORIGINAL text so coloring is unaffected by the split.
+ * Render a claim as "Label: value <arrow> …" — a humanized label coloured by the
+ * grounded severity scale, the recorded value bolded, then the uniform movement
+ * arrow (↑/↓/—) coloured by the grounded trend, then the kept recency tail. The
+ * legacy delta glyph in the text is dropped in favour of the structured arrow.
+ * Prose claims (a long or absent leading label) render as-is with the value
+ * bolded. Tone is derived from the ORIGINAL text so it is unaffected by the split.
  */
 function claimText(claim: Claim): ReactNode {
-  const { text, source_ref, severity, trend_direction } = claim;
+  const { text, source_ref, severity } = claim;
   const value = source_ref.value;
   const tone = claimTone(text);
-  const trendClass = trendArrowClass(trend_direction, severity);
 
   const sepIdx = text.indexOf(': ');
   if (sepIdx !== -1) {
@@ -169,18 +193,21 @@ function claimText(claim: Claim): ReactNode {
     const rest = text.slice(sepIdx + 2);
     // A short leading segment is a label; anything longer is prose.
     if (label.trim().split(/\s+/).length <= 4) {
+      const { head, tail } = splitTrendSuffix(rest);
       return (
         <>
           <span className={`claim-label${labelSeverityClass(severity)}`}>
             {`${humanizeLabel(label)}: `}
           </span>
-          {withValueAndTrend(rest, value, tone, trendClass)}
+          {withBoldedValue(head, value, tone)}
+          {movementArrow(claim)}
+          {tail}
         </>
       );
     }
   }
 
-  return withValueAndTrend(text, value, tone, trendClass);
+  return withBoldedValue(text, value, tone);
 }
 
 export function ClaimList({

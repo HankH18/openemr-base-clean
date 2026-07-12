@@ -13,7 +13,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from copilot.domain.contracts import Claim, ClaimSeverity, MemoryFileSummary, TrendDirection
+from copilot.domain.contracts import (
+    Claim,
+    ClaimSeverity,
+    MemoryFileSummary,
+    TrendDirection,
+    ValueDirection,
+)
 from copilot.domain.primitives import (
     ClinicianId,
     FhirReference,
@@ -408,6 +414,7 @@ def _claim_to_json(c: Claim) -> dict[str, Any]:
         # (non-observation claims). Serialized as the enum's string value.
         "severity": c.severity.value if c.severity is not None else None,
         "trend_direction": c.trend_direction.value if c.trend_direction is not None else None,
+        "value_direction": c.value_direction.value if c.value_direction is not None else None,
         "source_ref": {
             "resource_type": c.source_ref.resource_type.value,
             "resource_id": c.source_ref.resource_id,
@@ -426,14 +433,16 @@ def _claim_from_json(c: dict[str, Any]) -> Claim:
     last_upd = ref.get("last_updated")
     # Older rows predate `timestamp`; `.get` defaults it to None (backward-compatible).
     ts = ref.get("timestamp")
-    # Older rows predate `severity`/`trend_direction`; `.get` defaults to None so
-    # a pre-classification memory file deserializes unchanged.
+    # Older rows predate `severity`/`trend_direction`/`value_direction`; `.get`
+    # defaults to None so a pre-classification memory file deserializes unchanged.
     severity = c.get("severity")
     trend = c.get("trend_direction")
+    value_dir = c.get("value_direction")
     return Claim(
         text=c["text"],
         severity=ClaimSeverity(severity) if severity else None,
         trend_direction=TrendDirection(trend) if trend else None,
+        value_direction=ValueDirection(value_dir) if value_dir else None,
         source_ref=FhirReference(
             resource_type=ResourceType(ref["resource_type"]),
             resource_id=ref["resource_id"],

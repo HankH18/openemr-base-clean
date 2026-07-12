@@ -24,6 +24,7 @@ import {
   type RoundView,
   type SourceRef,
   type TrendDirection,
+  type ValueDirection,
   type Verification,
   type VerificationAction,
   type WriteCandidate,
@@ -90,6 +91,11 @@ function normalizeTrend(v: unknown): TrendDirection | null {
   return v === 'improving' || v === 'worsening' || v === 'steady' ? v : null;
 }
 
+/** Grounded value motion, read tolerantly: unknown/absent → null (no marker). */
+function normalizeValueDirection(v: unknown): ValueDirection | null {
+  return v === 'up' || v === 'down' || v === 'none' ? v : null;
+}
+
 export function normalizeClaim(v: unknown): Claim {
   if (!isRecord(v)) {
     fail('claim');
@@ -99,6 +105,7 @@ export function normalizeClaim(v: unknown): Claim {
     source_ref: normalizeSourceRef(v['source_ref']),
     severity: normalizeSeverity(v['severity']),
     trend_direction: normalizeTrend(v['trend_direction']),
+    value_direction: normalizeValueDirection(v['value_direction']),
   };
 }
 

@@ -47,6 +47,23 @@ class TrendDirection(StrEnum):
     steady = "steady"
 
 
+class ValueDirection(StrEnum):
+    """Which way the latest reading moved vs the prior one — the value's motion
+    over time, independent of the reference range.
+
+    ``up`` when the latest value increased, ``down`` when it decreased, ``none``
+    when it was unchanged or there is no prior reading (or either reading is
+    non-numeric). Grounded in the record's own successive values. Drives the
+    UI's movement arrow (↑ / ↓ / —); its *colour* comes from ``trend_direction``
+    (toward the range → green, away → red), so the two are read together. Absent
+    on non-observation claims.
+    """
+
+    up = "up"
+    down = "down"
+    none = "none"
+
+
 class Claim(BaseModel):
     """One assertion inside a memory file or a chat answer.
 
@@ -55,11 +72,12 @@ class Claim(BaseModel):
     compares `source_ref.value` against `text` for numeric/med-name exact
     match.
 
-    `severity` and `trend_direction` are optional, record-grounded
-    classifications attached to observation claims by the chart-summary builder
-    (see `rounds.summary`). They are presentation hints only — never part of the
-    value-match gate — so a `None`/absent classification leaves an existing claim
-    and its verification wholly unaffected.
+    `severity`, `trend_direction`, and `value_direction` are optional,
+    record-grounded classifications attached to observation claims by the
+    chart-summary builder (see `rounds.summary`). They are presentation hints
+    only — never part of the value-match gate — so a `None`/absent
+    classification leaves an existing claim and its verification wholly
+    unaffected.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -68,6 +86,7 @@ class Claim(BaseModel):
     source_ref: FhirReference
     severity: ClaimSeverity | None = None
     trend_direction: TrendDirection | None = None
+    value_direction: ValueDirection | None = None
 
 
 class LabResult(BaseModel):

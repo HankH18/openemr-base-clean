@@ -26,7 +26,7 @@ from copilot.agent.grounding import (
     extract_temporal,
     humanize_label,
 )
-from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection
+from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection, ValueDirection
 from copilot.domain.primitives import FhirReference, ResourceType
 from copilot.rounds.ranges import reference_bounds, vitals_range
 
@@ -166,11 +166,12 @@ def group_observations(resources: Sequence[Mapping[str, Any]]) -> dict[str, list
 def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
     """One claim for a metric group: latest value + unit + trend vs prior.
 
-    Also carries two record-grounded classifications for the chart-summary
-    colour-coding: ``severity`` (from the abnormal flag) and ``trend_direction``
-    (from the latest-vs-prior distance to the metric's reference band). Both are
-    presentation hints — ``source_ref.value`` stays verbatim, so verification is
-    unaffected.
+    Also carries three record-grounded classifications for the chart-summary
+    colour-coding: ``severity`` (from the abnormal flag), ``trend_direction``
+    (from the latest-vs-prior distance to the metric's reference band), and
+    ``value_direction`` (the raw up/down/none motion of the latest reading vs the
+    prior one). All three are presentation hints — ``source_ref.value`` stays
+    verbatim, so verification is unaffected.
     """
     latest = group[0]
     described = describe_resource(latest)
@@ -191,7 +192,25 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
         ),
         severity=_classify_severity(latest),
         trend_direction=_classify_trend(group, low, high),
+        value_direction=_value_direction(group),
     )
+
+
+def _value_direction(group: list[Mapping[str, Any]]) -> ValueDirection:
+    """Motion of the latest reading vs the prior one: ``up`` / ``down`` / ``none``.
+
+    ``none`` when there is no prior reading, the value is unchanged, or either
+    reading is non-numeric. Grounded in the same successive record values the
+    trend classifier uses — this is the sign of ``latest - prior``, so it is
+    derivable independently of any reference range and drives the UI's uniform
+    movement arrow (↑ / ↓ / —).
+    """
+    if len(group) < 2:
+        return ValueDirection.none
+    latest, prior = _numeric(group[0]), _numeric(group[1])
+    if latest is None or prior is None or latest == prior:
+        return ValueDirection.none
+    return ValueDirection.up if latest > prior else ValueDirection.down
 
 
 # --- record-grounded classification (severity + trend direction) -----------

@@ -693,10 +693,16 @@
   font-weight: 600;
 }
 
-/* Record-grounded severity of the metric label (from the observation's abnormal
-   flag). Normal stays the default muted ink above; warning/critical borrow the
-   reserved clinical status hues. Placed after `.claim-label` so equal-specificity
-   source order lets the modifier win. */
+/* Record-grounded severity of the metric name, as a muted green→amber→red
+   satisfaction scale (from the observation's abnormal flag): normal reads as
+   satisfactory (green), warning as caution (amber), critical as unsatisfactory
+   (red). Non-observation claims carry no severity and keep the default muted
+   ink above. Placed after `.claim-label` so equal-specificity source order lets
+   the modifier win. */
+.claim-label--normal {
+  color: var(--satisfactory);
+}
+
 .claim-label--warning {
   color: var(--warning);
 }
@@ -724,25 +730,24 @@
   color: var(--ok);
 }
 
-/* Trend arrow (↑/↓) tinted by the grounded direction. Always paired with the
-   direction glyph, so colour is never the sole signal. "improving" uses the
-   distinct positive token; "worsening" reuses the reserved status hue matching
-   the claim's severity; "steady"/in-range carries no class and stays in ink. */
+/* Movement marker: ↑ (value rose) / ↓ (fell) / — (unchanged or no prior).
+   The glyph shows raw motion; its COLOUR shows range-relative trend — green
+   when moving toward the reference range ("improving"), red when moving away
+   ("worsening"), and a muted neutral otherwise (steady / no range / no prior,
+   incl. the "—" marker). Colour is always paired with the glyph, so it is
+   never the sole signal. */
 .claim-trend {
   font-family: var(--font-data);
   font-variant-numeric: tabular-nums;
   font-weight: 640;
+  color: var(--ink-faint);
 }
 
 .claim-trend--improving {
   color: var(--improving);
 }
 
-.claim-trend--warning {
-  color: var(--warning);
-}
-
-.claim-trend--critical {
+.claim-trend--worsening {
   color: var(--critical);
 }
 
