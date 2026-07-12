@@ -474,41 +474,54 @@ flags are set, so the demo behaves identically to before the rebuild.
 
 ## 16. Enable per-physician SMART login (prerequisites + current limitation)
 
-> **Read this before enabling.** SMART login is now built end-to-end behind
+> **Read this before enabling.** SMART login is built end-to-end behind
 > `COPILOT_AUTH_MODE` (default `disabled`): the `/v1/auth/*` routes + `/v1/auth/status`,
 > the encrypted server-side session store, PKCE, token refresh, `fhirUser →
 > ClinicianId` mapping, automatic-logoff TTL, the frontend "Sign in with OpenEMR"
-> gate, **and the data-route cutover**. In `smart` mode the interactive routes
-> (`chat`, `rounds`, `observations`, `writes`, `alerts`, `refresh`) take the
-> clinician identity from the authenticated **session** — `401` without a valid
-> session, `403` if a request tries to assert a different `clinician_id`. So
-> turning `COPILOT_AUTH_MODE=smart` on gives real per-physician login **and**
-> identity enforcement on the data path, and the agent's own `audit_log`
-> attributes every action to the logged-in physician.
+> gate, the data-route identity cutover, **and the delegated-token cutover**. In
+> `smart` mode:
+> - **Identity** on every interactive route (`chat`, `rounds`, `observations`,
+>   `writes`, `alerts`, `refresh`) comes from the authenticated **session** —
+>   `401` without a valid session, `403` if a request asserts a different
+>   `clinician_id`. The agent's own `audit_log` attributes every action to the
+>   logged-in physician.
+> - **Reads/writes use the physician's own delegated token**: chat, rounds-start,
+>   and observations reads, plus writeback commits, call OpenEMR under the
+>   logged-in physician's SMART token — so OpenEMR's *own native* audit also
+>   attributes them to that physician (least-privilege, per-physician).
 >
-> **The one remaining gap is the delegated-token cutover** (the deferred Phase-2
-> bonus): interactive reads/writes still use the shared system / Backend-Services
-> token, so OpenEMR's *own native* audit does not yet attribute them to the
-> individual physician — the agent-side audit does. Least-privilege per-physician
-> tokens + OpenEMR-native attribution land when that cutover ships
-> (PRODUCTION_GRADE_PLAN.md §Phase 2). Keep the network/ingress controls from
-> §11/§12 regardless.
+> Two endpoints deliberately keep the **system** token because they drive the
+> shared poller machinery (`RefreshPipeline`), not a per-physician clinical read:
+> `POST /v1/rounds/refresh` and `GET /v1/rounds/alerts` (their identity is still
+> session-enforced; only the FHIR read runs as the system client). The background
+> poller is likewise unchanged. Keep the network/ingress controls from §11/§12.
 
-Prerequisites: §12 (HTTPS at a real domain — `Secure` cookies require TLS) and
-§15 (the new agent image + migrations applied).
+Prerequisites: §12 (HTTPS at a real domain — `Secure` cookies require TLS), §15
+(the new agent image + migrations applied), and a **rebuilt web UI** so the
+"Sign in with OpenEMR" gate is in the served bundle (`agent/web/dist` is built on
+the box, not committed to git):
+
+```bash
+cd agent/web && npm ci && npm run build   # regenerates agent/web/dist (Caddy serves it)
+cd -
+```
 
 **16.1 — Register the confidential SMART app client on the deployed OpenEMR.**
 Mirrors §10.1 but for an `authorization_code` + `refresh_token` (login) client:
 
 ```bash
 SITE=$(grep '^COPILOT_PUBLIC_BASE_URL=' .env | cut -d= -f2-)   # your https origin
+mkdir -p secrets
 docker compose -f docker-compose.deploy.yml run --rm --no-deps \
-  --entrypoint python agent scripts/register_smart_app_client.py \
-  --base-url "$SITE" --redirect-uri "$SITE/v1/auth/callback"
+  -v "$PWD/secrets:/app/secrets" --entrypoint python agent \
+  scripts/register_smart_app_client.py \
+  --base-url "$SITE" --public-base-url "$SITE" --out /app/secrets/smart-app-client.json
 ```
 
-It prints a `client_id` and `client_secret`. The redirect URI must exactly equal
-`${COPILOT_PUBLIC_BASE_URL}/v1/auth/callback` (§12.2).
+The script derives the redirect URI as `${public-base-url}/v1/auth/callback` (which
+must match §12.2) and writes the `client_id` + `client_secret` to
+`secrets/smart-app-client.json` on the host — read the two values from that file
+for §16.3. Add `--insecure` only for a self-signed dev cert.
 
 **16.2 — Enable the client** (new clients are disabled + role `user`, which is
 what SMART login needs — do NOT promote it to `system`):
