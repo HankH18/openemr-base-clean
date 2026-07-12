@@ -24,6 +24,13 @@ export PYTHONPATH="$AGENT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # and returns 200 fail-closed), no poller. Dependency probes fail fast.
 unset COPILOT_ANTHROPIC_API_KEY ANTHROPIC_API_KEY || true
 export COPILOT_POLLER_ENABLED=false
+# Load-test configuration: DISABLED auth mode. The data routes (/v1/chat,
+# /v1/rounds/*) then take the acting clinician from the request clinician_id the
+# drivers send, so unauthenticated load works. A smart-mode instance would 401
+# these routes without an af_session cookie (see locustfile.py / RESULTS.md);
+# authenticated smart-mode load testing needs a seeded session and is out of
+# scope for this offline harness. Write-back stays OFF (default) — not exercised.
+export COPILOT_AUTH_MODE=disabled
 
 rm -f "$DB"
 

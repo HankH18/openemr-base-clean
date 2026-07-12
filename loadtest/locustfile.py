@@ -10,6 +10,18 @@ a dependency-light stand-in that produces the same p50/p95/p99 + error-rate
 report using only ``httpx`` (see RESULTS.md for which harness produced the
 captured numbers).
 
+**Auth mode — this harness targets a ``disabled``-mode instance.** The data
+routes (``/v1/chat``, ``/v1/rounds/*``) resolve identity from ``auth_mode``. In
+``disabled`` mode (the default; what ``run.sh`` boots) the acting clinician comes
+from the request ``clinician_id`` sent below, so these unauthenticated calls
+work. On a ``smart``-mode deployment (e.g. the live droplet) the SAME routes
+return **401** without a valid ``af_session`` session cookie — so this naive
+unauthenticated driver cannot load-test them there. Authenticated load testing
+against smart mode requires first establishing a physician session (a seeded
+``af_session`` cookie) and replaying it on every request; that is out of scope
+for this offline harness. Run this against a ``disabled``-mode instance
+(``COPILOT_AUTH_MODE=disabled``, set explicitly in ``run.sh``).
+
 Run (headless), 10 then 50 users:
 
     # boot the agent first (see run.sh), then:

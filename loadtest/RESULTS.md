@@ -4,6 +4,19 @@ Captured p50 / p95 / p99 latency + error rate for the `copilot` agent at **10**
 and **50** concurrent users. Raw machine-readable output: `results_10u.json`,
 `results_50u.json` (regenerate with `bash loadtest/run.sh`).
 
+> **Provenance — read first.** These numbers were measured on **2026-07-10**,
+> **before** the per-physician SMART login landed, against an `auth_mode=disabled`
+> instance (identity from the request `clinician_id`). They have **not** been
+> re-run since. They remain valid as a service-layer characterization of the
+> unchanged core routes in disabled mode — the harness still boots disabled mode
+> explicitly (`run.sh`). They do **not** reflect a `smart`-mode deployment, where
+> the data routes require an `af_session` session cookie and would 401 this
+> unauthenticated driver (authenticated smart-mode load testing needs a seeded
+> session — out of scope; see `locustfile.py`). Data routes added since this run
+> (`/v1/rounds/refresh`, `/v1/rounds/alerts`, `/v1/patients/{id}/observations`,
+> and the flag-gated `/v1/writes*`) were **not** part of this captured mix; no
+> figures for them are fabricated here.
+
 ## Run conditions (read this before the numbers)
 
 This is a **service-layer / transport smoke test**, run offline and clearly
@@ -16,6 +29,7 @@ LLM+FHIR latency benchmark.
 |---|---|
 | Harness | `loadtest/smoke_load.py` (httpx async driver) — the Locust fallback: Locust's `gevent` dep would not build in this sandbox, so the canonical `locustfile.py` could not run here. Same endpoint mix + weights. |
 | App | `copilot.api.app:app` under a **single** uvicorn worker, in-process poller disabled |
+| Auth mode | **`disabled`** — identity from the request `clinician_id`; pre-SMART. A `smart`-mode instance would 401 the data routes without an `af_session` cookie |
 | Database | seeded throwaway **SQLite file** (`/tmp/copilot_loadtest.db`) — **not** the production Postgres |
 | LLM | **no** `ANTHROPIC_API_KEY` → chat uses the deterministic `StubAgent`; **no** real Claude call is made |
 | FHIR | **no** live OpenEMR backend reachable |

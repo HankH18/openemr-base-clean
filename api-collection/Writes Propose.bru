@@ -1,0 +1,46 @@
+meta {
+  name: Writes Propose
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/v1/writes
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "clinician_id": {{clinician_id}},
+    "patient_id": {{patient_id}},
+    "kind": "vital",
+    "raw_value": "72",
+    "metric": "heart_rate",
+    "unit": "bpm"
+  }
+}
+
+docs {
+  POST /v1/writes — propose a physician write and get the structured echo-back
+  to confirm (never agent prose). The raw request is parsed server-side into a
+  typed candidate over the CLOSED writable metric set; no value is interpreted
+  by a model.
+
+  FLAG-GATED: requires COPILOT_WRITEBACK_ENABLED=true. Write-back is OFF on the
+  deployed droplet, so this returns 503 "Write-back is currently disabled".
+
+  kind = "vital": metric + unit are required. Writable vital metrics:
+  heart_rate, spo2, systolic_bp, diastolic_bp, respiratory_rate, temperature,
+  weight, height. kind = "medication": raw_value is the picked/echoed drug
+  title; metric/unit are ignored.
+
+  Response (when enabled): { idempotency_key, candidate, verdict, effective_time,
+  notice, warnings }. Copy idempotency_key + candidate verbatim into "Writes
+  Confirm" to commit. A blocked verdict must never be confirmed.
+
+  Authorization gate (checked before the disabled gate, so availability never
+  leaks): 403 "Patient is not on your rounding list". Identity follows the
+  auth-mode contract: disabled -> body clinician_id; smart -> the af_session
+  session cookie (401 without one, 403 on mismatch).
+}

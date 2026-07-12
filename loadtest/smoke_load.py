@@ -18,6 +18,14 @@ across the endpoint mix (same weights as locustfile.py) with a small think-time
 between calls. A response is counted as an ERROR when its status is >= 400,
 EXCEPT ``/ready`` 503 (an expected not-ready signal, not a failure).
 
+**Auth mode:** like ``locustfile.py``, this driver sends ``clinician_id`` in the
+request body/query, which only authorizes the data routes under
+``auth_mode=disabled`` (the default; what ``run.sh`` boots). On a ``smart``-mode
+deployment those routes return 401 without an ``af_session`` session cookie, so
+this unauthenticated driver must be pointed at a ``disabled``-mode instance.
+Authenticated smart-mode load testing would need a seeded session cookie
+replayed on every request (out of scope here).
+
 Lives under ``loadtest/`` (outside the agent's pytest ``testpaths``); not named
 ``test_*`` — never collected or imported by the agent test suite.
 """

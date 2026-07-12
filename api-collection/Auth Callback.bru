@@ -1,0 +1,27 @@
+meta {
+  name: Auth Callback
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/v1/auth/callback?code=&state=
+  body: none
+  auth: none
+}
+
+params:query {
+  code:
+  state:
+}
+
+docs {
+  GET /v1/auth/callback — the OAuth redirect target. OpenEMR calls this with
+  ?code=&state= after the physician consents; it is NOT invoked by hand. Listed
+  here for completeness.
+
+  On success (smart mode): validates state, exchanges the code, sets
+  Set-Cookie: af_session=...; HttpOnly; Secure; SameSite=Lax and 302s to the
+  SPA. Any failure 302s to /?login_error=<reason> — never a 500, never a leaked
+  reason. In disabled mode it is 404.
+}

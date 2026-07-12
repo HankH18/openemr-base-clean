@@ -3,4 +3,18 @@ vars {
   clinician_id: 1
   patient_id: 101
   conversation_id: 1
+  metric: Potassium
+  idempotency_key: write-demo-001
+}
+
+docs {
+  Local dev agent (the mock/offline UI or the agent at its usual local URL).
+
+  auth_mode = disabled (the default). No login, no session cookie: identity for
+  every data route comes from the request clinician_id (body or query) exactly
+  as before. This is the environment to exercise chat / rounds / observations /
+  writes as raw API calls.
+
+  Write-back stays OFF unless you set COPILOT_WRITEBACK_ENABLED=true on the
+  local process; otherwise /v1/writes and its confirm return 503.
 }

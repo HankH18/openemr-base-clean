@@ -1,14 +1,16 @@
 {
   "info": {
     "name": "AgentForge Clinical Co-Pilot",
-    "description": "Grounded clinical co-pilot agent (copilot): chat + rounds + health/ready. Requests point at {{baseUrl}}.",
+    "description": "Grounded clinical co-pilot agent (copilot): auth + rounds + chat + observations + write-back + health/ready. Requests point at {{baseUrl}}. In smart mode (deployed droplet) the interactive data routes need the af_session cookie from the browser SMART login and return 401 without it; in disabled mode (local) identity comes from the request clinician_id. Write-back is flag-gated (503 when writeback_enabled is false).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "baseUrl", "value": "http://localhost:8010" },
     { "key": "clinician_id", "value": "1" },
     { "key": "patient_id", "value": "101" },
-    { "key": "conversation_id", "value": "1" }
+    { "key": "conversation_id", "value": "1" },
+    { "key": "metric", "value": "Potassium" },
+    { "key": "idempotency_key", "value": "write-demo-001" }
   ],
   "item": [
     {
@@ -30,6 +32,59 @@
       }
     },
     {
+      "name": "Auth Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/v1/auth/status", "host": ["{{baseUrl}}"], "path": ["v1", "auth", "status"] },
+        "description": "GET /v1/auth/status — UNAUTHENTICATED probe, never errors. Returns {auth_mode: disabled|smart, authenticated: bool}. authenticated is true only in smart mode with a live af_session cookie. Use it to tell which mode a deployment is in."
+      }
+    },
+    {
+      "name": "Auth Login",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/v1/auth/login", "host": ["{{baseUrl}}"], "path": ["v1", "auth", "login"] },
+        "description": "GET /v1/auth/login — begin per-physician SMART App Launch login. smart mode: 302 to OpenEMR authorize (a BROWSER flow — open {{baseUrl}}/v1/auth/login in a browser to complete consent + set the af_session cookie). disabled mode: 404 (login inert). Optional ?next=<same-origin path>."
+      }
+    },
+    {
+      "name": "Auth Callback",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/auth/callback?code=&state=",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "auth", "callback"],
+          "query": [
+            { "key": "code", "value": "" },
+            { "key": "state", "value": "" }
+          ]
+        },
+        "description": "GET /v1/auth/callback — OAuth redirect target OpenEMR calls with ?code=&state=; not invoked by hand (listed for completeness). Success (smart): sets Set-Cookie af_session (HttpOnly; Secure; SameSite=Lax) and 302s to the SPA. Failure 302s to /?login_error=<reason> — never a 500, never a leaked reason. disabled mode: 404."
+      }
+    },
+    {
+      "name": "Auth Me",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/v1/auth/me", "host": ["{{baseUrl}}"], "path": ["v1", "auth", "me"] },
+        "description": "GET /v1/auth/me — current physician identity for the af_session cookie. smart mode + valid session: 200 {clinician_id, display_name, fhir_user, expires_at, csrf_token}. No/expired session or disabled mode: 401. Requires the HttpOnly cookie set by the browser SMART login."
+      }
+    },
+    {
+      "name": "Auth Logout",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/v1/auth/logout", "host": ["{{baseUrl}}"], "path": ["v1", "auth", "logout"] },
+        "description": "POST /v1/auth/logout — 204 always. Clears the af_session cookie and, in smart mode with a live session, best-effort revokes it server-side. Safe in disabled mode."
+      }
+    },
+    {
       "name": "Chat (grounded drill-down)",
       "request": {
         "method": "POST",
@@ -39,7 +94,7 @@
           "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": {{patient_id}},\n  \"message\": \"What is the patient's most recent potassium?\"\n}"
         },
         "url": { "raw": "{{baseUrl}}/v1/chat", "host": ["{{baseUrl}}"], "path": ["v1", "chat"] },
-        "description": "POST /v1/chat — grounded answer, verified against a live FHIR re-fetch; ungroundable questions are withheld (fail-closed). Requires the patient on an active round (else 403). Optional conversation_id continues a thread."
+        "description": "POST /v1/chat — grounded answer, verified against a live FHIR re-fetch; ungroundable questions are withheld (fail-closed). Requires the patient on an active round (else 403). Optional conversation_id continues a thread. Identity: disabled -> body clinician_id; smart -> af_session cookie (401 without one, 403 on mismatch)."
       }
     },
     {
@@ -65,7 +120,7 @@
           "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_ids\": [101, 102, 103]\n}"
         },
         "url": { "raw": "{{baseUrl}}/v1/rounds/start", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "start"] },
-        "description": "POST /v1/rounds/start — acuity-rank a patient list, persist a cursor, return the sickest card. Also authorizes chat about those patients."
+        "description": "POST /v1/rounds/start — acuity-rank a patient list, persist a cursor, return the sickest card. Also authorizes chat/observations about those patients. Identity: disabled -> body clinician_id; smart -> af_session cookie."
       }
     },
     {
@@ -106,6 +161,80 @@
         },
         "url": { "raw": "{{baseUrl}}/v1/rounds/jump", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "jump"] },
         "description": "POST /v1/rounds/jump — reposition the cursor to a patient already on the list."
+      }
+    },
+    {
+      "name": "Rounds Refresh",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}}\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/rounds/refresh", "host": ["{{baseUrl}}"], "path": ["v1", "rounds", "refresh"] },
+        "description": "POST /v1/rounds/refresh — force a change-gated re-sync of the clinician's active rounding list (poll -> verify-at-synthesis -> score -> persist); returns {results: [...]} per patient. On-demand equivalent of the background poller. Identity: disabled -> body clinician_id; smart -> af_session cookie."
+      }
+    },
+    {
+      "name": "Rounds Alerts",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/rounds/alerts?clinician_id={{clinician_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "rounds", "alerts"],
+          "query": [{ "key": "clinician_id", "value": "{{clinician_id}}" }]
+        },
+        "description": "GET /v1/rounds/alerts — deterioration alerts (UC-5): not-yet-seen patients whose persisted acuity crossed the alert threshold (COPILOT_ACUITY_ALERT_THRESHOLD, default 7.0). Returns {alerts: [...]}. Identity: disabled -> query clinician_id; smart -> af_session cookie."
+      }
+    },
+    {
+      "name": "Observations Series",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/patients/{{patient_id}}/observations?metric={{metric}}&clinician_id={{clinician_id}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "patients", "{{patient_id}}", "observations"],
+          "query": [
+            { "key": "metric", "value": "{{metric}}" },
+            { "key": "clinician_id", "value": "{{clinician_id}}" }
+          ]
+        },
+        "description": "GET /v1/patients/{patient_id}/observations?metric=&clinician_id= — a patient's grounded time-series for ONE metric (oldest->newest), each point independently grounded. metric is the humanized label as shown on the card (e.g. 'Potassium', 'Heart Rate'). Unknown/absent metric -> empty points list (never fabricated). Same rounding-list gate as chat (403 when the patient is not on the list). Identity: disabled -> query clinician_id; smart -> af_session cookie."
+      }
+    },
+    {
+      "name": "Writes Propose (flag-gated)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": {{patient_id}},\n  \"kind\": \"vital\",\n  \"raw_value\": \"72\",\n  \"metric\": \"heart_rate\",\n  \"unit\": \"bpm\"\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/v1/writes", "host": ["{{baseUrl}}"], "path": ["v1", "writes"] },
+        "description": "POST /v1/writes — propose a physician write; returns the structured echo-back to confirm (never agent prose). REQUIRES writeback_enabled (COPILOT_WRITEBACK_ENABLED=true); returns 503 when off (as on the droplet). kind=vital needs metric+unit (writable: heart_rate, spo2, systolic_bp, diastolic_bp, respiratory_rate, temperature, weight, height); kind=medication uses raw_value as the drug title. Response: {idempotency_key, candidate, verdict, effective_time, notice, warnings} — copy idempotency_key + candidate into Writes Confirm. 403 when the patient is not on the rounding list (checked before the disabled gate). Identity: disabled -> body clinician_id; smart -> af_session cookie."
+      }
+    },
+    {
+      "name": "Writes Confirm (flag-gated)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"candidate\": {\n    \"kind\": \"vital\",\n    \"patient_id\": { \"value\": {{patient_id}} },\n    \"clinician_id\": { \"value\": {{clinician_id}} },\n    \"idempotency_key\": \"{{idempotency_key}}\",\n    \"entry_mode\": \"human_direct\",\n    \"vital\": { \"metric\": \"heart_rate\", \"value\": 72, \"unit\": \"bpm\" },\n    \"medication\": null\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/writes/{{idempotency_key}}/confirm",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "writes", "{{idempotency_key}}", "confirm"]
+        },
+        "description": "POST /v1/writes/{idempotency_key}/confirm — the distinct, human-initiated second transaction that commits the candidate append-only and returns proof. REQUIRES writeback_enabled; 503 when off. TEMPLATE: paste the idempotency_key + candidate EXACTLY as returned by Writes Propose (candidate carries typed ids as {value: N}); the URL key must equal candidate.idempotency_key (else 400). Response: {resource_kind, new_id, encounter_id, committed_at} (encounter_id set for vitals, null for meds). Errors: 403 / 400 / 502 (write not confirmed upstream) / 503."
       }
     }
   ]

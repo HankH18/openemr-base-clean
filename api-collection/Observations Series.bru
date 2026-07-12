@@ -1,0 +1,40 @@
+meta {
+  name: Observations Series
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/v1/patients/{{patient_id}}/observations?metric={{metric}}&clinician_id={{clinician_id}}
+  body: none
+  auth: none
+}
+
+params:query {
+  metric: {{metric}}
+  clinician_id: {{clinician_id}}
+}
+
+params:path {
+  patient_id: {{patient_id}}
+}
+
+docs {
+  GET /v1/patients/{patient_id}/observations?metric=&clinician_id= — a patient's
+  grounded time-series for ONE metric, oldest->newest, so the UI can draw a
+  trend line. Each point stays independently grounded (resource_id + verbatim
+  value + timestamp) — as auditable as a claim.
+
+  "metric" is the humanized metric label exactly as it appears on the rounds
+  card / summary (e.g. "Potassium", "Heart Rate", "Oxygen Saturation").
+
+  Fail-closed: an unknown/absent metric returns an empty "points" list (never a
+  fabricated series); a point with no groundable value or usable timestamp is
+  dropped.
+
+  Same rounding-list authorization gate as chat: 403 "Patient is not on your
+  rounding list" when the patient is not on the clinician's list (call Rounds
+  Start first). Identity follows the auth-mode contract: disabled -> query
+  clinician_id; smart -> the af_session session cookie (401 without one, 403 if
+  the query clinician_id disagrees).
+}
