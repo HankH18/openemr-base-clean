@@ -100,6 +100,11 @@ components:
           - type: string
           - type: 'null'
           title: Correlation Id
+        document_ids:
+          items:
+            type: string
+          title: Document Ids
+          type: array
         message:
           minLength: 1
           title: Message

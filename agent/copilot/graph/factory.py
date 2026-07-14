@@ -12,7 +12,10 @@ Langfuse is not wired); ``max_iterations`` caps supervisor routing decisions
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from copilot.config import Settings
+from copilot.fhir.client import FhirClient
 from copilot.graph.critic import build_critic
 from copilot.graph.evidence_retriever import build_evidence_retriever
 from copilot.graph.intake_extractor import build_intake_extractor
@@ -25,8 +28,14 @@ def build_graph(
     *,
     observability: Observability | None = None,
     max_iterations: int | None = None,
+    fhir_client_factory: Callable[[], FhirClient] | None = None,
 ) -> AgentGraph:
-    """Assemble the graph; keyless settings select the full deterministic stub."""
+    """Assemble the graph; keyless settings select the full deterministic stub.
+
+    ``fhir_client_factory`` lets a caller (the chat service in smart mode) inject
+    the physician's delegated per-session reader; when ``None`` the graph falls
+    back to the system-token client, exactly as the inline chat path does.
+    """
     obs = observability if observability is not None else build_observability(settings)
     return AgentGraph(
         settings=settings,
@@ -36,4 +45,5 @@ def build_graph(
         critic=build_critic(settings),
         observability=obs,
         max_iterations=max_iterations,
+        fhir_client_factory=fhir_client_factory,
     )

@@ -322,6 +322,16 @@ class Settings(BaseSettings):
             "(tests, CLI, background jobs)."
         ),
     )
+    chat_graph_enabled: bool = Field(
+        default=False,
+        description=(
+            "Route serve-time chat turns through the hand-rolled multi-agent "
+            "graph (supervisor/worker/critic) instead of the inline "
+            "agent+verify path. Defaults OFF so a deployed app is byte-for-byte "
+            "unchanged until an operator opts in; the fail-closed reply "
+            "invariant is identical in both modes."
+        ),
+    )
 
     # --- Observability ----------------------------------------------------
 

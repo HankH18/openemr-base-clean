@@ -30,6 +30,8 @@ from copilot.domain.contracts import Claim, VerificationAction, VerificationResu
 from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
+from copilot.graph.contracts import AgentTask
+from copilot.graph.factory import build_graph
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
@@ -81,12 +83,21 @@ class ChatService:
         message: str,
         correlation_id: str,
         conversation_id: int | None = None,
+        document_ids: list[str] | None = None,
     ) -> ChatReply:
         """Answer ``message`` about ``patient_id``, grounded and fail-closed.
 
         Opens (or continues) the conversation, replays its history, produces a
         grounded answer, gates the claims against a live re-fetch, persists both
         the user turn and the assistant turn, and returns the assembled reply.
+
+        The grounded answer is produced one of two ways, selected by the
+        ``chat_graph_enabled`` flag (default OFF): the inline agent+verify path,
+        or the hand-rolled multi-agent graph. Both apply the identical
+        fail-closed reply invariant; persistence, audit, and the reply shape are
+        shared and mode-independent. ``document_ids`` (graph mode only) puts
+        already-ingested source documents in scope for the intake-extractor; the
+        inline path ignores it.
         """
         async with session_scope() as session:
             repo = MemoryRepository(session)
@@ -95,6 +106,46 @@ class ChatService:
             )
             history = _to_turns(await repo.get_conversation_messages(resolved_id))
 
+        if self._settings.chat_graph_enabled:
+            answer, claims, action, passed = await self._answer_via_graph(
+                patient_id, message, history, document_ids or []
+            )
+        else:
+            answer, claims, action, passed = await self._answer_inline(
+                clinician_id, patient_id, message, history
+            )
+
+        async with session_scope() as session:
+            repo = MemoryRepository(session)
+            await repo.append_message(resolved_id, "user", message)
+            await repo.append_message(resolved_id, "assistant", answer)
+
+        # HIPAA §164.312(b): every PHI read leaves an append-only trail.
+        await self._record_read_audit(clinician_id, patient_id, claims)
+
+        return ChatReply(
+            answer=answer,
+            claims=claims,
+            action=action,
+            passed=passed,
+            conversation_id=resolved_id,
+            correlation_id=correlation_id,
+        )
+
+    # --- grounded-answer paths --------------------------------------------
+
+    async def _answer_inline(
+        self,
+        clinician_id: ClinicianId,
+        patient_id: PatientId,
+        message: str,
+        history: list[ConversationTurn],
+    ) -> tuple[str, list[Claim], VerificationAction, bool]:
+        """The inline agent+verify path — this service owns span + telemetry.
+
+        Behaviour-preserving: identical spans, verification event, and token
+        usage as before the graph flag existed (the flag-OFF default path).
+        """
         async with self._obs.span(
             "chat", patient_id=patient_id.value, clinician_id=clinician_id.value
         ) as span:
@@ -129,22 +180,57 @@ class ChatService:
             self._record_token_usage(span, agent_answer)
             span.set_output({"action": action.value, "passed": passed, "claims": len(claims)})
 
-        async with session_scope() as session:
-            repo = MemoryRepository(session)
-            await repo.append_message(resolved_id, "user", message)
-            await repo.append_message(resolved_id, "assistant", answer)
+        return answer, claims, action, passed
 
-        # HIPAA §164.312(b): every PHI read leaves an append-only trail.
-        await self._record_read_audit(clinician_id, patient_id, claims)
+    async def _answer_via_graph(
+        self,
+        patient_id: PatientId,
+        message: str,
+        history: list[ConversationTurn],
+        document_ids: list[str],
+    ) -> tuple[str, list[Claim], VerificationAction, bool]:
+        """The multi-agent graph path (``chat_graph_enabled``).
 
-        return ChatReply(
-            answer=answer,
-            claims=claims,
-            action=action,
-            passed=passed,
-            conversation_id=resolved_id,
-            correlation_id=correlation_id,
+        Division of ownership: in graph mode the graph owns verification and
+        telemetry recording — it opens its own trace spans, calls
+        ``record_verification`` exactly once inside ``run()``, and emits its own
+        token/cost telemetry. So this service records neither a second
+        verification event nor token usage here; it only reshapes the graph's
+        result into the fail-closed reply. Persistence + audit + reply shape are
+        owned by ``chat`` and stay identical to the inline path.
+        """
+        graph = build_graph(
+            self._settings,
+            observability=self._obs,
+            fhir_client_factory=self._fhir_client_factory,
         )
+        task = AgentTask(
+            patient_id=patient_id.value,
+            question=message,
+            document_ids=document_ids,
+            history=history,
+        )
+        result = await graph.run(task)
+        verification = result.verification
+
+        # Identical fail-closed invariant to the inline path: an answer that
+        # grounded no verified claims is withheld, never served, regardless of
+        # the verifier's empty-claims convenience.
+        if not verification.claims:
+            action = VerificationAction.withheld
+            passed = False
+        else:
+            action = verification.action
+            passed = verification.passed
+
+        if action == VerificationAction.withheld:
+            answer = _WITHHELD_ANSWER
+            claims: list[Claim] = []
+        else:
+            answer = result.answer
+            claims = _passed_claims(verification)
+
+        return answer, claims, action, passed
 
     # --- collaborators ----------------------------------------------------
 
