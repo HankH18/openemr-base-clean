@@ -21,6 +21,7 @@ import {
   type CommittedWrite,
   type ConversationMessage,
   type DeteriorationAlert,
+  type DocumentAccepted,
   type PatientCard,
   type ProposedWrite,
   type RefreshOutcome,
@@ -405,6 +406,19 @@ export function createMockApi(): CopilotApi {
       };
       committedWrites.set(idempotencyKey, committed);
       return committed;
+    },
+
+    async uploadDocument(patientId, _file, _docType) {
+      // Simulated ingestion: the 202 acknowledgement, offline. No extraction
+      // ever materializes in mock mode — status stays honest ("processing").
+      await delay(jitter(600, 500));
+      requirePatient(patientId);
+      const accepted: DocumentAccepted = {
+        document_id: `mock-doc-${newCorrelationId()}`,
+        status: 'processing',
+        correlation_id: `mock-${newCorrelationId()}`,
+      };
+      return accepted;
     },
   };
 }

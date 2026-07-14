@@ -877,6 +877,106 @@
   color: var(--ink-soft);
 }
 
+/* Citation-union variants. Each source type must read distinctly at a
+   glance: record (fhir) keeps the verified green check; document wears the
+   petrol accent (an uploaded page — interactive territory); guideline is
+   dotted + section-sign (literature, not this patient's record); unknown is
+   amber — an unverified source demanding attention, never dressed as ok. */
+
+.prov-chip--document .prov-chip-check {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.prov-chip--guideline {
+  border-bottom-style: dotted;
+}
+
+.prov-chip--guideline .prov-chip-check {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.prov-chip--unknown {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--warning);
+}
+
+.prov-chip--unknown .prov-chip-check {
+  color: var(--warning);
+  font-size: 10px;
+}
+
+.prov-chip--unknown .prov-chip-type {
+  color: var(--warning);
+}
+
+/* ----------------------------------------------------- evidence overlay */
+
+/* SVG-over-image bounding boxes for document citations. The svg shares the
+   image's intrinsic pixel viewBox and stretches across the identical box, so
+   normalized bboxes land correctly at any rendered size (see
+   EvidenceOverlay.tsx for the geometry contract). */
+
+.evidence-overlay {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.evidence-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+}
+
+.evidence-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.evidence-box {
+  fill: var(--accent);
+  fill-opacity: 0.16;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ------------------------------------------------------ document upload */
+
+.doc-upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* In the hero action row, the upload sits left while Done stays right. */
+.hero-actions .doc-upload {
+  margin-right: auto;
+}
+
+.doc-upload-status {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.doc-upload-status--accepted {
+  color: var(--ok);
+}
+
+.doc-upload-status--error {
+  color: var(--critical);
+}
+
 /* The action chips that trail a claim (view trend + provenance). */
 .claim-tools {
   flex: none;

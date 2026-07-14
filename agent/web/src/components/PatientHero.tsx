@@ -6,6 +6,7 @@ import { fmtClock, isSafetyClaim } from '../fmt';
 import { dedupeMedicationClaims } from '../labels';
 import { AcuityMeter } from './AcuityMeter';
 import { ClaimList } from './ClaimList';
+import { DocumentUpload, type UploadFn } from './DocumentUpload';
 import type { ConfirmWrite, ProposeWrite } from './EditRecordDialog';
 import { FreshnessTag } from './FreshnessTag';
 import { ProvenanceChip } from './ProvenanceChip';
@@ -30,6 +31,7 @@ export function PatientHero({
   fetchTrend,
   proposeWrite,
   confirmWrite,
+  uploadDocument,
 }: {
   card: PatientCard;
   entry: CensusEntry | undefined;
@@ -42,6 +44,8 @@ export function PatientHero({
   /** Physician direct-edit callbacks, bound to this patient at the App seam. */
   proposeWrite?: ProposeWrite;
   confirmWrite?: ConfirmWrite;
+  /** Document ingestion, bound to this patient at the App seam. */
+  uploadDocument?: UploadFn;
 }): JSX.Element {
   const name = entry?.name ?? `Patient ${card.patient_id}`;
   const given = entry?.given ?? `patient ${card.patient_id}`;
@@ -127,6 +131,9 @@ export function PatientHero({
       </section>
 
       <div className="hero-actions reveal" style={revealDelay(4)}>
+        {uploadDocument !== undefined ? (
+          <DocumentUpload patientId={card.patient_id} upload={uploadDocument} />
+        ) : null}
         <span className="hero-actions-note">Marks {given} seen; the queue advances by acuity.</span>
         <Button className="btn btn--primary btn--advance" onPress={onDone} isDisabled={busy}>
           {busy ? 'Advancing…' : isLast ? 'Done — finish rounds' : 'Done — next patient'}
