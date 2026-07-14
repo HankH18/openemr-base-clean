@@ -13,6 +13,9 @@ agent/secrets/
 # stray compose backup files (e.g. docker-compose.deploy.yml.bak)
 *.bak
 
+# doc-archive: transient archive-unlock sentinel — never commit an unlock state
+.claude/.archive-unlocked
+
 # vendor and assets
 node_modules
 /vendor/*
