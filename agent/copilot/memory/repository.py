@@ -456,6 +456,32 @@ class MemoryRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_source_document_by_hash(
+        self,
+        patient_id: int,
+        content_hash: str,
+        *,
+        exclude_status: str,
+    ) -> SourceDocumentRow | None:
+        """A prior, successfully-uploaded source document for these exact bytes, if any.
+
+        The dedupe key is ``(patient_id, content_hash)`` narrowed to rows that hold a
+        stored ``openemr_document_id`` and whose status is not ``exclude_status`` (the
+        pipeline passes ``failed``), so identical bytes upload to OpenEMR exactly once.
+        Lowest id first. Backs the ingestion pipeline's content-hash dedupe lookup.
+        """
+        result = await self._session.execute(
+            select(SourceDocumentRow)
+            .where(
+                SourceDocumentRow.patient_id == patient_id,
+                SourceDocumentRow.content_hash == content_hash,
+                SourceDocumentRow.openemr_document_id.is_not(None),
+                SourceDocumentRow.status != exclude_status,
+            )
+            .order_by(SourceDocumentRow.id)
+        )
+        return result.scalars().first()
+
     async def create_document_page(
         self,
         *,
@@ -572,6 +598,42 @@ class MemoryRepository:
         )
         return list(result.scalars().all())
 
+    async def get_supported_extracted_facts(
+        self, extraction_id: int
+    ) -> list[ExtractedFactRow]:
+        """Only the *supported* facts of one extraction run (``supported`` is True).
+
+        Unlike :meth:`get_extracted_facts`, this filters to facts that passed the
+        no-invention gate; the intake-extractor counts them to report supported-fact
+        totals, so no ordering is imposed.
+        """
+        result = await self._session.execute(
+            select(ExtractedFactRow).where(
+                ExtractedFactRow.extraction_id == extraction_id,
+                ExtractedFactRow.supported.is_(True),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_extracted_fact_by_id(
+        self, fact_id: int, source_document_id: int
+    ) -> ExtractedFactRow | None:
+        """One extracted fact by id, bound to a source document through its extraction.
+
+        The join to ``extraction`` scopes the fact to its cited source document, so a
+        fact id that belongs to a different document does not match. Backs serve-time
+        document grounding (verification re-fetch by ``(source_document, fact)`` id).
+        """
+        result = await self._session.execute(
+            select(ExtractedFactRow)
+            .join(ExtractionRow, ExtractedFactRow.extraction_id == ExtractionRow.id)
+            .where(
+                ExtractedFactRow.id == fact_id,
+                ExtractionRow.source_document_id == source_document_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def create_guideline_document(
         self,
         *,
@@ -590,6 +652,20 @@ class MemoryRepository:
     ) -> GuidelineDocumentRow | None:
         result = await self._session.execute(
             select(GuidelineDocumentRow).where(GuidelineDocumentRow.id == guideline_document_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_guideline_document_by_source(
+        self, source: str
+    ) -> GuidelineDocumentRow | None:
+        """One guideline document by its ``source`` identifier, if present.
+
+        Backs the corpus-ingest idempotency probe: a returned row means this source is
+        already ingested (the ingester inserts each source at most once, so at most one
+        row matches).
+        """
+        result = await self._session.execute(
+            select(GuidelineDocumentRow).where(GuidelineDocumentRow.source == source)
         )
         return result.scalar_one_or_none()
 
@@ -624,6 +700,34 @@ class MemoryRepository:
             .order_by(GuidelineChunkRow.chunk_index)
         )
         return list(result.scalars().all())
+
+    async def list_guideline_chunks(self) -> list[GuidelineChunkRow]:
+        """Every guideline chunk across the whole corpus, ordered by id.
+
+        Unlike :meth:`get_guideline_chunks`, this is not scoped to one document: the
+        hybrid retriever loads the full chunk set to rank it in memory.
+        """
+        result = await self._session.execute(
+            select(GuidelineChunkRow).order_by(GuidelineChunkRow.id)
+        )
+        return list(result.scalars().all())
+
+    async def get_guideline_chunk_by_id(
+        self, chunk_id: int, guideline_document_id: int
+    ) -> GuidelineChunkRow | None:
+        """One guideline chunk by id, scoped to its guideline document.
+
+        The document scope means a chunk id that belongs to a different document does
+        not match. Backs serve-time guideline grounding (verification re-fetch by
+        ``(document, chunk)`` id).
+        """
+        result = await self._session.execute(
+            select(GuidelineChunkRow).where(
+                GuidelineChunkRow.id == chunk_id,
+                GuidelineChunkRow.guideline_document_id == guideline_document_id,
+            )
+        )
+        return result.scalar_one_or_none()
 
 
 # --- (de)serialization ------------------------------------------------------
