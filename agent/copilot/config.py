@@ -245,6 +245,83 @@ class Settings(BaseSettings):
         default="claude-haiku-4-5-20251001",
         description="Cheaper model for classification / entailment.",
     )
+    anthropic_model_vision: str = Field(
+        default="claude-sonnet-5",
+        description=(
+            "Vision-capable model for structured extraction from document page "
+            "images (scanned PDFs). Must have an explicit row in "
+            "observability/pricing.py so extraction cost accounting resolves a "
+            "real, nonzero rate — never the unknown-model fallback."
+        ),
+    )
+
+    # --- Document ingestion & guideline RAG (Week 2) -----------------------
+
+    voyage_api_key: str = Field(
+        default="",
+        description=(
+            "Voyage AI API key for guideline-corpus embeddings (voyage-3.5). "
+            "Empty (default) ⇒ the deterministic keyless embedding stub; no "
+            "outbound calls, CI-safe. Secrets-manager only; never logged."
+        ),
+    )
+    cohere_api_key: str = Field(
+        default="",
+        description=(
+            "Cohere API key for retrieval reranking (rerank-v3.5). Empty "
+            "(default) ⇒ the deterministic keyless rerank stub; no outbound "
+            "calls, CI-safe. Secrets-manager only; never logged."
+        ),
+    )
+    voyage_embedding_model: str = Field(
+        default="voyage-3.5",
+        description=(
+            "Voyage embedding model id for the guideline RAG index. Must have "
+            "an explicit row in observability/pricing.py."
+        ),
+    )
+    cohere_rerank_model: str = Field(
+        default="rerank-v3.5",
+        description=(
+            "Cohere rerank model id for guideline retrieval. Must have an "
+            "explicit row in observability/pricing.py."
+        ),
+    )
+    ocr_language: str = Field(
+        default="eng",
+        description=(
+            "Tesseract language(s) for local OCR word-box extraction, e.g. "
+            "'eng' or 'eng+spa'. OCR runs in-container so PHI never leaves "
+            "the deployment for bounding boxes."
+        ),
+    )
+    ocr_dpi: int = Field(
+        default=200,
+        description=(
+            "Render DPI when rasterizing PDF pages for OCR and vision "
+            "extraction. Higher ⇒ better OCR on small print, larger page "
+            "images (stored + sent to the vision model)."
+        ),
+    )
+    doc_extraction_confidence_threshold: float = Field(
+        default=0.7,
+        description=(
+            "Minimum OCR-reconciliation match confidence for an extracted "
+            "value to count as document-grounded (bbox-anchored). Values below "
+            "it are flagged low-confidence/unsupported — never silently "
+            "trusted. Conservative by default; tune via the eval rubrics."
+        ),
+    )
+    document_ingestion_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the Week-2 document-ingestion HTTP surface "
+            "(upload/attach endpoints). Defaults OFF so a deployed app is "
+            "byte-for-byte unchanged until an operator opts in. Gates the API "
+            "surface only — the pipeline service stays directly invocable "
+            "(tests, CLI, background jobs)."
+        ),
+    )
 
     # --- Observability ----------------------------------------------------
 

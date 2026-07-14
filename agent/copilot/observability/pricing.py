@@ -17,9 +17,23 @@ from __future__ import annotations
 from typing import Final
 
 # model -> (USD per 1M input tokens, USD per 1M output tokens)
+#
+# Non-Anthropic SKUs (Week-2 document ingestion + guideline RAG):
+#
+# - "voyage-3.5" (Voyage AI embeddings): list price $0.06 per 1M input tokens;
+#   embedding calls have no output tokens, so the output rate is 0.0.
+# - "rerank-v3.5" (Cohere reranker): Cohere prices per SEARCH UNIT ($2.00 per
+#   1k searches; one unit = query + up to 100 documents), not per token. This
+#   table's surface is per-token, so the rate is a documented normalization:
+#   our rerank calls send ~20 candidate chunks x ~400 tokens ~= 8k input
+#   tokens per search, i.e. $0.002 / 8k tokens => $0.25 per 1M input tokens.
+#   Deliberately on the conservative (high) side so rerank spend is never
+#   under-reported; recalibrate if chunking or candidate count changes.
 _PRICING: Final[dict[str, tuple[float, float]]] = {
     "claude-sonnet-5": (3.0, 15.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
+    "voyage-3.5": (0.06, 0.0),
+    "rerank-v3.5": (0.25, 0.0),
 }
 
 # Fallback for an unrecognised model — Sonnet-tier list price, so an unknown
