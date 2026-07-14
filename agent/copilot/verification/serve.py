@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from copilot.domain.contracts import Claim, MemoryFileSummary, VerificationResult
-from copilot.domain.primitives import PatientId, ResourceType, utcnow
+from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
 from copilot.verification.core import Verifier, build_context_from_resources
 from copilot.verification.rules import default_rules
 
@@ -70,6 +70,13 @@ async def verify_answer(
     fetched: set[tuple[ResourceType, str]] = set()
     for claim in claims:
         ref = claim.source_ref
+        # Only the fhir citation variant has a live resource to re-fetch. A
+        # document/guideline citation is left out of the context, so the gate
+        # marks it unverifiable and drops it (fail-closed) — see core.py. NB:
+        # ref is statically the fhir variant (SkipValidation), so this guard reads
+        # as unreachable to mypy but fires for real non-fhir citations at runtime.
+        if not isinstance(ref, FhirReference):
+            continue
         key = (ref.resource_type, ref.resource_id)
         if key in fetched:
             continue

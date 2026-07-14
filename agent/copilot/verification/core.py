@@ -35,7 +35,7 @@ from copilot.domain.contracts import (
     VerificationDomainFlag,
     VerificationResult,
 )
-from copilot.domain.primitives import ResourceType
+from copilot.domain.primitives import FhirReference, ResourceType
 
 # Match integers or decimals: 42, 0.02, 2.34, 128, 3.375
 _NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
@@ -145,6 +145,26 @@ class Verifier:
         self, claim: Claim, context: VerificationContext
     ) -> VerificationClaimResult:
         ref = claim.source_ref
+        # Interim non-fhir tolerance: this gate grounds only the ``fhir`` citation
+        # variant. A ``document``/``guideline`` citation has no live FHIR resource
+        # to re-fetch and value-match, so it is treated as UNVERIFIABLE (fails
+        # attribution) and therefore dropped by the fail-closed policy — never
+        # served as if proven. Real document/guideline grounding is a later task
+        # (F5); until then a non-fhir claim can only be dropped, never verified.
+        # NB: ``claim.source_ref`` is statically the fhir variant (SkipValidation),
+        # so this branch reads as unreachable to mypy but runs for real non-fhir
+        # citations at runtime.
+        if not isinstance(ref, FhirReference):
+            source_type = getattr(ref, "source_type", None)
+            kind = str(getattr(source_type, "value", source_type) or "non-fhir")
+            return VerificationClaimResult(
+                text=claim.text,
+                source_ref=ref,
+                attribution_ok=False,
+                value_match=False,
+                reason=f"unverifiable: {kind} citation grounding not available in this gate",
+            )
+
         key = (ref.resource_type, ref.resource_id)
         resource = context.resources_by_key.get(key)
         if resource is None:

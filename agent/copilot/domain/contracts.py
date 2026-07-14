@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from copilot.domain.primitives import FhirReference, PatientId
 
@@ -72,6 +72,17 @@ class Claim(BaseModel):
     compares `source_ref.value` against `text` for numeric/med-name exact
     match.
 
+    `source_ref` is the citation discriminated union
+    (`FhirReference | DocumentCitation | GuidelineCitation`, keyed on
+    `source_type`). It is annotated `SkipValidation[FhirReference]` rather than
+    the bare union so that the many legacy readers that dereference
+    `claim.source_ref.value` / `.resource_type` stay statically valid: the
+    fhir variant is the only one the deterministic verifier grounds today, and
+    a non-fhir citation is tolerated as *unverifiable → dropped* (see
+    `verification.core`). The repository's hand-written (de)serializers dispatch
+    on `source_type`, and each concrete citation validates its own fields at
+    construction, so no validity is lost by skipping the union dispatch here.
+
     `severity`, `trend_direction`, and `value_direction` are optional,
     record-grounded classifications attached to observation claims by the
     chart-summary builder (see `rounds.summary`). They are presentation hints
@@ -83,7 +94,7 @@ class Claim(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     text: str = Field(min_length=1)
-    source_ref: FhirReference
+    source_ref: SkipValidation[FhirReference]
     severity: ClaimSeverity | None = None
     trend_direction: TrendDirection | None = None
     value_direction: ValueDirection | None = None
@@ -240,12 +251,18 @@ class VerificationAction(StrEnum):
 
 
 class VerificationClaimResult(BaseModel):
-    """Per-claim outcome from the deterministic gate."""
+    """Per-claim outcome from the deterministic gate.
+
+    ``source_ref`` mirrors ``Claim.source_ref`` — the citation union carried
+    through verbatim (annotated ``SkipValidation[FhirReference]`` for the same
+    reason). A non-fhir citation surfaces here as a failed result
+    (``attribution_ok=False``) so the caller can report it dropped.
+    """
 
     model_config = ConfigDict(frozen=True)
 
     text: str
-    source_ref: FhirReference
+    source_ref: SkipValidation[FhirReference]
     attribution_ok: bool
     value_match: bool
     entailment: bool | None = None
