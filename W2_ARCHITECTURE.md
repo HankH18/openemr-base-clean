@@ -55,8 +55,19 @@ indexing (both are documented future work).
 
 **Supervisor** (`copilot/graph/supervisor.py`) — decides, per request, whether extraction is
 needed, whether evidence retrieval is needed, and when the final answer is ready. Emits typed,
-logged `Handoff` objects; opens the parent span. Centralizes the "no grounded claims → withheld"
-decision (today that override lives in the chat service; the graph must own it once).
+logged `Handoff` objects; opens the parent span.
+
+> **As built.** The graph is wired into `POST /v1/chat` behind the `chat_graph_enabled` flag
+> (env `COPILOT_CHAT_GRAPH_ENABLED`, **default off**): with the flag off the endpoint uses the
+> inline verify path (byte-for-byte the Week-1 behavior); with it on, the turn is routed through
+> the graph (supervisor → workers → critic → deterministic verifier), threading conversation
+> history and the smart-mode delegated FHIR client through unchanged. The "no grounded claims →
+> withheld" override is applied by the chat service in **both** modes (the graph deliberately does
+> not duplicate it), so the graph does not yet *own* that decision — a documented follow-up, not a
+> gap in the safety behavior, which is identical either way. A regression test
+> (`agent/tests/test_chat_graph.py`) proves the flag-on path actually drives the graph (asserts the
+> `graph.run`/`supervisor.route` spans + `worker.handoff` events fire) and that the flag-off default
+> path does not.
 
 **Intake-extractor worker** (`copilot/graph/intake_extractor.py`) — owns document extraction: PDF
 rasterization → OCR → Claude-vision structured extraction → schema validation → OCR reconciliation
