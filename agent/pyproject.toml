@@ -30,6 +30,13 @@ dependencies = [
     # pgvector: dense-retrieval vectors on Postgres (Voyage embeddings, 1024-dim).
     # On SQLite (tests) the vector column falls back to JSON via VectorType (memory/db.py).
     "pgvector>=0.3,<1",
+    # Week 2 document ingestion (F3): PDF rasterization + OCR + image handling.
+    # The tesseract BINARY is NOT required to import pytesseract (only at real-OCR
+    # call time; tests use a StubOcr Protocol), so these stay import-clean on the
+    # binary-less measurement host.
+    "pypdfium2>=4,<5",
+    "pytesseract>=0.3.10,<0.4",
+    "pillow>=10,<12",
 ]
 
 [project.optional-dependencies]
