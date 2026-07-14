@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import secrets
 from collections.abc import Callable, Mapping
 from functools import lru_cache
@@ -39,7 +40,11 @@ from pydantic import ValidationError
 from copilot.config import Settings
 from copilot.domain.primitives import ClinicianId, PatientId, ResourceType, utcnow
 from copilot.domain.writes import (
+    AllergyWrite,
+    AnyWriteCandidate,
     CommittedWrite,
+    IssueWriteCandidate,
+    MedicalProblemWrite,
     MedicationWrite,
     ProposedWrite,
     VitalWrite,
@@ -47,6 +52,7 @@ from copilot.domain.writes import (
     WriteCandidate,
     WriteEntryMode,
     WriteKind,
+    WriteVerdict,
 )
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client, build_write_client
@@ -140,6 +146,7 @@ class WriteService:
         raw_value: str,
         metric: str | None = None,
         unit: str | None = None,
+        entry_mode: WriteEntryMode = WriteEntryMode.human_direct,
     ) -> tuple[ProposedWrite, str]:
         """Parse → verify → echo-back. Never commits; audits ``write_proposed``.
 
@@ -149,6 +156,12 @@ class WriteService:
         unparseable value, an unknown metric, or a verifier hard block (wrong
         unit). An out-of-range human_direct value is *not* a block — it rides
         along as a soft warning on the verdict.
+
+        ``entry_mode`` is the attribution surface: ``human_direct`` for a
+        physician-typed value (default); ``agent_proposed_physician_confirmed``
+        for the agent path (F4b), where the verifier runs strict and the write
+        stays uncommitted until the separate physician confirm transaction.
+        The propose step itself performs **no** OpenEMR call in either mode.
         """
         idempotency_key = _new_idempotency_key()
         candidate = self._parse_candidate(
@@ -159,12 +172,13 @@ class WriteService:
             metric=metric,
             unit=unit,
             idempotency_key=idempotency_key,
+            entry_mode=entry_mode,
         )
 
         async with self._obs.span(
             "writeback.propose", patient_id=patient_id.value, clinician_id=clinician_id.value
         ):
-            verdict = verify_write(candidate, mode=WriteEntryMode.human_direct)
+            verdict = _verify_candidate(candidate)
             if verdict.blocked:
                 raise WriteInputError("write candidate failed verification", details=verdict.errors)
             proposed = ProposedWrite(candidate=candidate, verdict=verdict)
@@ -183,25 +197,28 @@ class WriteService:
         *,
         clinician_id: ClinicianId,
         patient_id: PatientId,
-        candidate: WriteCandidate,
+        candidate: AnyWriteCandidate,
         idempotency_key: str,
     ) -> CommittedWrite:
         """Re-verify the identical candidate, then commit it append-only.
 
+        This is the explicit physician confirm — the only path that writes.
         Re-runs the same deterministic verification and refuses (``WriteInputError``
         → 400) if the candidate would now be blocked or its key does not match the
         confirm URL. A key already committed replays its ``CommittedWrite`` with no
         second write (idempotent). Otherwise builds the guarded write client
         (``build_write_client`` raises ``WritebackDisabledError`` → route 503 when
-        disabled), commits, audits ``write_committed``, and read-backs (fail-open);
-        any ``OpenEmrWriteError`` is audited ``write_failed`` and re-raised (→ 502).
+        disabled), commits, audits ``write_committed`` (carrying the candidate's
+        ``entry_mode`` — ``agent_proposed_physician_confirmed`` for the agent
+        path), and read-backs (fail-open); any ``OpenEmrWriteError`` is audited
+        ``write_failed`` and re-raised (→ 502).
         """
         if candidate.idempotency_key != idempotency_key:
             raise WriteInputError("idempotency key does not match the confirmed candidate")
 
         # Re-verify: a candidate that would be blocked can never slip through the
         # second transaction, even if the client re-sends a tampered payload.
-        verdict = verify_write(candidate, mode=WriteEntryMode.human_direct)
+        verdict = _verify_candidate(candidate)
         if verdict.blocked:
             raise WriteInputError("write candidate failed re-verification", details=verdict.errors)
 
@@ -249,28 +266,51 @@ class WriteService:
         metric: str | None,
         unit: str | None,
         idempotency_key: str,
-    ) -> WriteCandidate:
-        """Parse raw physician input into a typed candidate over the closed set.
+        entry_mode: WriteEntryMode,
+    ) -> AnyWriteCandidate:
+        """Parse raw physician/agent input into a typed candidate over the closed set.
 
         Exhaustive ``match`` (no ``default``): a new ``WriteKind`` fails to compile
         until handled. All construction errors collapse to ``WriteInputError``.
         """
-        match kind:
-            case WriteKind.vital:
-                payload: VitalWrite | MedicationWrite = self._parse_vital(raw_value, metric, unit)
-                field = "vital"
-            case WriteKind.medication:
-                payload = self._parse_medication(raw_value)
-                field = "medication"
         try:
-            return WriteCandidate(
-                kind=kind,
-                patient_id=patient_id,
-                clinician_id=clinician_id,
-                idempotency_key=idempotency_key,
-                entry_mode=WriteEntryMode.human_direct,
-                **{field: payload},
-            )
+            match kind:
+                case WriteKind.vital:
+                    return WriteCandidate(
+                        kind=kind,
+                        patient_id=patient_id,
+                        clinician_id=clinician_id,
+                        idempotency_key=idempotency_key,
+                        entry_mode=entry_mode,
+                        vital=self._parse_vital(raw_value, metric, unit),
+                    )
+                case WriteKind.medication:
+                    return WriteCandidate(
+                        kind=kind,
+                        patient_id=patient_id,
+                        clinician_id=clinician_id,
+                        idempotency_key=idempotency_key,
+                        entry_mode=entry_mode,
+                        medication=self._parse_medication(raw_value),
+                    )
+                case WriteKind.medical_problem:
+                    return IssueWriteCandidate(
+                        kind=kind,
+                        patient_id=patient_id,
+                        clinician_id=clinician_id,
+                        idempotency_key=idempotency_key,
+                        entry_mode=entry_mode,
+                        medical_problem=self._parse_medical_problem(raw_value),
+                    )
+                case WriteKind.allergy:
+                    return IssueWriteCandidate(
+                        kind=kind,
+                        patient_id=patient_id,
+                        clinician_id=clinician_id,
+                        idempotency_key=idempotency_key,
+                        entry_mode=entry_mode,
+                        allergy=self._parse_allergy(raw_value),
+                    )
         except ValidationError as exc:
             raise WriteInputError(
                 "invalid write candidate", details=_validation_details(exc)
@@ -299,16 +339,39 @@ class WriteService:
         except ValidationError as exc:
             raise WriteInputError("invalid medication", details=_validation_details(exc)) from exc
 
+    def _parse_medical_problem(self, raw_value: str) -> MedicalProblemWrite:
+        title = raw_value.strip()
+        if not title:
+            raise WriteInputError("a medical problem write requires a non-empty title")
+        try:
+            return MedicalProblemWrite(title=title, begdate=utcnow().date().isoformat())
+        except ValidationError as exc:
+            raise WriteInputError(
+                "invalid medical problem", details=_validation_details(exc)
+            ) from exc
+
+    def _parse_allergy(self, raw_value: str) -> AllergyWrite:
+        title = raw_value.strip()
+        if not title:
+            raise WriteInputError("an allergy write requires a non-empty title")
+        try:
+            return AllergyWrite(title=title, begdate=utcnow().date().isoformat())
+        except ValidationError as exc:
+            raise WriteInputError("invalid allergy", details=_validation_details(exc)) from exc
+
     # --- write + read-back ------------------------------------------------
 
     async def _perform_write(
-        self, writer: OpenEmrWriteClient, patient_id: PatientId, candidate: WriteCandidate
+        self, writer: OpenEmrWriteClient, patient_id: PatientId, candidate: AnyWriteCandidate
     ) -> CommittedWrite:
         """Dispatch the append to the write client — exhaustive ``match``.
 
         Vitals resolve/create an encounter first (a vital attaches to one);
-        medications post a new list row directly.
+        medications and issues (medical problems / allergies) post a new list
+        row directly.
         """
+        if isinstance(candidate, IssueWriteCandidate):
+            return await self._perform_issue_write(writer, patient_id, candidate)
         match candidate.kind:
             case WriteKind.vital:
                 vital = candidate.vital
@@ -326,8 +389,28 @@ class WriteService:
                     patient_id, med, idempotency_key=candidate.idempotency_key
                 )
 
+    async def _perform_issue_write(
+        self, writer: OpenEmrWriteClient, patient_id: PatientId, candidate: IssueWriteCandidate
+    ) -> CommittedWrite:
+        """Commit one physician-confirmed issue write — exhaustive ``match``."""
+        match candidate.kind:
+            case WriteKind.medical_problem:
+                problem = candidate.medical_problem
+                if problem is None:  # unreachable given the candidate validator.
+                    raise WriteInputError("medical problem candidate is missing its payload")
+                return await writer.create_medical_problem(
+                    patient_id, problem, idempotency_key=candidate.idempotency_key
+                )
+            case WriteKind.allergy:
+                allergy = candidate.allergy
+                if allergy is None:  # unreachable given the candidate validator.
+                    raise WriteInputError("allergy candidate is missing its payload")
+                return await writer.create_allergy(
+                    patient_id, allergy, idempotency_key=candidate.idempotency_key
+                )
+
     async def _read_back(
-        self, patient_id: PatientId, candidate: WriteCandidate, committed: CommittedWrite
+        self, patient_id: PatientId, candidate: AnyWriteCandidate, committed: CommittedWrite
     ) -> None:
         """Close the loop: re-read through the read client, log any mismatch.
 
@@ -354,7 +437,7 @@ class WriteService:
             )
 
     async def _value_round_trips(
-        self, reader: FhirClient, patient_id: PatientId, candidate: WriteCandidate
+        self, reader: FhirClient, patient_id: PatientId, candidate: AnyWriteCandidate
     ) -> bool:
         """Best-effort: does the written value/title appear in a live re-fetch?
 
@@ -362,6 +445,8 @@ class WriteService:
         FHIR id): search the patient's resources of the matching type and look for
         the value. Only used to log a round-trip warning, never to gate the write.
         """
+        if isinstance(candidate, IssueWriteCandidate):
+            return await self._issue_round_trips(reader, patient_id, candidate)
         match candidate.kind:
             case WriteKind.vital:
                 vital = candidate.vital
@@ -379,6 +464,23 @@ class WriteService:
                 needle = med.title.strip().lower()
                 return any(needle in title.lower() for title in _medication_titles(bundle))
 
+    async def _issue_round_trips(
+        self, reader: FhirClient, patient_id: PatientId, candidate: IssueWriteCandidate
+    ) -> bool:
+        """Issue-kind read-back: look for the title on the matching FHIR type."""
+        match candidate.kind:
+            case WriteKind.medical_problem:
+                issue: MedicalProblemWrite | AllergyWrite | None = candidate.medical_problem
+                resource_type = ResourceType.Condition
+            case WriteKind.allergy:
+                issue = candidate.allergy
+                resource_type = ResourceType.AllergyIntolerance
+        if issue is None:
+            return False
+        bundle = await reader.search(resource_type, {"patient": str(patient_id)})
+        needle = issue.title.strip().lower()
+        return any(needle in text.lower() for text in _code_texts(bundle))
+
     # --- audit ------------------------------------------------------------
 
     async def _record_write_audit(
@@ -392,10 +494,12 @@ class WriteService:
     ) -> None:
         """Append the physician-attributed write-trail row (fail-open).
 
-        ``entry_mode`` carries the attribution surface (``human_direct`` in
-        Phase 1); ``resources_returned`` names the created resource on a commit,
-        empty on a proposal or a failure. A broken audit write is logged and
-        swallowed so it can never turn a completed write into a 500.
+        ``entry_mode`` carries the attribution surface (``human_direct`` for a
+        physician-typed edit; ``agent_proposed_physician_confirmed`` for an
+        agent-proposed, physician-confirmed write); ``resources_returned`` names
+        the created resource on a commit, empty on a proposal or a failure. A
+        broken audit write is logged and swallowed so it can never turn a
+        completed write into a 500.
         """
         try:
             async with session_scope() as session:
@@ -449,6 +553,45 @@ class WriteService:
 def _new_idempotency_key() -> str:
     """A fresh client-facing idempotency key (URL-safe, well under 128 chars)."""
     return secrets.token_urlsafe(24)
+
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _verify_candidate(candidate: AnyWriteCandidate) -> WriteVerdict:
+    """The single deterministic verification gate for propose AND commit.
+
+    Direct kinds (vital/medication) go through ``verification/writes.py``'s
+    ``verify_write`` under the candidate's own ``entry_mode`` — so an
+    agent-proposed vital would be held to the strict (hard-block) range rules.
+    Issue kinds (medical problem / allergy) are verified here: their
+    deterministic gate is a non-empty title (already enforced by the type) plus
+    a well-formed ``YYYY-MM-DD`` ``begdate``, mirroring the medication gate.
+    """
+    if isinstance(candidate, WriteCandidate):
+        return verify_write(candidate, mode=candidate.entry_mode)
+    return _verify_issue(candidate)
+
+
+def _verify_issue(candidate: IssueWriteCandidate) -> WriteVerdict:
+    """Deterministically verify one issue candidate. Never raises."""
+    match candidate.kind:
+        case WriteKind.medical_problem:
+            issue: MedicalProblemWrite | AllergyWrite | None = candidate.medical_problem
+        case WriteKind.allergy:
+            issue = candidate.allergy
+    if issue is None:  # unreachable given the candidate validator; belt-and-braces.
+        return WriteVerdict(
+            kind=candidate.kind, blocked=True, errors=[f"missing {candidate.kind.value} payload"]
+        )
+
+    errors: list[str] = []
+    if not issue.title.strip():
+        errors.append(f"{candidate.kind.value} title is empty")
+    if not _ISO_DATE_RE.match(issue.begdate):
+        errors.append(f"begdate {issue.begdate!r} is not a valid YYYY-MM-DD date")
+
+    return WriteVerdict(kind=candidate.kind, blocked=bool(errors), errors=errors)
 
 
 def _parse_metric(metric: str) -> WritableMetric:
@@ -510,3 +653,15 @@ def _medication_titles(bundle: Mapping[str, Any]) -> list[str]:
             if isinstance(text, str) and text:
                 titles.append(text)
     return titles
+
+
+def _code_texts(bundle: Mapping[str, Any]) -> list[str]:
+    """``code.text`` of each resource in a search Bundle (Condition / Allergy)."""
+    texts: list[str] = []
+    for res in _bundle_resources(bundle):
+        code = res.get("code")
+        if isinstance(code, Mapping):
+            text = code.get("text")
+            if isinstance(text, str) and text:
+                texts.append(text)
+    return texts
