@@ -257,7 +257,7 @@ class AgentGraph:
         async with self._obs.span("finalize.verify", patient_id=task.patient_id) as span:
             async with self._fhir_client() as fhir:
                 agent = build_agent(self._settings, fhir)
-                agent_answer = await agent.answer(patient_id, task.question, None)
+                agent_answer = await agent.answer(patient_id, task.question, task.history or None)
                 verification = await verify_answer(agent_answer.claims, patient_id, fhir)
 
             verdict = self._critic.review(list(agent_answer.claims))

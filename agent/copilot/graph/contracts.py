@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from copilot.agent.base import ConversationTurn
 from copilot.domain.contracts import VerificationResult
 
 
@@ -26,7 +27,9 @@ class AgentTask(BaseModel):
     ``patient_id`` is the OpenEMR PID the question is scoped to, ``question`` the
     free-text ask, and ``document_ids`` the already-ingested source-document row
     ids (as strings) in scope — their presence is what routes work to the
-    intake-extractor.
+    intake-extractor. ``history`` replays the prior conversation turns the chat
+    service resolved; it defaults empty so a document/guideline task built
+    without a thread is unchanged.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -34,6 +37,7 @@ class AgentTask(BaseModel):
     patient_id: int = Field(gt=0)
     question: str = Field(min_length=1)
     document_ids: list[str] = Field(default_factory=list)
+    history: list[ConversationTurn] = Field(default_factory=list)
 
 
 class Handoff(BaseModel):

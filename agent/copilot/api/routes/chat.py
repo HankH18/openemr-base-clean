@@ -49,6 +49,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: int | None = Field(default=None, gt=0)
     correlation_id: str | None = None
+    document_ids: list[str] = Field(default_factory=list)
 
 
 def _service(
@@ -124,6 +125,7 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         message=req.message,
         correlation_id=correlation_id,
         conversation_id=req.conversation_id,
+        document_ids=req.document_ids,
     )
     body = _reply_body(reply)
     # Evidence separation: guideline backing rides as a distinct top-level block,
