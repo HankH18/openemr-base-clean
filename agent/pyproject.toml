@@ -27,6 +27,9 @@ dependencies = [
     # with an OpenTelemetry API, so a v3 install would silently emit nothing
     # (the backend swallows the resulting AttributeError). See LANGFUSE_SETUP.md.
     "langfuse>=2.55,<3",
+    # pgvector: dense-retrieval vectors on Postgres (Voyage embeddings, 1024-dim).
+    # On SQLite (tests) the vector column falls back to JSON via VectorType (memory/db.py).
+    "pgvector>=0.3,<1",
 ]
 
 [project.optional-dependencies]

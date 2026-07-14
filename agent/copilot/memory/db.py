@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine.interfaces import Dialect
@@ -32,6 +33,20 @@ class JSONType(TypeDecorator[dict[str, Any]]):
         if dialect.name == "postgresql":
             return dialect.type_descriptor(JSONB())
         return dialect.type_descriptor(JSON())
+
+
+# Voyage voyage-3.5 default embedding dimension. Bump deliberately if the model changes.
+EMBEDDING_DIM = 1024
+
+
+def embedding_column(dim: int = EMBEDDING_DIM) -> TypeEngine[Any]:
+    """pgvector ``Vector(dim)`` on Postgres; JSON fallback on SQLite (tests).
+
+    Postgres stores a real ``vector(dim)`` (ANN-indexable); SQLite has no vector
+    type, so tests round-trip the embedding as a JSON list. Value semantics
+    (a ``list[float]``) are identical either way.
+    """
+    return Vector(dim).with_variant(JSON(), "sqlite")
 
 
 class Base(DeclarativeBase):

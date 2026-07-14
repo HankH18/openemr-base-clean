@@ -34,7 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from copilot.memory.db import Base, JSONType
+from copilot.memory.db import EMBEDDING_DIM, Base, JSONType, embedding_column
 
 # BigInteger PK on SQLite doesn't autoincrement (only INTEGER PRIMARY KEY does);
 # BigInteger works fine on Postgres. Use this variant for autoinc surrogate ids.
@@ -255,3 +255,162 @@ class LoginTxnRow(Base):
         DateTime(timezone=True), nullable=False, default=_utc_aware_default
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --- Week 2: multimodal document ingestion (W2_ARCHITECTURE.md §"Data model") ---
+#
+# Authority split: OpenEMR owns the *source document* (uploaded via the Standard
+# REST API, addressable by ``openemr_document_id`` / readable back as a FHIR
+# DocumentReference). The agent DB owns the *derived* artifacts below — page
+# renders + OCR tokens, and schema-validated extracted facts with pixel-level
+# provenance. Extractions are APPEND-ONLY: re-ingesting a document inserts a new
+# ``extraction`` row, never mutates an old one (grounding re-checks a stored,
+# immutable extraction). Naive-UTC datetimes via ``_utc_default`` like the other
+# agent-state tables.
+
+
+class SourceDocumentRow(Base):
+    """Agent-side handle for a document whose bytes live authoritatively in OpenEMR."""
+
+    __tablename__ = "source_document"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    patient_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # Set after the OpenEMR upload succeeds; NULL while status='uploaded' in-flight.
+    openemr_document_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    doc_type: Mapped[str] = mapped_column(String(32), nullable=False)  # 'lab_pdf' | 'intake_form'
+    category_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 'uploaded' | 'extracting' | 'extracted' | 'failed'
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="uploaded")
+    uploaded_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
+
+    pages: Mapped[list[DocumentPageRow]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+    extractions: Mapped[list[ExtractionRow]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class DocumentPageRow(Base):
+    """One rasterized page + its OCR word boxes (re-derivable cache for the overlay)."""
+
+    __tablename__ = "document_page"
+    __table_args__ = (
+        UniqueConstraint("source_document_id", "page_no", name="uq_document_page_doc_pageno"),
+    )
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    source_document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_document.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    image: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # PNG cache
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # [{"text": str, "bbox": [x, y, w, h], "conf": float}] — word-level OCR tokens.
+    ocr_tokens: Mapped[list[dict[str, Any]]] = mapped_column(JSONType, nullable=False, default=list)
+
+    document: Mapped[SourceDocumentRow] = relationship(back_populates="pages")
+
+
+class ExtractionRow(Base):
+    """One append-only extraction run over a source document."""
+
+    __tablename__ = "extraction"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    source_document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_document.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)  # VLM model id
+    confidence_overall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ok")  # ok|partial|failed
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
+
+    document: Mapped[SourceDocumentRow] = relationship(back_populates="extractions")
+    facts: Mapped[list[ExtractedFactRow]] = relationship(
+        back_populates="extraction", cascade="all, delete-orphan"
+    )
+
+
+class ExtractedFactRow(Base):
+    """One schema-validated field with its reconciled page/bbox provenance.
+
+    ``supported`` is the "no-invention" gate: True only when the extracted value
+    was located in the page's OCR tokens (``bbox`` + ``match_confidence`` set).
+    An unsupported fact is surfaced as such and cannot pass document grounding.
+    """
+
+    __tablename__ = "extracted_fact"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    extraction_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("extraction.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    field_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    value: Mapped[str | None] = mapped_column(String, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reference_range: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    abnormal_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    collection_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    page_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bbox: Mapped[list[float] | None] = mapped_column(JSONType, nullable=True)  # normalized [x,y,w,h]
+    match_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    extraction: Mapped[ExtractionRow] = relationship(back_populates="facts")
+
+
+# --- Week 2: hybrid-RAG guideline corpus (W2_ARCHITECTURE.md §RAG) ---------------
+#
+# Owned by the agent DB and reproducible from the repo ingest script (no PHI —
+# public clinical guidelines). Dense retrieval uses ``embedding`` (pgvector on
+# Postgres, JSON on SQLite); sparse retrieval is Postgres full-text over
+# ``content`` at query time (GIN index added in migration 0006, Postgres-only).
+
+
+class GuidelineDocumentRow(Base):
+    """One source guideline document in the local corpus."""
+
+    __tablename__ = "guideline_document"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    source: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    license: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
+
+    chunks: Mapped[list[GuidelineChunkRow]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class GuidelineChunkRow(Base):
+    """A retrievable chunk: text + its dense embedding + section metadata."""
+
+    __tablename__ = "guideline_chunk"
+
+    id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
+    guideline_document_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("guideline_document.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    section: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content: Mapped[str] = mapped_column(String, nullable=False)
+    # Vector(EMBEDDING_DIM) on Postgres; JSON list on SQLite (tests) — see memory.db.
+    embedding: Mapped[list[float] | None] = mapped_column(
+        embedding_column(EMBEDDING_DIM), nullable=True
+    )
+
+    document: Mapped[GuidelineDocumentRow] = relationship(back_populates="chunks")
