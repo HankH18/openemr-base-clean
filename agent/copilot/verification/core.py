@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -35,28 +35,69 @@ from copilot.domain.contracts import (
     VerificationDomainFlag,
     VerificationResult,
 )
-from copilot.domain.primitives import FhirReference, ResourceType
+from copilot.domain.primitives import (
+    DocumentCitation,
+    FhirReference,
+    GuidelineCitation,
+    ResourceType,
+)
 
 # Match integers or decimals: 42, 0.02, 2.34, 128, 3.375
 _NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 
 @dataclass(frozen=True)
+class DocumentFact:
+    """A re-materialized ``extracted_fact`` row, the unit of document grounding.
+
+    The agent store — not FHIR — is authoritative for extracted document facts
+    (a scanned lab is not a FHIR-writable resource). The serve-time caller
+    re-fetches the stored row by (source_document id, extracted_fact id) and
+    hands the checker exactly the three fields document grounding turns on:
+    the verbatim ``value``, the no-invention ``supported`` gate, and the
+    reconciled ``match_confidence`` compared against the configured floor.
+    """
+
+    value: str | None
+    supported: bool
+    match_confidence: float | None
+
+
+@dataclass(frozen=True)
 class VerificationContext:
     """The resources available for verification.
 
-    Keyed by (ResourceType, id).  Built by ``build_context_from_resources``
-    from what the poller already pulled — at serve time the API layer
-    builds it from live fetches instead.
+    ``resources_by_key`` holds live FHIR resources keyed by (ResourceType, id).
+    Built by ``build_context_from_resources`` from what the poller already
+    pulled — at serve time the API layer builds it from live fetches instead.
+
+    ``document_facts`` (keyed by ``extracted_fact`` id) and ``guideline_chunks``
+    (chunk id → chunk content) carry the Week-2 non-fhir grounding sources the
+    serve-time caller re-materialized from the agent store. ``doc_confidence_-
+    threshold`` is the reconciliation-confidence floor a document fact must meet
+    to ground a claim. All three default empty/zero so the fhir-only paths that
+    build a context are unchanged.
     """
 
     resources_by_key: Mapping[tuple[ResourceType, str], Mapping[str, Any]]
+    document_facts: Mapping[str, DocumentFact] = field(default_factory=dict)
+    guideline_chunks: Mapping[str, str] = field(default_factory=dict)
+    doc_confidence_threshold: float = 0.0
 
 
 def build_context_from_resources(
     resources: Iterable[Mapping[str, Any]],
+    *,
+    document_facts: Mapping[str, DocumentFact] | None = None,
+    guideline_chunks: Mapping[str, str] | None = None,
+    doc_confidence_threshold: float = 0.0,
 ) -> VerificationContext:
-    """Turn a list of raw FHIR resource dicts into a verification context."""
+    """Turn a list of raw FHIR resource dicts into a verification context.
+
+    ``document_facts`` / ``guideline_chunks`` (both optional) supply the Week-2
+    non-fhir grounding sources; fhir-only callers omit them and get the same
+    context they always did.
+    """
     indexed: dict[tuple[ResourceType, str], Mapping[str, Any]] = {}
     for res in resources:
         rtype = res.get("resourceType")
@@ -68,7 +109,12 @@ def build_context_from_resources(
         except ValueError:
             continue
         indexed[key] = res
-    return VerificationContext(resources_by_key=indexed)
+    return VerificationContext(
+        resources_by_key=indexed,
+        document_facts=document_facts or {},
+        guideline_chunks=guideline_chunks or {},
+        doc_confidence_threshold=doc_confidence_threshold,
+    )
 
 
 def extract_field_value(resource: Mapping[str, Any], path: str) -> str | None:
@@ -145,16 +191,20 @@ class Verifier:
         self, claim: Claim, context: VerificationContext
     ) -> VerificationClaimResult:
         ref = claim.source_ref
-        # Interim non-fhir tolerance: this gate grounds only the ``fhir`` citation
-        # variant. A ``document``/``guideline`` citation has no live FHIR resource
-        # to re-fetch and value-match, so it is treated as UNVERIFIABLE (fails
-        # attribution) and therefore dropped by the fail-closed policy — never
-        # served as if proven. Real document/guideline grounding is a later task
-        # (F5); until then a non-fhir claim can only be dropped, never verified.
+        # Week-2 grounding for the two non-fhir citation variants. Each is
+        # re-materialized from the AGENT store (never FHIR) by the serve-time
+        # caller and re-checked here against that stored row; a source that could
+        # not be re-materialized is absent from the context, so the claim fails
+        # attribution and is dropped (fail-closed) — never served as if proven.
         # NB: ``claim.source_ref`` is statically the fhir variant (SkipValidation),
-        # so this branch reads as unreachable to mypy but runs for real non-fhir
-        # citations at runtime.
+        # so these guards read as unreachable to mypy but fire for real
+        # document/guideline citations at runtime (warn_unreachable stays off).
+        if isinstance(ref, DocumentCitation):
+            return _verify_document_claim(claim, ref, context)
+        if isinstance(ref, GuidelineCitation):
+            return _verify_guideline_claim(claim, ref, context)
         if not isinstance(ref, FhirReference):
+            # An unknown citation variant cannot be grounded — fail closed.
             source_type = getattr(ref, "source_type", None)
             kind = str(getattr(source_type, "value", source_type) or "non-fhir")
             return VerificationClaimResult(
@@ -162,7 +212,7 @@ class Verifier:
                 source_ref=ref,
                 attribution_ok=False,
                 value_match=False,
-                reason=f"unverifiable: {kind} citation grounding not available in this gate",
+                reason=f"unverifiable: unknown {kind} citation variant",
             )
 
         key = (ref.resource_type, ref.resource_id)
@@ -247,6 +297,109 @@ class Verifier:
         # `_entailment` is typed `Any` (loose, to keep the collaborator optional);
         # its `entails` contract returns bool. Cast the parsed result precisely.
         return cast("bool", await self._entailment.entails(claim, resource))
+
+
+# --- non-fhir grounding -----------------------------------------------------
+
+
+def _verify_document_claim(
+    claim: Claim, citation: DocumentCitation, context: VerificationContext
+) -> VerificationClaimResult:
+    """Ground a document-cited claim against its stored ``extracted_fact``.
+
+    Agent-store authoritative (a scanned lab is not FHIR-writable): the claim
+    passes only when the serve-time caller re-materialized the fact row, that
+    fact is ``supported``, its reconciled ``match_confidence`` is at/above the
+    configured floor, and the claimed value equals the stored value. Any miss
+    yields ``value_match=False`` so the fail-closed policy drops the claim.
+
+    ``source_ref`` is passed as ``claim.source_ref`` (statically the fhir
+    variant via ``SkipValidation``) so the result carries the citation verbatim
+    — see ``VerificationClaimResult``.
+    """
+    fact = context.document_facts.get(citation.field_or_chunk_id)
+    if fact is None:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=False,
+            value_match=False,
+            reason=(
+                f"document fact {citation.field_or_chunk_id} could not be "
+                "re-materialized from the agent store"
+            ),
+        )
+    if not fact.supported:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason="stored extracted_fact is unsupported (value not located on the page)",
+        )
+    if fact.match_confidence is None or fact.match_confidence < context.doc_confidence_threshold:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason=(
+                f"reconciliation confidence {fact.match_confidence} below floor "
+                f"{context.doc_confidence_threshold}"
+            ),
+        )
+    if fact.value is None or not _values_equal(fact.value, citation.quote_or_value):
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason=f"value mismatch: stored={fact.value!r} claim={citation.quote_or_value!r}",
+        )
+    return VerificationClaimResult(
+        text=claim.text,
+        source_ref=claim.source_ref,
+        attribution_ok=True,
+        value_match=True,
+    )
+
+
+def _verify_guideline_claim(
+    claim: Claim, citation: GuidelineCitation, context: VerificationContext
+) -> VerificationClaimResult:
+    """Ground a guideline-cited claim: the quote must appear verbatim in the chunk.
+
+    The claim passes only when the serve-time caller re-materialized the cited
+    ``guideline_chunk`` and the citation's ``quote_or_value`` occurs verbatim in
+    that chunk's content. A missing chunk or an absent quote drops the claim
+    fail-closed.
+    """
+    content = context.guideline_chunks.get(citation.field_or_chunk_id)
+    if content is None:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=False,
+            value_match=False,
+            reason=(
+                f"guideline chunk {citation.field_or_chunk_id} could not be "
+                "re-materialized from the agent store"
+            ),
+        )
+    if citation.quote_or_value not in content:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason="quoted text does not appear verbatim in the cited guideline chunk",
+        )
+    return VerificationClaimResult(
+        text=claim.text,
+        source_ref=claim.source_ref,
+        attribution_ok=True,
+        value_match=True,
+    )
 
 
 # --- helpers ---------------------------------------------------------------
