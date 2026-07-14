@@ -281,3 +281,70 @@ Full walkthrough (both options, verification steps, gotchas):
 `agent/LANGFUSE_SETUP.md`. The gate is **all-or-nothing** — any one of the three
 keys blank ⇒ silent no-op, and `/ready` reports Langfuse as advisory rather than
 returning 503.
+
+
+## 7. Week-2 SLOs & alerts (document ingestion + guideline retrieval)
+
+Week 2 adds two latency-critical hot paths beyond the Week-1 chat/rounds
+surface: multimodal **document ingestion** (upload → rasterize → OCR → vision
+extraction → OCR-reconcile → append-only persist) and hybrid **guideline
+retrieval** (sparse + dense fusion + rerank). Both get first-class SLOs, a
+latency artifact, and alerts with response actions.
+
+### 7.1 SLO definitions (targets)
+
+Latency SLOs are **p95** (the tail a clinician actually feels), measured over a
+rolling window. The stubbed, LLM-free baseline is captured by
+`agent/scripts/latency_report.py --out artifacts/latency_report.json` (numeric
+`p50`/`p95` per pipeline); production p95 is read from the same spans in
+Langfuse. The agent status page (`GET /status`) surfaces the current numbers.
+
+| SLO | Signal | p95 target (warn / page) | Notes |
+|-----|--------|--------------------------|-------|
+| **Document ingestion latency** | `doc.ingest` + `extraction.run` span duration | **< 12 s** warn / **< 30 s** page | Real vision extraction dominates; the stub baseline is sub-second. Per-document, end to end. |
+| **Document ingestion success rate** | `source_document.status` terminal split | **≥ 98%** `extracted` (non-`failed`) | A `failed` ingestion is fail-closed (zero orphan facts); a rising failed fraction is the alert below. |
+| **Evidence retrieval latency** | `guideline.retrieve` span duration | **< 800 ms** warn / **< 2 s** page | Includes de-identify → embed → sparse+dense fuse → rerank. Rerank is best-effort (falls back to fused order). |
+| **Extraction field pass rate** | supported / total `extracted_fact` | **≥ 90%** field-level | The "no-invention" gate — a value not found in the page OCR is `supported=false`. Surfaced on `/status` as `extraction_field_pass_rate`. |
+
+The p50 numbers are reported alongside p95 for context but are not the gate; the
+tail is what breaches an SLO.
+
+### 7.2 Week-2 alert definitions (with response actions)
+
+Each alert names the signal, threshold, why it matters, and the first on-call
+response. Thresholds are starting points to tune against the first week of real
+document + retrieval traffic.
+
+### Alert 5 — Document-ingestion failure surge
+- **Condition:** `source_document` **`failed` fraction > 5%** over **30 minutes**
+  (warn), **> 15%** (page), OR any single-document ingestion **p95 latency
+  breaches the 30 s page target**.
+- **Why it matters:** ingestion fails closed — a failed run persists zero facts,
+  so a surge silently starves the chart of freshly uploaded labs/intake data.
+- **First response (runbook):** filter the corpus/logs by the failing
+  `correlation_id`; check which stage raised (OpenEMR upload vs. rasterize/OCR
+  vs. vision extraction vs. persist). A spike concentrated at the upload stage
+  points at the OpenEMR write surface (token/credentials); at rasterize/OCR, at
+  a malformed PDF or a missing tesseract binary; at extraction, at the vision
+  model/key. Re-drive one document by hand via `POST /v1/documents`.
+
+### Alert 6 — Evidence-retrieval latency / degradation
+- **Condition:** `guideline.retrieve` **p95 latency > 2 s** over **10 minutes**
+  (page), OR a sustained **rerank fallback rate > 25%** (warn — the Cohere
+  reranker is erroring and retrieval is serving the fused sparse+dense order).
+- **Why it matters:** slow or de-ranked retrieval degrades the *separate*
+  guideline-evidence block in chat; the grounded patient answer still serves
+  (evidence retrieval is fail-open and never withholds the answer), so this is a
+  quality/latency alert, not an availability page for the answer itself.
+- **First response (runbook):** check the `embedder`/`reranker` entries on
+  `/ready` (graded — `ok` / `degraded` / `down`) and the Cohere/Voyage key
+  configuration; confirm the `pgvector` dependency is `ok` (a missing `vector`
+  extension forces dense retrieval to degrade). Inspect a slow
+  `guideline.retrieve` trace for which sub-step (embed vs. DB fusion vs. rerank)
+  dominates.
+
+Routing follows §5: Alert 5 page-tier on the page condition (warn-tier
+otherwise), Alert 6 warn-tier for the fallback signal and page-tier for the
+latency breach. Every alert links to a Langfuse trace filtered by
+`correlation_id`, the same id stamped on the JSON access logs and the
+`audit_log` row.

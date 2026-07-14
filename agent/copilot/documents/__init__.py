@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from copilot.documents.ocr import OcrEngine, OcrToken, StubOcr, TesseractOcr, build_ocr
 from copilot.documents.pipeline import (
+    DerivedOnlyUploader,
     DocumentIngestionService,
+    DocumentUploader,
     IngestionResult,
     IngestionStatus,
     attach_and_extract,
@@ -30,8 +32,10 @@ from copilot.documents.vision import (
 
 __all__ = [
     "ClaudeVision",
+    "DerivedOnlyUploader",
     "DocumentIngestionService",
     "DocumentType",
+    "DocumentUploader",
     "IngestionResult",
     "IngestionStatus",
     "OcrEngine",

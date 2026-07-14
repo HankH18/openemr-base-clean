@@ -520,6 +520,16 @@ class MemoryRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_extraction(self, source_document_id: int) -> ExtractionRow | None:
+        """The most recent extraction run for a document (extractions are append-only)."""
+        result = await self._session.execute(
+            select(ExtractionRow)
+            .where(ExtractionRow.source_document_id == source_document_id)
+            .order_by(ExtractionRow.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def create_extracted_fact(
         self,
         *,

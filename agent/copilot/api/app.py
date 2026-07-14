@@ -31,6 +31,7 @@ from copilot.config import Settings, get_settings
 from copilot.domain.contracts import HealthResponse, ReadinessDependency, ReadinessResponse
 from copilot.memory.db import get_engine
 from copilot.observability import build_observability
+from copilot.observability.logging import configure_logging
 
 ProbeFactory = Callable[[Settings], Callable[[], Awaitable[ReadinessDependency]]]
 
@@ -60,9 +61,19 @@ def register_routers(app: FastAPI) -> None:
 
 
 def _default_probe_factories() -> list[ProbeFactory]:
-    """Wire up the real probes against real dependencies."""
+    """Wire up the real probes against real dependencies.
+
+    Week-2 graded readiness surfaces the ingestion + RAG dependencies
+    (``document_store``, ``pgvector``, ``embedder``, ``reranker``) alongside the
+    Week-1 external dependencies (OpenEMR FHIR, LLM, Langfuse). The agent
+    document store replaces the bare ``postgres`` probe — it is the same
+    connection, named for what it backs.
+    """
     return [
-        lambda s: partial(readiness.probe_postgres, get_engine()),
+        lambda s: partial(readiness.probe_document_store, get_engine()),
+        lambda s: partial(readiness.probe_pgvector, s, get_engine()),
+        lambda s: partial(readiness.probe_embedder, s),
+        lambda s: partial(readiness.probe_reranker, s),
         lambda s: partial(readiness.probe_openemr_fhir, s),
         lambda s: partial(readiness.probe_llm, s),
         lambda s: partial(readiness.probe_langfuse, s),
@@ -75,6 +86,9 @@ def create_app(
 ) -> FastAPI:
     """Build the app.  All I/O collaborators are injectable."""
     settings = settings or get_settings()
+    # Structured JSON logging, correlation-id-tagged, on stdout. Idempotent, so
+    # rebuilding the app (tests, workers) never stacks handlers.
+    configure_logging()
     # Distinguish "not supplied" (None -> wire real probes) from an explicit
     # empty list (caller wants no probes, e.g. tests). `or` would coerce [] to
     # the defaults; `is None` preserves the caller's empty list.

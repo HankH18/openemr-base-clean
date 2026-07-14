@@ -14,6 +14,13 @@
 		demo $2a$14$REPLACE_WITH_OUTPUT_OF_CADDY_HASH_PASSWORD
 	}
 
+	# Scanned-PDF uploads (POST /v1/documents) can be large. Caddy's default body
+	# cap (~10KB for buffered reads) would reject them, so raise the limit well
+	# above the documented 10MB upload ceiling for the whole site.
+	request_body {
+		max_size 25MB
+	}
+
 	# Agent API → internal agent service (same-origin; the SPA calls /v1/*)
 	@api {
 		path /v1/* /health /ready /openapi.json /docs /docs/*

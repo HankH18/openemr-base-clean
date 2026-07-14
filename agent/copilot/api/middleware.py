@@ -14,6 +14,9 @@ misbehaving client can never turn a request into a 400 here.
 
 from __future__ import annotations
 
+import logging
+import time
+
 from pydantic import TypeAdapter, ValidationError
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -23,6 +26,12 @@ from copilot.domain.primitives import CorrelationId
 from copilot.observability import correlation_id_var, generate_correlation_id
 
 CORRELATION_ID_HEADER = "X-Correlation-ID"
+
+# Access log — one structured JSON record per request. Emitted while the
+# correlation id is still bound to the context, so the JSON logging filter
+# stamps it with the same id echoed on the response header. Carries only
+# non-PHI request metadata (method, path template, status, latency).
+_access_logger = logging.getLogger("copilot.api.access")
 
 # Reuse the domain constraint (8-64 chars, [A-Za-z0-9_-]) so the middleware
 # and the rest of the system agree on what a valid correlation ID is.
@@ -50,9 +59,21 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         correlation_id = resolve_correlation_id(request.headers.get(CORRELATION_ID_HEADER))
         token = correlation_id_var.set(correlation_id)
+        started = time.perf_counter()
         try:
             response = await call_next(request)
+            # Log while the correlation id is still in context so the JSON filter
+            # stamps this record with the request's id. Non-PHI metadata only.
+            _access_logger.info(
+                "http.request",
+                extra={
+                    "http_method": request.method,
+                    "http_path": request.url.path,
+                    "http_status": response.status_code,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+            response.headers[CORRELATION_ID_HEADER] = correlation_id
+            return response
         finally:
             correlation_id_var.reset(token)
-        response.headers[CORRELATION_ID_HEADER] = correlation_id
-        return response

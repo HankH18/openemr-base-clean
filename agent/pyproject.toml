@@ -9,6 +9,9 @@ readme = "README.md"
 # Pinned to the versions ARCHITECTURE.md calls out where applicable.
 dependencies = [
     "fastapi>=0.115,<0.116",
+    # Multipart form parsing for the document-upload endpoint (POST /v1/documents,
+    # multipart/form-data). FastAPI requires it to accept File()/Form() fields.
+    "python-multipart>=0.0.9,<0.1",
     "uvicorn[standard]>=0.32,<0.33",
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.5,<3",
@@ -48,6 +51,10 @@ dev = [
     "ruff>=0.7,<1",
     "mypy>=1.11,<2",
     "aiosqlite>=0.20,<1",
+    # Parses the committed OpenAPI spec (agent/openapi/week2.yaml) for the
+    # contract-sync check, and backs the openapi dump maintenance script.
+    "pyyaml>=6,<7",
+    "types-pyyaml>=6,<7",
 ]
 
 [build-system]
