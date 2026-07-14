@@ -8,6 +8,7 @@ verification results.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -18,6 +19,15 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 def utcnow() -> datetime:
     """Wall-clock UTC now.  Isolated for future clock-injection testability."""
     return datetime.now(UTC)
+
+
+ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+"""Strict ``YYYY-MM-DD`` shape check — the one shared home for the ISO-date regex."""
+
+
+def is_iso_date(value: str) -> bool:
+    """True when ``value`` has the exact ``YYYY-MM-DD`` shape (no calendar validation)."""
+    return ISO_DATE_RE.match(value) is not None
 
 
 class ResourceType(StrEnum):

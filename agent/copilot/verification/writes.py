@@ -24,9 +24,9 @@ the same as a read-side reference-range flag.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
+from copilot.domain.primitives import is_iso_date
 from copilot.domain.writes import (
     WritableMetric,
     WriteCandidate,
@@ -35,8 +35,6 @@ from copilot.domain.writes import (
     WriteVerdict,
 )
 from copilot.verification.rules import _fmt, _format_range
-
-_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -168,7 +166,7 @@ def _verify_medication(candidate: WriteCandidate) -> WriteVerdict:
     if not med.title.strip():
         errors.append("medication title is empty")
     for label, value in (("begdate", med.begdate), ("enddate", med.enddate)):
-        if value is not None and not _ISO_DATE_RE.match(value):
+        if value is not None and not is_iso_date(value):
             errors.append(f"{label} {value!r} is not a valid YYYY-MM-DD date")
 
     return WriteVerdict(kind=WriteKind.medication, blocked=bool(errors), errors=errors)

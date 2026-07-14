@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 import secrets
 from collections.abc import Callable, Mapping
 from functools import lru_cache
@@ -38,7 +37,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from copilot.config import Settings
-from copilot.domain.primitives import ClinicianId, PatientId, ResourceType, utcnow
+from copilot.domain.primitives import ClinicianId, PatientId, ResourceType, is_iso_date, utcnow
 from copilot.domain.writes import (
     AllergyWrite,
     AnyWriteCandidate,
@@ -555,9 +554,6 @@ def _new_idempotency_key() -> str:
     return secrets.token_urlsafe(24)
 
 
-_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
 def _verify_candidate(candidate: AnyWriteCandidate) -> WriteVerdict:
     """The single deterministic verification gate for propose AND commit.
 
@@ -588,7 +584,7 @@ def _verify_issue(candidate: IssueWriteCandidate) -> WriteVerdict:
     errors: list[str] = []
     if not issue.title.strip():
         errors.append(f"{candidate.kind.value} title is empty")
-    if not _ISO_DATE_RE.match(issue.begdate):
+    if not is_iso_date(issue.begdate):
         errors.append(f"begdate {issue.begdate!r} is not a valid YYYY-MM-DD date")
 
     return WriteVerdict(kind=candidate.kind, blocked=bool(errors), errors=errors)
