@@ -44,6 +44,11 @@ agent:tests:
   script:
     - source .venv/bin/activate
     - pytest -q --junitxml=../pytest.xml
+    # Blocking eval gate (F10): LLM-free rubric gate over the golden set.
+    # Exits nonzero on a >5% relative pass-rate regression vs the committed
+    # baseline (agent/evals/gate_baseline.json), failing this CI job — the
+    # server-side backstop for the local pre-push hook.
+    - python evals/gate.py
   artifacts:
     when: always
     reports:

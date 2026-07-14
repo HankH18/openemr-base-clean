@@ -1,0 +1,8 @@
+{
+  "pass_rate": 100.0,
+  "case_count": 13,
+  "dataset": "gate_dataset.jsonl",
+  "captured_at": "2026-07-14T00:00:00Z",
+  "tolerance": 0.05,
+  "note": "Honest baseline for the LLM-free rubric gate: every golden case passes all five rubrics in the deterministic stubbed run. `python evals/gate.py --inject-regression` drops this to 0.0 (each case's target rubric flips), proving the gate is non-vacuous. Regenerate after a dataset change with `python evals/gate.py --out /tmp/r.json` and copy its `pass_rate` here. F10b grows the dataset to >=50 cases against this same runner."
+}
