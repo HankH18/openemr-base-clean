@@ -148,6 +148,66 @@ export interface ConversationMessage {
   content: string;
 }
 
+// ------------------------------------------------------------- citations
+
+/**
+ * Week 2 citation union (see agent/research/week2/02-architecture-spec.md,
+ * "Citation"). Claims may now be grounded in three source kinds,
+ * discriminated on `source_type`. Week 1 claims arrive as a bare
+ * `SourceRef` with no `source_type`; the adapter (src/citations.ts)
+ * defaults those to the fhir variant, mirroring the backend deserializer.
+ */
+
+/** The Week 1 record citation, explicitly tagged. Fields mirror SourceRef. */
+export interface FhirCitation {
+  source_type: 'fhir';
+  resource_type: string;
+  resource_id: string;
+  field: string;
+  value: string;
+  timestamp?: string | null;
+}
+
+/** A value extracted from an uploaded document page (OCR-reconciled). */
+export interface DocumentCitation {
+  source_type: 'document';
+  /** source_document_id */
+  source_id: string;
+  /** page_no of the cited page */
+  page_or_section: number;
+  /** extracted_fact.id / field_path */
+  field_or_chunk_id: string;
+  quote_or_value: string;
+  /** Normalized [x, y, w, h] on the cited page, each component in 0–1. */
+  bbox: number[];
+  /** OCR reconciliation confidence, 0–1. */
+  confidence: number;
+}
+
+/** A retrieved guideline passage — evidence, never a patient record. */
+export interface GuidelineCitation {
+  source_type: 'guideline';
+  /** guideline_document_id */
+  source_id: string;
+  /** section */
+  page_or_section: string;
+  /** guideline_chunk.id */
+  field_or_chunk_id: string;
+  quote_or_value: string;
+}
+
+/** Discriminated citation union — what Week 2 claims carry as their source. */
+export type Citation = FhirCitation | DocumentCitation | GuidelineCitation;
+
+// ---------------------------------------------------------------- documents
+
+/** 202 body from `POST /v1/documents` — ingestion accepted, extraction async. */
+export interface DocumentAccepted {
+  document_id: string;
+  status: string;
+  correlation_id: string | null;
+}
+
 // ------------------------------------------------------------ write-back
 
 /**

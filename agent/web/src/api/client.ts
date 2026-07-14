@@ -12,6 +12,7 @@ import type {
   CommittedWrite,
   ConversationMessage,
   DeteriorationAlert,
+  DocumentAccepted,
   ObservationSeries,
   ProposedWrite,
   RefreshOutcome,
@@ -77,6 +78,12 @@ export interface CopilotApi {
     candidate: WriteCandidate,
     idempotencyKey: string,
   ): Promise<CommittedWrite>;
+  /**
+   * Upload one source document (multipart `POST /v1/documents`) for async
+   * extraction. Resolves with the 202 acknowledgement; extraction status is
+   * polled separately. The mock adapter simulates acceptance offline.
+   */
+  uploadDocument(patientId: number, file: File, docType?: string): Promise<DocumentAccepted>;
 }
 
 export function createApi(): CopilotApi {

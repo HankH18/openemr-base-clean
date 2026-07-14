@@ -20,6 +20,7 @@ import {
 } from './normalize';
 import { ApiError, WriteDisabledError, WriteRejectedError, type ChatRequest } from './types';
 import { getCsrfToken, shouldRedirectOn401 } from './session';
+import { uploadDocument } from './documents';
 
 /**
  * CSRF header for state-changing methods, when a token is available (SMART
@@ -211,6 +212,12 @@ export function createHttpApi(base: string): CopilotApi {
         { clinician_id: clinicianId, patient_id: patientId, candidate },
       );
       return normalizeCommittedWrite(raw);
+    },
+
+    async uploadDocument(patientId, file, docType) {
+      // Multipart lives in documents.ts (no JSON Content-Type — the browser
+      // writes the boundary). Same base, credentials, and CSRF discipline.
+      return uploadDocument(file, patientId, docType, base);
     },
   };
 }
