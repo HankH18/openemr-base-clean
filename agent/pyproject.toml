@@ -82,3 +82,9 @@ python_version = "3.12"
 strict = true
 warn_unused_configs = true
 plugins = ["pydantic.mypy"]
+
+# langfuse ships no py.typed marker (untyped third-party). Ignore only its missing
+# stubs so mypy --strict stays clean, without masking type errors in our own code.
+[[tool.mypy.overrides]]
+module = ["langfuse", "langfuse.*"]
+ignore_missing_imports = true

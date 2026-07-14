@@ -50,6 +50,14 @@ def test_upgrade_head_then_downgrade_base_leaves_no_tables(alembic_config: Confi
         "clinician",
         "physician_session",
         "login_txn",
+        # 0005 — Week 2 document ingestion.
+        "source_document",
+        "document_page",
+        "extraction",
+        "extracted_fact",
+        # 0006 — Week 2 guideline RAG corpus.
+        "guideline_document",
+        "guideline_chunk",
     }
     engine.dispose()
 

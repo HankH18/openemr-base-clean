@@ -1,93 +1,79 @@
-# Backlog — AgentForge Clinical Co-Pilot E2E
+# Backlog — Week 2 multimodal evidence agent (FINAL, user-approved, 7 cycles)
 
-Atomic features for the swarm. Each: ID, objective, deps, owned files, UC + metric mapping.
-Metric groups (frozen): `feat_chat`, `feat_rounds`, `feat_authz`, `feat_background`.
-Priority is re-derived every cycle from the latest `analyze` verdicts (Phase 8).
+Atomic features → goals.json metric buckets. Frozen "done" definitions in `.swarm-loop/acceptance-criteria.md`
+(52 criteria). Phase 0 (migrations 0005/0006 + models + pgvector) DONE (f2de171). Frozen constraints:
+fail-closed verification; no PHI in logs/traces/evals; schema-as-source-of-truth; LLM-free CI.
 
-Legend: `[metric:X]` = contributes to that frozen feature metric · `[deliverable]` = built but not
-a frozen metric (validated by smoke/build) · `[quality]` = maps to global lint/coverage metrics.
+Legend: **metric** · **deps** · **owns** (file-ownership for wave planning; see codebase-map hazards).
 
----
+## F1 — Citation union + schemas + repo accessors · metric: feat_verification
+Discriminated union `Claim.source_ref {fhir|document|guideline}` (back-compat default fhir); strict
+`LabReport`/`IntakeForm`/`ExtractedFact` schemas; repository (de)serializers for the union; **MemoryRepository
+CRUD accessors** for all Phase-0 tables; **minimal FhirCitation verifier integration** (non-fhir → unverifiable/
+fail-closed interim, keeps repo green). deps: none · owns: domain/primitives.py, domain/contracts.py, new
+domain/documents.py, memory/repository.py
 
-## Enablers (cycle 1 — foundational, no analysis yet → dependency order)
+## F2 — Config + pricing · metric: feat_ingestion (crit 1)
+Settings W2 fields (voyage/cohere keys, OCR opts, doc confidence threshold, flags); pricing rows for vision +
+voyage-3.5 + rerank-v3.5. deps: none · owns: config.py, observability/pricing.py
 
-### E0 — Mechanical lint/format + mypy cleanup  [quality]
-- Objective: `ruff format .`, `ruff check . --fix`, and fix the 18 strict-mypy errors so the tree is
-  clean and every feature branch forks from a formatted base. **Solo wave (wave 0)** — repo-wide, no
-  concurrent branches (a broad reformat collides with everything).
-- Owns: broad, but ALONE. Deps: none. Drives `lint_type_errors` toward 0.
+## F3 — Doc extraction pipeline + attach_and_extract · metric: feat_ingestion
+pypdfium2 raster → **OCR Protocol (StubOcr fixture tokens; real tesseract only in Docker)** → Claude-vision
+(Stub/Real, tool-forced JSON, strict schemas) → reconcile (bbox+confidence; unmatched=supported=False) → persist
+append-only. deps: F1,F2, **deps-task** (pypdfium2/Pillow/pytesseract hard-pinned — own sequenced task) · owns:
+new copilot/documents/, pyproject.toml (deps-task only)
 
-### E1 — Runtime agent factory + deterministic StubAgent  [metric:feat_chat]
-- Objective: `build_agent(settings, fhir_client, ...)` selecting a live Anthropic tool-use loop vs a
-  deterministic `StubAgent` by `COPILOT_ANTHROPIC_API_KEY` presence (mirror `build_observability`).
-  StubAgent: given (patient_id, message, fetched FHIR resources) emit `Claim`s with real `source_ref`s
-  (reuse the StubSynthesizer pattern) — deterministic, no key. This is what makes every chat/rounds
-  acceptance test run green without a key.
-- Owns: new `copilot/agent/{__init__,base,factory,stub,loop}.py`. Deps: none. Wave 1.
+## F4a — Write client: document upload · metric: feat_ingestion (REQUIRED)
+`upload_document` via Standard REST `POST /api/patient/:pid/document`; store openemr_document_id; content-hash
+dedupe. deps: F1 · owns: fhir/write_client.py (upload only)
 
-### E2 — Serve-time verification `verify_answer()`  [metric:feat_chat]
-- Objective: implement the documented-but-absent serve-time path: `verify_answer(claims, patient_id,
-  fhir_client) -> VerificationResult` that re-fetches cited resources by ID and runs the existing
-  `Verifier`; fail-closed (unverifiable → withheld/degraded).
-- Owns: new `copilot/verification/serve.py` (additive; do NOT restructure `core.py`). Deps: none. Wave 1.
+## F4b — Write client: problems/allergies write-back · metric: feat_writeback  [PROMOTED, 7-cycle budget]
+medical_problem + allergy writes through the existing propose→confirm gate; entry_mode
+agent_proposed_physician_confirmed; agent cannot self-commit. deps: F1, F4a · owns: fhir/write_client.py
+(problems/allergies), domain/writes.py, writeback/service.py
 
-### E3 — Repository extension (conversation/message/cursor/last_seen)  [metric:feat_chat,feat_rounds]
-- Objective: add `MemoryRepository` methods: create_conversation, append_message, get_conversation
-  (history); get/upsert rounding_cursor; get/set last_seen. Tables/models already exist.
-- Owns: `copilot/memory/repository.py` (single writer this cycle). Deps: none. Wave 1.
+## F5 — Verifier extension: document + guideline grounding · metric: feat_verification  (HIGHEST RISK)
+document path (re-check vs stored extracted_fact + bbox≥threshold, agent-store authoritative) + guideline path
+(quote-in-chunk); preserve fail-closed. deps: F1 · owns: verification/core.py, serve.py, rules.py
 
-### E4 — Correlation-ID middleware + Observability injection + config  [metric:feat_chat; quality]
-- Objective: ASGI middleware generating/attaching a correlation ID per request; inject
-  `build_observability(settings)` into `create_app`; add chat/agent settings to `Settings`.
-- Owns: `copilot/api/app.py`, new `copilot/api/middleware.py`, `copilot/config.py`. Deps: none. Wave 1.
+## F6 — Hybrid RAG + rerank · metric: feat_rag
+Corpus files + `scripts/ingest_guidelines.py`; Voyage embed (Stub/Real, httpx, 1024-d, cached); Postgres FTS +
+pgvector + RRF; Cohere rerank (Stub/Real) w/ fused-order fallback; `deidentify()` before egress. deps: F1,F2 ·
+owns: new copilot/rag/, scripts/ingest_guidelines.py, corpus/
 
----
+## F7 — Supervisor + workers + critic graph · metric: feat_graph
+New copilot/graph/ (supervisor + intake-extractor + evidence-retriever + critic), Stub/Real Protocol+factory,
+typed logged handoffs; **span nesting** (edit observability/base.py + langfuse_backend.py flat→parent/child) is
+F7's named sub-task; 7-key observability fields; graph returns same VerificationResult (chat-service override
+stays). deps: F3,F5,F6 · owns: new copilot/graph/, observability/base.py, observability/langfuse_backend.py
 
-## Feature: Grounded chat (UC-2, UC-7)  [metric:feat_chat]
+## F8 — HTTP endpoints + OpenAPI + graded /ready + JSON logging + status page + packaging · metric: feat_api
+routes/documents.py (POST /v1/documents, status, pages, evidence); committed openapi/week2.yaml + contract tests;
+graded /ready deps; wire JSON logging; agent-served status page (health aggregates); SLO/alerts artifact +
+OBSERVABILITY.md sections; packaging (Dockerfile tesseract, compose pgvector image, Caddy body-size). deps:
+F3,F6,F7 · owns: api/routes/documents.py, api/readiness.py, openapi/, observability/logging.py, api/routes/status.py,
+Dockerfile, docker-compose.deploy.yml, Caddyfile*, OBSERVABILITY.md, DEPLOY.md
 
-### C1 — `POST /v1/chat` endpoint + grounded response  (wave 2, cycle 1)
-- Objective: route `{clinician_id,patient_id,message,correlation_id?}` → agent (E1) drafts claims →
-  serve-time verify (E2) → JSON `{answer, claims:[{text,source_ref}], verification:{passed,action},
-  conversation_id, correlation_id}`. Fail-closed. Deps: E1,E2,E3,E4. Owns: new `copilot/api/routes/chat.py`
-  (+ additive router import in `app.py`).
-### C2 — Multi-turn conversation persistence + `GET /v1/conversations/{id}`
-- Objective: persist each turn (E3); return conversation_id; history retrievable. Deps: C1.
-### C3 — Graceful uncertainty (UC-7)
-- Objective: fully-unverifiable question → `action=withheld`, answer surfaces "can't confirm" + source
-  pointer, never a fabricated value. Deps: C1.
+## F9 — Frontend · metric: feat_frontend  [pulled to C3]
+React Aria FileTrigger upload; extend ProvenanceChip (doc/fhir/guideline); hand-rolled SVG-over-image bbox
+overlay; reuse MetricChart; **vitest setup (new)**; citation-union adapter w/ unknown-type fallback. deps: F8
+(contracts) · owns: agent/web/src/**, agent/web/package.json, vitest config
 
-## Feature: Rounds + ranking (UC-1, UC-3, UC-4)  [metric:feat_rounds]
+## F10a — Eval gate scaffold · metric: feat_evalgate  [EARLY, C1/C2]
+Runner emits all 5 booleans/case; baseline + >5% regression → nonzero; injected-regression self-proof; git hook +
+extend `.gitlab-ci.yml agent:tests` (NOT GitHub Actions); seed ~10-15 cases. deps: F1 · owns: evals/, git-hook
+script, .gitlab-ci.yml
 
-### R1 — `POST /v1/rounds/start` / `GET /v1/rounds/current` — PatientCard by acuity
-### R2 — `POST /v1/rounds/advance` — set last_seen, return next card; cursor persists across reload
-### R3 — Deterministic acuity ranking + `rank_reason` evidence (interrogable, UC-4)
-- Deps: E3 (cursor/last_seen), and memory files present (F-BG). Owns: new `copilot/api/routes/rounds.py`,
-  new `copilot/rounds/ranking.py`. (rounds routes single-writer.)
+## F10b — Grow golden set · metric: feat_evalgate  [rolling C3–C4]
+Grow evals/eval_dataset.jsonl to ≥50 cases, ≥8/rubric (incl adversarial safe_refusal + planted-PHI). deps: F3,F5 ·
+owns: evals/eval_dataset.jsonl, fixtures
 
-## Feature: Authorization boundary (UC-6)  [metric:feat_authz]
-
-### A1 — Serve-time authz re-check: refuse patient not on clinician's authorized/rounding list (403 + reason)
-### A2 — Cross-patient isolation: chat scoped to patient A cannot surface patient B data
-- Deps: C1/R1 exist. Owns: new `copilot/auth/authorization.py` + additive guards in route files
-  (coordinate single-writer per route file).
-
-## Feature: Background loop + persistence + alerts (UC-5)  [metric:feat_background]
-
-### B1 — Poller runtime wiring: `on_result` verifies + persists memory files; `active_patients` source; lifespan starts scheduler
-### B2 — `POST /v1/rounds/refresh` (manual tick) + freshness/staleness reflected in cards
-### B3 — `GET /v1/rounds/alerts`: preempt offer when a not-yet-seen patient crosses the deterioration threshold
-- Deps: E1,E2,E3. Owns: `copilot/worker/*` (wiring), new `copilot/api/routes/alerts.py`, lifespan in `app.py`.
-
----
-
-## Deliverables (not frozen metrics)
-
-### UI1 — React SMART-launch chat panel  [deliverable]
-- Objective: minimal but **polished** React panel consuming `/v1/rounds/*` + `/v1/chat`. Design system:
-  praised-but-not-overexposed OSS (NOT MUI/Chakra/Ant/shadcn) — final pick via landscape scan at build
-  time; leaning Radix Themes / React Aria Components / Park UI. Validated by a smoke build, not a metric.
-- Deps: chat + rounds API green. Owns: new `agent/web/` (or `copilot-web/`). Scheduled late (cycle ≥4).
-
-## Quality backlog (slotted only behind converging metrics; quality-review cycles 3 & 6)
-- Domain-rule enrichment: reference-range numeric checks; med reconciliation (lists vs prescriptions).
-  FHIR Bundle pagination. Postgres-backed migration test. These map to feature/coverage metrics when touched.
+## 7-cycle plan (sequencing; refined each cycle from the analysis)
+- **C1** wave0: F1, F2, F3-deps-task (sequenced enablers). wave1: F3-core, F4a, F6-corpus, F10a.
+- **C2**: F5 (verifier), F6 (retriever), F7 (graph + span-nesting), F4b (write-back).
+- **C3**: F8 (endpoints/OpenAPI/ready/logging/status/packaging), F9 (overlay+vitest+ProvenanceChip), F10b start,
+  **quality-review task** (cycle-3 cadence).
+- **C4**: F9 finish (upload wiring), F10b finish (→50), observability/SLO polish, fix regressing/stalled metrics.
+- **C5–C7**: convergence — fix regressions/stalls, harden, live-verify; C6 quality-review; protect at-target metrics.
+Never parallelize two tasks sharing a file (codebase-map hotspots: config.py, primitives/contracts, models/
+repository, verification/core, pyproject deps, web contract files — single-writer per cycle).

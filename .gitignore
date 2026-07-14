@@ -16,6 +16,9 @@ agent/secrets/
 # doc-archive: transient archive-unlock sentinel — never commit an unlock state
 .claude/.archive-unlocked
 
+# swarm-loop: archived Week-1 harness (completed run, kept locally for reference)
+.swarm-loop-week1-archive/
+
 # vendor and assets
 node_modules
 /vendor/*

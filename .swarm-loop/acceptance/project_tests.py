@@ -1,49 +1,54 @@
 #!/usr/bin/env python3
 """Frozen metric: pass-rate (%) of the project's own suite (agent/tests + agent/evals).
 
-Run faithfully with the project's own pytest config (CI parity). Skipped cases
-(the 2 live-LLM evals) are excluded from the denominator. Prints nothing + exits
-nonzero if nothing ran at all (broken runner -> loud failure).
+Regression guard, NOT a new-feature metric — run faithfully with the project's own
+pytest config (CI parity). Skipped cases (the live-LLM evals) are excluded from the
+denominator. Bare number on the last stdout line.
+
+Exit 3 (ENV ERROR, no number) if the suite could not run at all (broken venv) so a
+non-runnable environment never reads as a 0% regression.
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+import _bootstrap
 
 AGENT = Path(__file__).resolve().parents[2] / "agent"
-sys.path.insert(0, str(AGENT))  # make `copilot` importable regardless of cwd
-
-
-class _Tally:
-    def __init__(self) -> None:
-        self.passed = 0
-        self.failed = 0
-
-    def pytest_runtest_logreport(self, report) -> None:  # noqa: ANN001
-        if report.when == "call":
-            if report.passed:
-                self.passed += 1
-            elif report.failed:
-                self.failed += 1
-        elif report.when in ("setup", "teardown") and report.failed:
-            self.failed += 1
 
 
 def main() -> None:
-    tally = _Tally()
-    # Run with the project's own config (CI parity); the bare number is the last line.
-    pytest.main(
-        [str(AGENT / "tests"), str(AGENT / "evals"), "-p", "no:cacheprovider", "-q"],
-        plugins=[tally],
+    _bootstrap.ensure_ready(["pytest", "fastapi", "respx", "copilot"])
+    # CI parity via a CLEAN subprocess. An in-process pytest.main() emits
+    # "Module already imported so cannot be rewritten; anyio" — our import probe
+    # (fastapi) pulls in anyio before pytest installs assertion rewriting, and the
+    # project's filterwarnings=error escalates that warning to a hard error. A
+    # fresh subprocess installs the rewrite hook first, exactly like CI does.
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest",
+         str(AGENT / "tests"), str(AGENT / "evals"),
+         "-p", "no:cacheprovider", "-q", "--tb=no"],
+        capture_output=True, text=True, cwd=str(AGENT),
     )
-    denom = tally.passed + tally.failed
+    out = proc.stdout + "\n" + proc.stderr
+
+    def _n(word: str) -> int:
+        m = re.search(rf"(\d+) {word}", out)
+        return int(m.group(1)) if m else 0
+
+    passed = _n("passed")
+    failed = _n("failed")
+    errors = _n(r"errors?")
+    denom = passed + failed + errors  # skipped excluded (live-LLM evals), per the docstring
     if denom == 0:
-        print("no project tests ran", file=sys.stderr)
-        sys.exit(1)
-    print(round(100.0 * tally.passed / denom, 2))
+        _bootstrap.env_error(
+            "no project tests ran (pytest produced no pass/fail summary):\n" + out.strip()[-500:]
+        )
+    print(round(100.0 * passed / denom, 2))
 
 
 if __name__ == "__main__":
