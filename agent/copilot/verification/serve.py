@@ -25,8 +25,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from sqlalchemy import select
-
 from copilot.config import get_settings
 from copilot.domain.contracts import Claim, MemoryFileSummary, VerificationResult
 from copilot.domain.primitives import (
@@ -38,7 +36,7 @@ from copilot.domain.primitives import (
     utcnow,
 )
 from copilot.memory.db import session_scope
-from copilot.memory.models import ExtractedFactRow, ExtractionRow, GuidelineChunkRow
+from copilot.memory.repository import MemoryRepository
 from copilot.verification.core import (
     DocumentFact,
     Verifier,
@@ -168,12 +166,10 @@ async def _materialize_document_facts(
 async def _read_document_fact(source_id: str, fact_id: str) -> DocumentFact | None:
     """One ``extracted_fact`` row re-fetched by (source_document id, fact id).
 
-    Scoped read-only SELECT within the verification package — the repository
-    exposes ``get_extracted_facts(extraction_id)`` but no fetch-by-fact-id
-    accessor, so this mirrors the pipeline's ``_find_reusable_document`` pattern.
-    The join binds the fact to its cited source document, so a fact id pointing
-    at a different document does not ground the claim. Fail-closed: a bad id or
-    any DB error resolves to ``None`` (source absent → claim dropped).
+    Routed through ``MemoryRepository.get_extracted_fact_by_id``, whose join binds
+    the fact to its cited source document, so a fact id pointing at a different
+    document does not ground the claim. Fail-closed: a bad id or any DB error
+    resolves to ``None`` (source absent → claim dropped).
     """
     ids = _as_int_pair(source_id, fact_id)
     if ids is None:
@@ -181,15 +177,9 @@ async def _read_document_fact(source_id: str, fact_id: str) -> DocumentFact | No
     source_int, fact_int = ids
     try:
         async with session_scope() as session:
-            result = await session.execute(
-                select(ExtractedFactRow)
-                .join(ExtractionRow, ExtractedFactRow.extraction_id == ExtractionRow.id)
-                .where(
-                    ExtractedFactRow.id == fact_int,
-                    ExtractionRow.source_document_id == source_int,
-                )
+            row = await MemoryRepository(session).get_extracted_fact_by_id(
+                fact_int, source_int
             )
-            row = result.scalar_one_or_none()
             if row is None:
                 return None
             return DocumentFact(
@@ -222,10 +212,9 @@ async def _materialize_guideline_chunks(
 async def _read_guideline_chunk(source_id: str, chunk_id: str) -> str | None:
     """One ``guideline_chunk``'s content re-fetched by (document id, chunk id).
 
-    Scoped read-only SELECT within the verification package — the repository
-    exposes ``get_guideline_chunks(document_id)`` but no fetch-by-chunk-id
-    accessor. The join binds the chunk to its cited guideline document.
-    Fail-closed: a bad id or any DB error resolves to ``None``.
+    Routed through ``MemoryRepository.get_guideline_chunk_by_id``, which scopes the
+    chunk to its cited guideline document. Fail-closed: a bad id or any DB error
+    resolves to ``None``.
     """
     ids = _as_int_pair(source_id, chunk_id)
     if ids is None:
@@ -233,13 +222,9 @@ async def _read_guideline_chunk(source_id: str, chunk_id: str) -> str | None:
     source_int, chunk_int = ids
     try:
         async with session_scope() as session:
-            result = await session.execute(
-                select(GuidelineChunkRow).where(
-                    GuidelineChunkRow.id == chunk_int,
-                    GuidelineChunkRow.guideline_document_id == source_int,
-                )
+            row = await MemoryRepository(session).get_guideline_chunk_by_id(
+                chunk_int, source_int
             )
-            row = result.scalar_one_or_none()
             if row is None:
                 return None
             return row.content

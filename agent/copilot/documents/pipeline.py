@@ -31,8 +31,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from sqlalchemy import select
-
 from copilot.config import Settings, get_settings
 from copilot.documents.ocr import OcrEngine, build_ocr
 from copilot.documents.raster import RasterizedPage, rasterize_pdf
@@ -49,7 +47,6 @@ from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import PatientId
 from copilot.fhir.provider import build_write_client
 from copilot.memory.db import session_scope
-from copilot.memory.models import SourceDocumentRow
 from copilot.memory.repository import MemoryRepository
 
 _UPLOAD_CATEGORY = "copilot-ingested"
@@ -316,21 +313,13 @@ async def _find_reusable_document(pid: int, content_hash: str) -> tuple[int, str
 
     Dedupe key is ``(patient_id, content_hash)`` with a stored
     ``openemr_document_id`` and a non-failed status — so identical bytes upload to
-    OpenEMR exactly once. Read-only lookup; the repository exposes no find-by-hash
-    accessor, so this is a scoped SELECT within the pipeline's own package.
+    OpenEMR exactly once. Routed through
+    ``MemoryRepository.get_source_document_by_hash`` (read-only).
     """
     async with session_scope() as session:
-        result = await session.execute(
-            select(SourceDocumentRow)
-            .where(
-                SourceDocumentRow.patient_id == pid,
-                SourceDocumentRow.content_hash == content_hash,
-                SourceDocumentRow.openemr_document_id.is_not(None),
-                SourceDocumentRow.status != IngestionStatus.failed.value,
-            )
-            .order_by(SourceDocumentRow.id)
+        row = await MemoryRepository(session).get_source_document_by_hash(
+            pid, content_hash, exclude_status=IngestionStatus.failed.value
         )
-        row = result.scalars().first()
     if row is None or row.openemr_document_id is None:
         return None
     return row.id, row.openemr_document_id

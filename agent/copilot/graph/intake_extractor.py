@@ -18,13 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from sqlalchemy import select
-
 from copilot.config import Settings
 from copilot.domain.primitives import PatientId
 from copilot.graph.contracts import AgentTask
 from copilot.memory.db import session_scope
-from copilot.memory.models import ExtractedFactRow, ExtractionRow
+from copilot.memory.repository import MemoryRepository
 
 
 @dataclass(frozen=True)
@@ -53,38 +51,18 @@ async def _read_extractions(document_ids: list[str]) -> IntakeReport:
     confidences: list[float] = []
     fact_count = 0
     async with session_scope() as session:
+        repo = MemoryRepository(session)
         for raw in document_ids:
             try:
                 document_id = int(raw)
             except (TypeError, ValueError):
                 continue
-            extraction = (
-                (
-                    await session.execute(
-                        select(ExtractionRow)
-                        .where(ExtractionRow.source_document_id == document_id)
-                        .order_by(ExtractionRow.id.desc())
-                    )
-                )
-                .scalars()
-                .first()
-            )
+            extraction = await repo.get_latest_extraction(document_id)
             if extraction is None:
                 continue
             if extraction.confidence_overall is not None:
                 confidences.append(extraction.confidence_overall)
-            supported = (
-                (
-                    await session.execute(
-                        select(ExtractedFactRow).where(
-                            ExtractedFactRow.extraction_id == extraction.id,
-                            ExtractedFactRow.supported.is_(True),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            supported = await repo.get_supported_extracted_facts(extraction.id)
             fact_count += len(supported)
     confidence = sum(confidences) / len(confidences) if confidences else 0.0
     return IntakeReport(

@@ -32,13 +32,14 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from copilot.config import Settings
 from copilot.domain.primitives import CitationSourceType, GuidelineCitation
 from copilot.memory.db import session_scope
 from copilot.memory.models import GuidelineChunkRow
+from copilot.memory.repository import MemoryRepository
 from copilot.rag._lexical import overlap_score, tokenize
 from copilot.rag.deidentify import deidentify
 from copilot.rag.embeddings import Embedder, build_embedder
@@ -133,15 +134,7 @@ class GuidelineRetriever:
         """
         scrubbed = deidentify(query)
         async with session_scope() as session:
-            rows = list(
-                (
-                    await session.execute(
-                        select(GuidelineChunkRow).order_by(GuidelineChunkRow.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            rows = await MemoryRepository(session).list_guideline_chunks()
             if not rows:
                 return []
             # Dense: embed the (de-identified) query at retrieve time.

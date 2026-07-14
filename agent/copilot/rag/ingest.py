@@ -21,10 +21,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from copilot.memory.models import GuidelineDocumentRow
 from copilot.memory.repository import MemoryRepository
 from copilot.rag.embeddings import Embedder
 
@@ -226,11 +224,8 @@ async def ingest_corpus(
 
 
 async def _document_exists(session: AsyncSession, source: str) -> bool:
-    """Idempotency probe (read-only) — F1's repository has no lookup-by-source."""
-    result = await session.execute(
-        select(GuidelineDocumentRow.id).where(GuidelineDocumentRow.source == source)
-    )
-    return result.first() is not None
+    """Idempotency probe (read-only), routed through the repository gateway."""
+    return await MemoryRepository(session).get_guideline_document_by_source(source) is not None
 
 
 def _slugify(heading: str) -> str:
