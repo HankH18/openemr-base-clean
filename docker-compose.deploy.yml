@@ -122,7 +122,10 @@ services:
   # Encrypted-at-rest posture in production comes from the underlying disk
   # layer (DO block volume encryption). Postgres is not exposed on the host.
   agent-postgres:
-    image: postgres:16-alpine
+    # pgvector-capable Postgres 16: the guideline-RAG index stores dense vectors
+    # in a `vector(1024)` column and needs the `vector` extension available at
+    # deploy time (migration 0006 enables it). The stock postgres image lacks it.
+    image: pgvector/pgvector:pg16
     platform: linux/amd64
     restart: always
     environment:

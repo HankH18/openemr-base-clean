@@ -29,6 +29,7 @@ import secrets
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
 from sqlalchemy import select
 
@@ -47,12 +48,69 @@ from copilot.documents.vision import (
 from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import PatientId
 from copilot.fhir.provider import build_write_client
-from copilot.fhir.write_client import OpenEmrWriteClient
 from copilot.memory.db import session_scope
 from copilot.memory.models import SourceDocumentRow
 from copilot.memory.repository import MemoryRepository
 
 _UPLOAD_CATEGORY = "copilot-ingested"
+
+
+class DocumentUploader(Protocol):
+    """The minimal write surface the pipeline needs to push a source document.
+
+    The real :class:`~copilot.fhir.write_client.OpenEmrWriteClient` satisfies
+    this structurally (it exposes exactly these members); the injection seam is
+    typed against the protocol, not the concrete client, so a keyless/read-only
+    deployment can substitute :class:`DerivedOnlyUploader` when the OpenEMR
+    write surface is not configured.
+    """
+
+    async def __aenter__(self) -> DocumentUploader: ...
+
+    async def __aexit__(self, *exc: object) -> None: ...
+
+    async def upload_document(
+        self,
+        pid: PatientId,
+        content: bytes,
+        *,
+        filename: str = ...,
+        doc_type: str = ...,
+        category: str | None = ...,
+        mime_type: str = ...,
+        idempotency_key: str | None = ...,
+    ) -> str: ...
+
+
+class DerivedOnlyUploader:
+    """A no-op uploader: ingest + extract into the agent store WITHOUT pushing the
+    source bytes to OpenEMR.
+
+    Used when the OpenEMR write surface is unavailable (write-back disabled or its
+    credentials unset) — a keyless / read-only deployment can still rasterize,
+    OCR, extract, and persist the derived artifacts locally; it simply does not
+    hand the source document to OpenEMR. Returns an empty document id so the
+    ``source_document`` row records "no OpenEMR handle" rather than a fake one.
+    """
+
+    async def __aenter__(self) -> DerivedOnlyUploader:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def upload_document(
+        self,
+        pid: PatientId,
+        content: bytes,
+        *,
+        filename: str = "document.pdf",
+        doc_type: str = "lab_pdf",
+        category: str | None = None,
+        mime_type: str = "application/pdf",
+        idempotency_key: str | None = None,
+    ) -> str:
+        return ""
 
 
 class IngestionStatus(StrEnum):
@@ -80,21 +138,25 @@ class DocumentIngestionService:
     """Runs the ingestion pipeline for one deployment's configured collaborators.
 
     Collaborators are injectable for testing/DI; by default they are the
-    settings-appropriate builders (keyless stubs when no key / no OCR binary). The
-    HTTP route (F8) is gated by ``document_ingestion_enabled``; this service is not
-    — it is directly invocable from tests, the CLI, and background jobs.
+    settings-appropriate builders (keyless stubs when no key / no OCR binary).
+    The OpenEMR upload uses the injected ``write_client_factory``; when the
+    OpenEMR write surface is unavailable (write-back off / unconfigured), the F8
+    HTTP route injects :class:`DerivedOnlyUploader` so ingestion still runs and
+    persists the derived artifacts locally without pushing the source to OpenEMR.
     """
 
     def __init__(
         self,
         settings: Settings,
         *,
-        write_client_factory: Callable[[], OpenEmrWriteClient] | None = None,
+        write_client_factory: Callable[[], DocumentUploader] | None = None,
         ocr: OcrEngine | None = None,
         vision: VisionExtractor | None = None,
     ) -> None:
         self._settings = settings
-        self._write_client_factory = write_client_factory or (lambda: build_write_client(settings))
+        self._write_client_factory: Callable[[], DocumentUploader] = write_client_factory or (
+            lambda: build_write_client(settings)
+        )
         self._ocr = ocr or build_ocr(settings)
         self._vision = vision or build_vision(settings)
 

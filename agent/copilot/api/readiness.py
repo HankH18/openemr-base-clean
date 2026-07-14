@@ -35,6 +35,79 @@ async def probe_postgres(engine: AsyncEngine) -> ReadinessDependency:
         return ReadinessDependency(name="postgres", ok=False, detail=type(exc).__name__)
 
 
+async def probe_document_store(engine: AsyncEngine) -> ReadinessDependency:
+    """Agent document store — the Postgres that holds source_document / pages / facts.
+
+    A ``SELECT 1`` proves the URL works and the pool can hand out a connection;
+    the ingestion pipeline persists every derived artifact here, so it is a
+    gating dependency (a down store means uploads cannot be recorded).
+    """
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT 1"))
+            _ = result.scalar_one()
+        return ReadinessDependency(name="document_store", ok=True, detail="reachable")
+    except Exception as exc:
+        return ReadinessDependency(name="document_store", ok=False, detail=type(exc).__name__)
+
+
+async def probe_pgvector(settings: Settings, engine: AsyncEngine) -> ReadinessDependency:
+    """pgvector availability — dense guideline retrieval needs the vector extension.
+
+    On Postgres the ``vector`` extension must be installed for ANN search; a
+    missing extension is a real degradation (dense retrieval falls back to
+    sparse-only), so it is reported advisory — sparse retrieval still serves. On
+    SQLite (tests / keyless dev) the JSON fallback column is used, which is
+    always available, so the probe reports ready.
+    """
+    if not settings.database_url.startswith("postgresql"):
+        return ReadinessDependency(
+            name="pgvector", ok=True, detail="sqlite json-vector fallback", advisory=True
+        )
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            )
+            installed = result.first() is not None
+        if installed:
+            return ReadinessDependency(name="pgvector", ok=True, detail="extension installed")
+        return ReadinessDependency(
+            name="pgvector", ok=False, detail="vector extension not installed", advisory=True
+        )
+    except Exception as exc:
+        return ReadinessDependency(
+            name="pgvector", ok=False, detail=type(exc).__name__, advisory=True
+        )
+
+
+async def probe_embedder(settings: Settings) -> ReadinessDependency:
+    """Guideline embedder — Voyage when keyed, the deterministic stub otherwise.
+
+    Keyless is a supported mode (the deterministic stub embeds offline), so the
+    dependency is ready either way; the detail names which backend is active so a
+    dashboard can see when it is running on the stub.
+    """
+    if settings.voyage_api_key:
+        return ReadinessDependency(
+            name="embedder", ok=True, detail=f"voyage:{settings.voyage_embedding_model}"
+        )
+    return ReadinessDependency(name="embedder", ok=True, detail="stub (keyless)", advisory=True)
+
+
+async def probe_reranker(settings: Settings) -> ReadinessDependency:
+    """Retrieval reranker — Cohere when keyed, the deterministic stub otherwise.
+
+    Like the embedder, keyless is supported (fused sparse+dense order is served
+    without a rerank), so this never gates readiness; the detail records the mode.
+    """
+    if settings.cohere_api_key:
+        return ReadinessDependency(
+            name="reranker", ok=True, detail=f"cohere:{settings.cohere_rerank_model}"
+        )
+    return ReadinessDependency(name="reranker", ok=True, detail="stub (keyless)", advisory=True)
+
+
 async def probe_openemr_fhir(
     settings: Settings, client_factory: Callable[[], httpx.AsyncClient] | None = None
 ) -> ReadinessDependency:

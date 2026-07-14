@@ -30,6 +30,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
+# tesseract OCR system binary — local, in-container OCR for document ingestion
+# (word-box extraction). PHI never leaves the deployment for bounding boxes.
+# tesseract-ocr-eng ships the English trained data used by the default OCR lang.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN useradd --create-home --shell /bin/bash --uid 10001 copilot
 
 WORKDIR /app

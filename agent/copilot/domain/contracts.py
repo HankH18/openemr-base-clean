@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation, computed_field
 
 from copilot.domain.primitives import FhirReference, PatientId
 
@@ -301,7 +301,14 @@ class VerificationResult(BaseModel):
 
 
 class ReadinessDependency(BaseModel):
-    """One dependency's status inside `/ready`."""
+    """One dependency's status inside `/ready`.
+
+    Graded, not boolean: alongside the ``ok`` gate, a derived ``status`` string
+    distinguishes ``ok`` (serving), ``degraded`` (a non-gating/advisory
+    dependency that is down but does not pull the service out of rotation), and
+    ``down`` (a gating dependency that is unreachable). A graded readiness lets a
+    dashboard tell "running in a reduced mode" apart from "not ready".
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -315,6 +322,15 @@ class ReadinessDependency(BaseModel):
             "readiness — a failing advisory dep never turns /ready into 503."
         ),
     )
+
+    @computed_field  # type: ignore[prop-decorator]  # mypy limitation: property under a decorator
+    @property
+    def status(self) -> str:
+        """Derived grade: ``ok`` when healthy, ``degraded`` when a failing advisory
+        dep, ``down`` when a failing gating dep."""
+        if self.ok:
+            return "ok"
+        return "degraded" if self.advisory else "down"
 
 
 class ReadinessResponse(BaseModel):

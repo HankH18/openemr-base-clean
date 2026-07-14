@@ -1,0 +1,1286 @@
+components:
+  schemas:
+    AdvanceRequest:
+      description: Mark the current patient done and move to the next.
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        completed_patient_id:
+          exclusiveMinimum: 0.0
+          title: Completed Patient Id
+          type: integer
+      required:
+      - completed_patient_id
+      title: AdvanceRequest
+      type: object
+    AllergyWrite:
+      description: 'An allergy (issue) list entry, appended as a new list row.
+
+
+        ``title`` is the intake-derived allergen/substance string the physician
+
+        confirms. ``begdate`` is a ``YYYY-MM-DD`` string, format-checked by the
+
+        write verification step.'
+      properties:
+        begdate:
+          description: Onset/entry date, YYYY-MM-DD.
+          minLength: 1
+          title: Begdate
+          type: string
+        reaction:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional reaction description.
+          title: Reaction
+        title:
+          minLength: 1
+          title: Title
+          type: string
+      required:
+      - title
+      - begdate
+      title: AllergyWrite
+      type: object
+    Body_upload_document_v1_documents_post:
+      properties:
+        clinician_id:
+          exclusiveMinimum: 0.0
+          title: Clinician Id
+          type: integer
+        doc_type:
+          default: lab_pdf
+          title: Doc Type
+          type: string
+        file:
+          description: The scanned lab PDF / intake form.
+          format: binary
+          title: File
+          type: string
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+      required:
+      - file
+      - patient_id
+      - clinician_id
+      title: Body_upload_document_v1_documents_post
+      type: object
+    ChatRequest:
+      description: 'One grounded question about a patient, optionally continuing a
+        thread.
+
+
+        ``clinician_id`` is optional: in ``disabled`` mode it identifies the acting
+
+        clinician (as today); in ``smart`` mode the session cookie is authoritative
+
+        and this field, if present, is only validated against it (mismatch → 403).'
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        conversation_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Conversation Id
+        correlation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
+        message:
+          minLength: 1
+          title: Message
+          type: string
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+      required:
+      - patient_id
+      - message
+      title: ChatRequest
+      type: object
+    ClinicianId:
+      description: OpenEMR user id — positive integer only.
+      properties:
+        value:
+          exclusiveMinimum: 0.0
+          title: Value
+          type: integer
+      required:
+      - value
+      title: ClinicianId
+      type: object
+    ConfirmRequest:
+      description: 'The confirm transaction: the identical candidate echoed back verbatim.
+
+
+        The candidate carries its own ``patient_id`` / ``clinician_id`` (parsed at
+        the
+
+        boundary by Pydantic) and ``idempotency_key``; the URL key must match it.
+
+
+        ``candidate`` is the full ``AnyWriteCandidate`` union (``WriteCandidate``
+        for
+
+        the physician-direct vital/medication kinds, ``IssueWriteCandidate`` for the
+
+        F4b agent-proposed medical_problem/allergy kinds), so an issue write can be
+
+        confirmed over HTTP — the two candidate shapes are distinguished by their
+
+        disjoint ``kind`` literals. The service''s ``commit`` already accepts the
+
+        union.'
+      properties:
+        candidate:
+          anyOf:
+          - $ref: '#/components/schemas/WriteCandidate'
+          - $ref: '#/components/schemas/IssueWriteCandidate'
+          title: Candidate
+      required:
+      - candidate
+      title: ConfirmRequest
+      type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          title: Detail
+          type: array
+      title: HTTPValidationError
+      type: object
+    HealthResponse:
+      properties:
+        alive:
+          default: true
+          title: Alive
+          type: boolean
+        version:
+          title: Version
+          type: string
+      required:
+      - version
+      title: HealthResponse
+      type: object
+    IssueWriteCandidate:
+      description: 'A typed intake-derived issue write (medical problem / allergy)
+        — F4b.
+
+
+        The agent-proposed analogue of ``WriteCandidate``: same closed-surface
+
+        discipline (exactly one payload matching ``kind``, client-generated
+
+        ``idempotency_key``, typed principal ids), but over the issue kinds and
+
+        defaulting to the strict ``agent_proposed_physician_confirmed`` entry mode.
+
+        The agent may only *construct and propose* one of these; committing it
+
+        requires the separate physician confirm transaction in
+
+        ``writeback/service.py`` — the agent structurally cannot self-commit.'
+      properties:
+        allergy:
+          anyOf:
+          - $ref: '#/components/schemas/AllergyWrite'
+          - type: 'null'
+        clinician_id:
+          $ref: '#/components/schemas/ClinicianId'
+        entry_mode:
+          $ref: '#/components/schemas/WriteEntryMode'
+          default: agent_proposed_physician_confirmed
+        idempotency_key:
+          maxLength: 128
+          minLength: 1
+          title: Idempotency Key
+          type: string
+        kind:
+          enum:
+          - medical_problem
+          - allergy
+          title: Kind
+          type: string
+        medical_problem:
+          anyOf:
+          - $ref: '#/components/schemas/MedicalProblemWrite'
+          - type: 'null'
+        patient_id:
+          $ref: '#/components/schemas/PatientId'
+      required:
+      - kind
+      - patient_id
+      - clinician_id
+      - idempotency_key
+      title: IssueWriteCandidate
+      type: object
+    JumpRequest:
+      description: Reposition the round's cursor to a patient already on the list.
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+      required:
+      - patient_id
+      title: JumpRequest
+      type: object
+    MedicalProblemWrite:
+      description: 'A medical-problem (issue) list entry, appended as a new list row.
+
+
+        ``title`` is the intake-derived problem string the physician confirms —
+
+        never free prose beyond it. ``begdate`` is a ``YYYY-MM-DD`` string (the
+
+        Standard API''s format); its format is checked deterministically by the
+
+        write verification step, not coerced here.'
+      properties:
+        begdate:
+          description: Onset/entry date, YYYY-MM-DD.
+          minLength: 1
+          title: Begdate
+          type: string
+        diagnosis:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional '<codetype>:<code>' association.
+          title: Diagnosis
+        title:
+          minLength: 1
+          title: Title
+          type: string
+      required:
+      - title
+      - begdate
+      title: MedicalProblemWrite
+      type: object
+    MedicationWrite:
+      description: 'A medication-list entry, appended as a new list row (latest-wins).
+
+
+        ``title`` is a picked/echoed drug string, never free prose. ``begdate`` is
+        a
+
+        ``YYYY-MM-DD`` string (the Standard API''s format); its format is checked
+
+        deterministically by the verifier, not coerced here.'
+      properties:
+        begdate:
+          description: Start date, YYYY-MM-DD.
+          minLength: 1
+          title: Begdate
+          type: string
+        diagnosis:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional '<codetype>:<code>' association.
+          title: Diagnosis
+        enddate:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional end date, YYYY-MM-DD.
+          title: Enddate
+        title:
+          minLength: 1
+          title: Title
+          type: string
+      required:
+      - title
+      - begdate
+      title: MedicationWrite
+      type: object
+    ObservationSeries:
+      description: 'A patient''s readings for one metric, oldest→newest, each grounded.
+
+
+        Orthogonal to the verified-claim contract: a lazily-fetched, patient-scoped
+
+        series feeding a drill-down chart. An unknown/absent metric yields an empty
+
+        ``points`` list (fail-closed), never a fabricated series.'
+      properties:
+        metric:
+          title: Metric
+          type: string
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+        points:
+          items:
+            $ref: '#/components/schemas/ObservationSeriesPoint'
+          title: Points
+          type: array
+        reference_range:
+          anyOf:
+          - $ref: '#/components/schemas/ReferenceRange'
+          - type: 'null'
+        unit:
+          default: ''
+          title: Unit
+          type: string
+      required:
+      - patient_id
+      - metric
+      title: ObservationSeries
+      type: object
+    ObservationSeriesPoint:
+      description: 'One grounded reading in a metric time-series.
+
+
+        Each point is independently auditable — ``resource_id`` locates the exact
+
+        Observation, ``value`` is the verbatim source string (same discipline as a
+
+        claim), and ``timestamp`` is the raw ISO instant from ``extract_temporal``
+
+        (``effectiveDateTime`` → ``issued``). A point that cannot ground a value or
+
+        a timestamp is dropped upstream, never fabricated.'
+      properties:
+        abnormal:
+          default: ''
+          description: Observation interpretation / OpenEMR abnormal flag; '' when
+            normal/absent.
+          title: Abnormal
+          type: string
+        resource_id:
+          minLength: 1
+          title: Resource Id
+          type: string
+        timestamp:
+          description: Clinical instant, verbatim ISO string.
+          minLength: 1
+          title: Timestamp
+          type: string
+        value:
+          description: Verbatim numeric value as a string, straight from source.
+          title: Value
+          type: string
+      required:
+      - resource_id
+      - value
+      - timestamp
+      title: ObservationSeriesPoint
+      type: object
+    PatientId:
+      description: OpenEMR patient PID — positive integer only.
+      properties:
+        value:
+          exclusiveMinimum: 0.0
+          title: Value
+          type: integer
+      required:
+      - value
+      title: PatientId
+      type: object
+    ProposeRequest:
+      description: 'A raw physician write request, parsed into a typed candidate server-side.
+
+
+        ``metric``/``unit`` are required for a vital and ignored for a medication
+
+        (whose ``raw_value`` is the picked/echoed drug title). No value is ever
+
+        interpreted by a model — the deterministic parser owns it.
+
+
+        ``clinician_id`` is optional: in ``disabled`` mode it identifies the acting
+
+        clinician (as today); in ``smart`` mode the session cookie is authoritative
+
+        and this field, if present, is only validated against it (mismatch → 403).'
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        kind:
+          $ref: '#/components/schemas/WriteKind'
+        metric:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Metric
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+        raw_value:
+          minLength: 1
+          title: Raw Value
+          type: string
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+      required:
+      - patient_id
+      - kind
+      - raw_value
+      title: ProposeRequest
+      type: object
+    ReadinessDependency:
+      description: 'One dependency''s status inside `/ready`.
+
+
+        Graded, not boolean: alongside the ``ok`` gate, a derived ``status`` string
+
+        distinguishes ``ok`` (serving), ``degraded`` (a non-gating/advisory
+
+        dependency that is down but does not pull the service out of rotation), and
+
+        ``down`` (a gating dependency that is unreachable). A graded readiness lets
+        a
+
+        dashboard tell "running in a reduced mode" apart from "not ready".'
+      properties:
+        advisory:
+          default: false
+          description: Advisory dependencies are reported for visibility but do not
+            gate readiness — a failing advisory dep never turns /ready into 503.
+          title: Advisory
+          type: boolean
+        detail:
+          default: ''
+          title: Detail
+          type: string
+        name:
+          title: Name
+          type: string
+        ok:
+          title: Ok
+          type: boolean
+        status:
+          description: 'Derived grade: ``ok`` when healthy, ``degraded`` when a failing
+            advisory
+
+            dep, ``down`` when a failing gating dep.'
+          readOnly: true
+          title: Status
+          type: string
+      required:
+      - name
+      - ok
+      - status
+      title: ReadinessDependency
+      type: object
+    ReadinessResponse:
+      properties:
+        dependencies:
+          items:
+            $ref: '#/components/schemas/ReadinessDependency'
+          title: Dependencies
+          type: array
+        ready:
+          title: Ready
+          type: boolean
+      required:
+      - ready
+      - dependencies
+      title: ReadinessResponse
+      type: object
+    ReferenceRange:
+      description: 'A metric''s numeric reference bounds, each independently optional.
+
+
+        Parsed from an Observation''s ``referenceRange[0]`` — ``null`` on the wire
+
+        when neither bound is derivable, so the chart never invents a band.'
+      properties:
+        high:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: High
+        low:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Low
+      title: ReferenceRange
+      type: object
+    RefreshRequest:
+      description: 'Force a re-sync of one clinician''s active rounding list.
+
+
+        ``clinician_id`` is optional: in ``disabled`` mode it identifies the acting
+
+        clinician (as today); in ``smart`` mode the session cookie is authoritative
+
+        and this field, if present, is only validated against it (mismatch → 403).'
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+      title: RefreshRequest
+      type: object
+    StartRequest:
+      description: Begin a round for one clinician over an authorized patient list.
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        patient_ids:
+          items:
+            type: integer
+          minItems: 1
+          title: Patient Ids
+          type: array
+      required:
+      - patient_ids
+      title: StartRequest
+      type: object
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          title: Location
+          type: array
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+      type: object
+    VitalWrite:
+      description: 'A single-metric vital reading, appended as a new vitals form.
+
+
+        ``value`` is already parsed to a number at the system boundary (parse, don''t
+
+        validate): constructing a ``VitalWrite`` with a non-numeric value or an
+
+        unknown metric fails here, which is the first deterministic gate. Semantic
+
+        checks (unit-matches-metric, physiologic plausibility) are the verifier''s
+        job.'
+      properties:
+        metric:
+          $ref: '#/components/schemas/WritableMetric'
+        unit:
+          description: Physician-supplied unit; verified against the metric.
+          minLength: 1
+          title: Unit
+          type: string
+        value:
+          title: Value
+          type: number
+      required:
+      - metric
+      - value
+      - unit
+      title: VitalWrite
+      type: object
+    WritableMetric:
+      description: 'The closed set of vital-sign metrics a physician may write.
+
+
+        Deliberately small: only OpenEMR''s Standard-API *vitals* columns are
+
+        directly writable as Observation-like data (labs have no create endpoint —
+
+        see the feasibility brief). Extend only with a matching column mapping in
+
+        ``fhir/write_client.py`` and a plausibility spec in ``verification/writes.py``
+
+        — the exhaustive ``match`` in each will fail to compile until you do.'
+      enum:
+      - heart_rate
+      - spo2
+      - systolic_bp
+      - diastolic_bp
+      - respiratory_rate
+      - temperature
+      - weight
+      - height
+      title: WritableMetric
+      type: string
+    WriteCandidate:
+      description: 'A parsed, typed write request over the closed writable surface.
+
+
+        Carries exactly one payload (``vital`` xor ``medication``) matching ``kind``.
+
+        ``kind`` is deliberately the *direct* subset — the vital/medication verifier
+
+        in ``verification/writes.py`` matches exhaustively over it; the issue kinds
+
+        live on ``IssueWriteCandidate``. ``idempotency_key`` is client-generated so
+
+        a retried/double-clicked confirm cannot create a duplicate record.
+
+        ``patient_id`` / ``clinician_id`` scope the write; the route enforces
+
+        ``is_authorized`` before a candidate is trusted.'
+      properties:
+        clinician_id:
+          $ref: '#/components/schemas/ClinicianId'
+        entry_mode:
+          $ref: '#/components/schemas/WriteEntryMode'
+          default: human_direct
+        idempotency_key:
+          maxLength: 128
+          minLength: 1
+          title: Idempotency Key
+          type: string
+        kind:
+          enum:
+          - vital
+          - medication
+          title: Kind
+          type: string
+        medication:
+          anyOf:
+          - $ref: '#/components/schemas/MedicationWrite'
+          - type: 'null'
+        patient_id:
+          $ref: '#/components/schemas/PatientId'
+        vital:
+          anyOf:
+          - $ref: '#/components/schemas/VitalWrite'
+          - type: 'null'
+      required:
+      - kind
+      - patient_id
+      - clinician_id
+      - idempotency_key
+      title: WriteCandidate
+      type: object
+    WriteEntryMode:
+      description: 'How the value reached the record — the physician-attribution surface.
+
+
+        ``human_direct`` is Phase 1: the physician typed the value themselves, so
+        an
+
+        out-of-range value is a soft, overridable warning.
+
+        ``agent_proposed_physician_confirmed`` is the live agent path (F4b): the
+
+        agent drafts a typed candidate, a *separate* physician confirm transaction
+
+        commits it, and the audit row attributes the write to this mode. The write
+
+        verifier treats it as the strict mode that hard-blocks out-of-range values.'
+      enum:
+      - human_direct
+      - agent_proposed_physician_confirmed
+      title: WriteEntryMode
+      type: string
+    WriteKind:
+      description: 'What kind of record a candidate creates.
+
+
+        ``vital`` / ``medication`` are the physician-direct kinds (Phase 1,
+
+        ``WriteCandidate``); ``medical_problem`` / ``allergy`` are the
+
+        intake-derived, agent-proposed kinds (F4b, ``IssueWriteCandidate``) that
+
+        flow through the same propose→confirm gate but require an explicit
+
+        physician confirm to commit.'
+      enum:
+      - vital
+      - medication
+      - medical_problem
+      - allergy
+      title: WriteKind
+      type: string
+info:
+  title: Clinical Co-Pilot
+  version: 0.1.0
+openapi: 3.1.0
+paths:
+  /health:
+    get:
+      operationId: health_health_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+          description: Successful Response
+      summary: Liveness — process is running
+  /ready:
+    get:
+      operationId: ready_ready_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+          description: ready
+        '503':
+          description: not ready
+      summary: Readiness — all critical dependencies reachable
+  /status:
+    get:
+      operationId: status_page_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Status Page Status Get
+                type: object
+          description: Successful Response
+      summary: Agent health aggregates (status page)
+      tags:
+      - status
+  /v1/auth/callback:
+    get:
+      operationId: callback_v1_auth_callback_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: OAuth redirect target — exchange the code and set the session
+      tags:
+      - auth
+  /v1/auth/login:
+    get:
+      operationId: login_v1_auth_login_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Begin per-physician SMART login (redirect to OpenEMR)
+      tags:
+      - auth
+  /v1/auth/logout:
+    post:
+      operationId: logout_v1_auth_logout_post
+      responses:
+        '204':
+          description: Successful Response
+      summary: Revoke the session and clear the cookie
+      tags:
+      - auth
+  /v1/auth/me:
+    get:
+      operationId: me_v1_auth_me_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+      summary: Current physician identity for the session cookie
+      tags:
+      - auth
+  /v1/auth/status:
+    get:
+      description: 'Report the deployment''s ``auth_mode`` and whether this request
+        is authed.
+
+
+        UNAUTHENTICATED and never errors: the SPA calls it on load to decide whether
+
+        to show the login gate. ``authenticated`` is true only when ``auth_mode``
+        is
+
+        ``smart`` AND the session cookie resolves to a live session. Any failure while
+
+        resolving is swallowed and reported as ``authenticated: false`` (fail-closed),
+
+        never leaking why.'
+      operationId: status_v1_auth_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Status V1 Auth Status Get
+                type: object
+          description: Successful Response
+      summary: Unauthenticated auth-mode + session probe for the SPA
+      tags:
+      - auth
+  /v1/chat:
+    post:
+      operationId: chat_v1_chat_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Chat V1 Chat Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Answer a grounded question about a patient
+      tags:
+      - chat
+  /v1/conversations/{conversation_id}:
+    get:
+      operationId: get_conversation_v1_conversations__conversation_id__get
+      parameters:
+      - in: path
+        name: conversation_id
+        required: true
+        schema:
+          title: Conversation Id
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Conversation V1 Conversations  Conversation Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Read a conversation's turns in order
+      tags:
+      - chat
+  /v1/documents:
+    post:
+      operationId: upload_document_v1_documents_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_document_v1_documents_post'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Upload Document V1 Documents Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Upload a source document and ingest it (async envelope)
+      tags:
+      - documents
+  /v1/documents/{document_id}:
+    get:
+      operationId: get_document_v1_documents__document_id__get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Get Document V1 Documents  Document Id  Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Ingestion status, facts, and citations
+      tags:
+      - documents
+  /v1/documents/{document_id}/pages/{page_no}:
+    get:
+      operationId: get_document_page_v1_documents__document_id__pages__page_no__get
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: integer
+      - in: path
+        name: page_no
+        required: true
+        schema:
+          title: Page No
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: The rendered page image (bbox-overlay backdrop)
+      tags:
+      - documents
+  /v1/patients/{patient_id}/observations:
+    get:
+      operationId: observation_series_v1_patients__patient_id__observations_get
+      parameters:
+      - in: path
+        name: patient_id
+        required: true
+        schema:
+          exclusiveMinimum: 0
+          title: Patient Id
+          type: integer
+      - in: query
+        name: metric
+        required: true
+        schema:
+          minLength: 1
+          title: Metric
+          type: string
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservationSeries'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: A patient's grounded time-series for one metric (oldest→newest)
+      tags:
+      - observations
+  /v1/rounds/advance:
+    post:
+      operationId: advance_v1_rounds_advance_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdvanceRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Advance V1 Rounds Advance Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Mark current patient done; return the next card
+      tags:
+      - rounds
+  /v1/rounds/alerts:
+    get:
+      operationId: alerts_v1_rounds_alerts_get
+      parameters:
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Alerts V1 Rounds Alerts Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Deterioration alerts for not-yet-seen critical patients
+      tags:
+      - rounds
+  /v1/rounds/current:
+    get:
+      operationId: current_v1_rounds_current_get
+      parameters:
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Current V1 Rounds Current Get
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: The current patient card for this clinician
+      tags:
+      - rounds
+  /v1/rounds/jump:
+    post:
+      operationId: jump_v1_rounds_jump_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JumpRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Jump V1 Rounds Jump Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Jump the cursor to a patient already on the round
+      tags:
+      - rounds
+  /v1/rounds/refresh:
+    post:
+      operationId: refresh_v1_rounds_refresh_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Refresh V1 Rounds Refresh Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Re-sync the clinician's rounding list; report per patient
+      tags:
+      - rounds
+  /v1/rounds/start:
+    post:
+      operationId: start_v1_rounds_start_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Start V1 Rounds Start Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Begin a round; returns the sickest patient's card
+      tags:
+      - rounds
+  /v1/status:
+    get:
+      operationId: status_page_v1_v1_status_get
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Status Page V1 V1 Status Get
+                type: object
+          description: Successful Response
+      summary: Agent health aggregates (status page, v1 alias)
+      tags:
+      - status
+  /v1/writes:
+    post:
+      operationId: propose_write_v1_writes_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Propose Write V1 Writes Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Propose a physician write and get the echo-back to confirm
+      tags:
+      - writes
+  /v1/writes/{idempotency_key}/confirm:
+    post:
+      operationId: confirm_write_v1_writes__idempotency_key__confirm_post
+      parameters:
+      - in: path
+        name: idempotency_key
+        required: true
+        schema:
+          maxLength: 128
+          minLength: 1
+          title: Idempotency Key
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfirmRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Confirm Write V1 Writes  Idempotency Key  Confirm
+                  Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Confirm and commit a previously proposed write (append-only)
+      tags:
+      - writes

@@ -27,7 +27,7 @@ from copilot.api.deps import resolve_acting_clinician, resolve_acting_context
 from copilot.auth import is_authorized
 from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
-from copilot.domain.writes import CommittedWrite, ProposedWrite, WriteCandidate, WriteKind
+from copilot.domain.writes import AnyWriteCandidate, CommittedWrite, ProposedWrite, WriteKind
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import (
     WritebackDisabledError,
@@ -69,9 +69,16 @@ class ConfirmRequest(BaseModel):
 
     The candidate carries its own ``patient_id`` / ``clinician_id`` (parsed at the
     boundary by Pydantic) and ``idempotency_key``; the URL key must match it.
+
+    ``candidate`` is the full ``AnyWriteCandidate`` union (``WriteCandidate`` for
+    the physician-direct vital/medication kinds, ``IssueWriteCandidate`` for the
+    F4b agent-proposed medical_problem/allergy kinds), so an issue write can be
+    confirmed over HTTP — the two candidate shapes are distinguished by their
+    disjoint ``kind`` literals. The service's ``commit`` already accepts the
+    union.
     """
 
-    candidate: WriteCandidate
+    candidate: AnyWriteCandidate
 
 
 def _service(

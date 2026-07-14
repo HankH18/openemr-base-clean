@@ -269,9 +269,24 @@ docker compose -f docker-compose.deploy.yml exec agent \
   python -c "import urllib.request,json; print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
 ```
 
-`/ready` should report `postgres`, `openemr_fhir`, and `llm` ok. A 503 lists the
-failing dependency. (`llm` needs `ANTHROPIC_API_KEY`; the FHIR probe confirms the
-agent can reach OpenEMR.)
+`/ready` is a **graded** readiness payload (Week 2): each dependency carries a
+`status` (`ok` / `degraded` / `down`) alongside the `ok` boolean, so a
+degraded-but-serving dependency is distinct from a hard failure. It probes
+`document_store` + `pgvector` (the agent Postgres + vector extension),
+`embedder` + `reranker` (Voyage/Cohere, or the keyless stubs — reported
+`degraded` advisory when running on the stub), and `openemr_fhir` + `llm` +
+`langfuse`. A 503 means a **gating** dependency is down (advisory ones —
+`langfuse`, the keyless stubs — never cause a 503). `GET /status` returns the
+agent health aggregates (ingestion count, extraction pass rate, retrieval hit
+rate, eval-by-category, p50/p95 latency, error rate).
+
+> **Packaging note (Week 2):** the agent image installs the **tesseract** OCR
+> binary (local, in-container OCR for document ingestion — PHI never leaves the
+> deployment for bounding boxes), and `agent-postgres` runs the
+> **`pgvector/pgvector:pg16`** image so the `vector` extension is available for
+> dense guideline retrieval. Both are already wired in `agent/Dockerfile` and
+> `docker-compose.deploy.yml`; no operator action beyond a rebuild
+> (`docker compose ... build agent`).
 
 > **OAuth audience gotcha (already handled in compose):** the agent POSTs to the
 > internal `http://openemr` token endpoint, but the signed-JWT `aud` must equal the
@@ -293,11 +308,15 @@ so no `VITE_API_BASE_URL` is needed):
 cd agent/web && npm ci && npm run build   # -> agent/web/dist
 ```
 
-**11.2 — Caddyfile** (put at repo root; replace the domain):
+**11.2 — Caddyfile** (put at repo root; replace the domain). The committed
+`Caddyfile.example` / `Caddyfile.https.example` are the maintained sources —
+they raise the request-body cap so scanned-PDF uploads (`POST /v1/documents`)
+are not rejected by Caddy's small default:
 
 ```
 copilot.example.com {
     encode gzip
+    request_body { max_size 25MB }   # scanned-PDF uploads (>= the 10MB ceiling)
     handle /v1/*   { reverse_proxy agent:8000 }
     handle /health { reverse_proxy agent:8000 }
     handle /ready  { reverse_proxy agent:8000 }
@@ -421,8 +440,9 @@ and put it in `.env` as `COPILOT_SESSION_ENC_KEY` (secrets-manager only; never c
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-**14.2 — DigitalOcean encrypted block-storage volume (operator step).** `postgres:16-alpine`
-has no built-in TDE and MariaDB engine-level encryption needs a keyfile+plugin, so the
+**14.2 — DigitalOcean encrypted block-storage volume (operator step).** The DB images
+(`pgvector/pgvector:pg16` for the agent store, MariaDB for OpenEMR) have no built-in TDE
+and MariaDB engine-level encryption needs a keyfile+plugin, so the
 realistic single-VM control is **disk-level**. The achievable customer-managed win: attach
 a **DigitalOcean Block Storage volume** (DO encrypts these at rest) and relocate the DB
 named volumes (`db`, `agent_db`, and — if you enabled it — `langfuse_db`) or the whole

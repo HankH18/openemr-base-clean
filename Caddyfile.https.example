@@ -30,6 +30,13 @@
 # `docker run --rm caddy caddy hash-password --plaintext 'PW'`.)
 
 agentforge.example.com {
+	# Scanned-PDF uploads (POST /v1/documents) can be large. Caddy's default body
+	# cap (~10KB for buffered reads) would reject them, so raise the limit well
+	# above the documented 10MB upload ceiling for the whole site.
+	request_body {
+		max_size 25MB
+	}
+
 	# OpenEMR OAuth2 / login surface — REQUIRED for per-physician SMART login.
 	# The physician's browser is redirected to OpenEMR's /oauth2/default/authorize
 	# and logs in there; these paths must reach OpenEMR, not the SPA. One prefix

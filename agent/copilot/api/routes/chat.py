@@ -11,6 +11,7 @@ module-level ``router``); no edit to ``app.py`` is required.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -28,8 +29,11 @@ from copilot.fhir.provider import build_fhir_client_for_session
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability
+from copilot.rag import build_retriever
 
 router = APIRouter(prefix="/v1", tags=["chat"])
+
+_logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -74,6 +78,26 @@ def _reply_body(reply: ChatReply) -> dict[str, Any]:
     }
 
 
+async def _guideline_evidence(message: str) -> list[dict[str, Any]]:
+    """Retrieve guideline chunks as a SEPARATE, labeled evidence block.
+
+    Guideline backing is kept strictly out of the patient-fact ``claims`` — the
+    two grounding surfaces never mix (a guideline recommendation is not a
+    grounded patient observation). Each entry is typed guideline evidence
+    (``source_type='guideline'`` + ``chunk_id``/``section`` + a
+    ``GuidelineCitation``). The retriever de-identifies the query at its own
+    choke point before any embedder/reranker egress. Best-effort: an empty
+    corpus yields ``[]``, and a retrieval failure never withholds the grounded
+    answer — it degrades to no evidence, logged.
+    """
+    try:
+        evidence = await build_retriever(get_settings()).retrieve(message)
+    except Exception:
+        _logger.exception("guideline evidence retrieval failed; serving answer without evidence")
+        return []
+    return [e.model_dump(mode="json") for e in evidence]
+
+
 @router.post("/chat", summary="Answer a grounded question about a patient")
 async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     # Resolve at the boundary: a valid supplied id is honoured, anything else
@@ -101,7 +125,11 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         correlation_id=correlation_id,
         conversation_id=req.conversation_id,
     )
-    return _reply_body(reply)
+    body = _reply_body(reply)
+    # Evidence separation: guideline backing rides as a distinct top-level block,
+    # never inside a patient-fact claim's citation.
+    body["guideline_evidence"] = await _guideline_evidence(req.message)
+    return body
 
 
 @router.get("/conversations/{conversation_id}", summary="Read a conversation's turns in order")
