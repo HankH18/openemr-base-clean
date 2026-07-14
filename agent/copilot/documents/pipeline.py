@@ -1,0 +1,418 @@
+"""Document-ingestion pipeline: upload -> rasterize -> OCR -> extract -> reconcile -> persist.
+
+``attach_and_extract`` (and the :class:`DocumentIngestionService` behind it) is
+the single entry point that turns a source document's bytes into schema-validated,
+bbox-anchored facts in the agent store. The flow, in order:
+
+1. **Upload** the source bytes to OpenEMR via ``OpenEmrWriteClient.upload_document``
+   (OpenEMR owns the document). Content-hash dedupe: identical bytes for the same
+   patient upload exactly once and reuse the stored ``openemr_document_id``.
+2. **Rasterize** every page (pypdfium2, at ``Settings.ocr_dpi``).
+3. **OCR** each page image into word boxes (:class:`OcrEngine`).
+4. **Extract** structured facts from the page images (:class:`VisionExtractor`),
+   tool-forced JSON validated through the strict ``LabReport`` / ``IntakeForm``
+   schemas.
+5. **Reconcile** each value to the OCR tokens — attach a bbox + match confidence,
+   or flag ``supported=False`` when the value is nowhere on the page.
+6. **Persist** APPEND-ONLY through the F1 repository accessors (source_document /
+   document_page / extraction / extracted_fact) with a correlation id + audit.
+
+Status walks ``uploaded -> extracting -> extracted``; a mid-pipeline failure fails
+closed — the attempt is recorded ``status='failed'`` with zero extraction rows and
+zero orphan facts, and the error is surfaced (raised), never a silent success.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+
+from sqlalchemy import select
+
+from copilot.config import Settings, get_settings
+from copilot.documents.ocr import OcrEngine, build_ocr
+from copilot.documents.raster import RasterizedPage, rasterize_pdf
+from copilot.documents.reconcile import Reconciliation, reconcile_value
+from copilot.documents.vision import (
+    SCHEMA_VERSION,
+    DocumentType,
+    ExtractionResult,
+    VisionExtractor,
+    build_vision,
+    parse_doc_type,
+)
+from copilot.domain.documents import ExtractedFact
+from copilot.domain.primitives import PatientId
+from copilot.fhir.provider import build_write_client
+from copilot.fhir.write_client import OpenEmrWriteClient
+from copilot.memory.db import session_scope
+from copilot.memory.models import SourceDocumentRow
+from copilot.memory.repository import MemoryRepository
+
+_UPLOAD_CATEGORY = "copilot-ingested"
+
+
+class IngestionStatus(StrEnum):
+    """Lifecycle of a source document through the pipeline."""
+
+    uploaded = "uploaded"
+    extracting = "extracting"
+    extracted = "extracted"
+    failed = "failed"
+
+
+@dataclass(frozen=True)
+class IngestionResult:
+    """What one ``attach_and_extract`` call produced (on success)."""
+
+    status: IngestionStatus
+    source_document_id: int
+    openemr_document_id: str | None
+    extraction_id: int | None
+    fact_count: int
+    reused_upload: bool
+
+
+class DocumentIngestionService:
+    """Runs the ingestion pipeline for one deployment's configured collaborators.
+
+    Collaborators are injectable for testing/DI; by default they are the
+    settings-appropriate builders (keyless stubs when no key / no OCR binary). The
+    HTTP route (F8) is gated by ``document_ingestion_enabled``; this service is not
+    — it is directly invocable from tests, the CLI, and background jobs.
+    """
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        write_client_factory: Callable[[], OpenEmrWriteClient] | None = None,
+        ocr: OcrEngine | None = None,
+        vision: VisionExtractor | None = None,
+    ) -> None:
+        self._settings = settings
+        self._write_client_factory = write_client_factory or (lambda: build_write_client(settings))
+        self._ocr = ocr or build_ocr(settings)
+        self._vision = vision or build_vision(settings)
+
+    async def attach_and_extract(
+        self,
+        *,
+        patient_id: PatientId,
+        content: bytes,
+        doc_type: str = "lab_pdf",
+        filename: str | None = None,
+        correlation_id: str = "",
+    ) -> IngestionResult:
+        """Ingest one document end-to-end. Fails closed on any mid-pipeline error."""
+        pid = patient_id.value
+        kind = parse_doc_type(doc_type)
+        correlation = correlation_id or _new_correlation_id()
+        content_hash = hashlib.sha256(content).hexdigest()
+
+        reuse = await _find_reusable_document(pid, content_hash)
+        if reuse is not None:
+            document_id, openemr_document_id = reuse
+            reused = True
+            pages, tokens_by_page = await _load_persisted_pages(document_id)
+        else:
+            document_id = await _create_pending_document(
+                pid, kind, filename, content_hash, correlation
+            )
+            reused = False
+            openemr_document_id = await self._upload(document_id, pid, content, kind, filename)
+            pages, tokens_by_page = await self._rasterize_and_ocr(document_id, content)
+            await _mark_status(
+                document_id,
+                IngestionStatus.extracting,
+                openemr_document_id=openemr_document_id,
+                page_count=len(pages),
+            )
+            await _persist_pages(document_id, pages, tokens_by_page)
+
+        facts = await self._extract(document_id, pages, kind)
+        reconciled = _reconcile_facts(facts, tokens_by_page, self._settings)
+        extraction_id, fact_count = await _persist_extraction(
+            pid, document_id, self._vision.model_name, reconciled, correlation
+        )
+        return IngestionResult(
+            status=IngestionStatus.extracted,
+            source_document_id=document_id,
+            openemr_document_id=openemr_document_id,
+            extraction_id=extraction_id,
+            fact_count=fact_count,
+            reused_upload=reused,
+        )
+
+    async def _upload(
+        self,
+        document_id: int,
+        pid: int,
+        content: bytes,
+        kind: DocumentType,
+        filename: str | None,
+    ) -> str:
+        """Upload the source bytes to OpenEMR; fail the ingestion closed on error."""
+        try:
+            async with self._write_client_factory() as client:
+                return await client.upload_document(
+                    PatientId(value=pid),
+                    content,
+                    filename=filename or f"document-{document_id}.pdf",
+                    doc_type=kind.value,
+                    category=_UPLOAD_CATEGORY,
+                    mime_type="application/pdf",
+                    idempotency_key=hashlib.sha256(content).hexdigest(),
+                )
+        except Exception:
+            await _mark_status(document_id, IngestionStatus.failed)
+            raise
+
+    async def _rasterize_and_ocr(
+        self, document_id: int, content: bytes
+    ) -> tuple[list[RasterizedPage], dict[int, list[dict[str, object]]]]:
+        """Render + OCR every page; fail closed if the bytes are not a readable PDF."""
+        try:
+            pages = rasterize_pdf(content, dpi=self._settings.ocr_dpi)
+            tokens_by_page: dict[int, list[dict[str, object]]] = {}
+            for page in pages:
+                tokens = self._ocr.recognize(
+                    page.image,
+                    page_no=page.page_no - 1,
+                    width=page.width,
+                    height=page.height,
+                )
+                tokens_by_page[page.page_no] = [token.to_dict() for token in tokens]
+            return pages, tokens_by_page
+        except Exception:
+            await _mark_status(document_id, IngestionStatus.failed)
+            raise
+
+    async def _extract(
+        self, document_id: int, pages: Sequence[RasterizedPage], kind: DocumentType
+    ) -> list[ExtractedFact]:
+        """Run structured extraction; fail closed on extraction/validation error."""
+        try:
+            report: ExtractionResult = await self._vision.extract(pages, kind)
+            return list(report.facts)
+        except Exception:
+            await _mark_status(document_id, IngestionStatus.failed)
+            raise
+
+
+async def attach_and_extract(
+    *,
+    patient_id: PatientId,
+    content: bytes,
+    doc_type: str = "lab_pdf",
+    filename: str | None = None,
+    correlation_id: str = "",
+    settings: Settings | None = None,
+) -> IngestionResult:
+    """Ingest one document with the deployment's default collaborators.
+
+    Thin convenience wrapper over :class:`DocumentIngestionService` for callers
+    that do not need to inject collaborators (tests, CLI, the F8 route).
+    """
+    service = DocumentIngestionService(settings or get_settings())
+    return await service.attach_and_extract(
+        patient_id=patient_id,
+        content=content,
+        doc_type=doc_type,
+        filename=filename,
+        correlation_id=correlation_id,
+    )
+
+
+# --- reconciliation ---------------------------------------------------------
+
+
+def _reconcile_facts(
+    facts: Sequence[ExtractedFact],
+    tokens_by_page: Mapping[int, list[dict[str, object]]],
+    settings: Settings,
+) -> list[tuple[ExtractedFact, Reconciliation]]:
+    """Reconcile each extracted value to its page's OCR tokens."""
+    threshold = settings.doc_extraction_confidence_threshold
+    out: list[tuple[ExtractedFact, Reconciliation]] = []
+    for fact in facts:
+        page_no = fact.page_no or 1
+        tokens = tokens_by_page.get(page_no) or tokens_by_page.get(1) or []
+        recon = reconcile_value(fact.value, tokens, page_no=page_no, threshold=threshold)
+        out.append((fact, recon))
+    return out
+
+
+# --- persistence (append-only, via the F1 repository accessors) -------------
+
+
+async def _find_reusable_document(pid: int, content_hash: str) -> tuple[int, str] | None:
+    """A prior, successfully-uploaded document for these exact bytes, if any.
+
+    Dedupe key is ``(patient_id, content_hash)`` with a stored
+    ``openemr_document_id`` and a non-failed status — so identical bytes upload to
+    OpenEMR exactly once. Read-only lookup; the repository exposes no find-by-hash
+    accessor, so this is a scoped SELECT within the pipeline's own package.
+    """
+    async with session_scope() as session:
+        result = await session.execute(
+            select(SourceDocumentRow)
+            .where(
+                SourceDocumentRow.patient_id == pid,
+                SourceDocumentRow.content_hash == content_hash,
+                SourceDocumentRow.openemr_document_id.is_not(None),
+                SourceDocumentRow.status != IngestionStatus.failed.value,
+            )
+            .order_by(SourceDocumentRow.id)
+        )
+        row = result.scalars().first()
+    if row is None or row.openemr_document_id is None:
+        return None
+    return row.id, row.openemr_document_id
+
+
+async def _create_pending_document(
+    pid: int,
+    kind: DocumentType,
+    filename: str | None,
+    content_hash: str,
+    correlation: str,
+) -> int:
+    """Register the ingestion attempt (status='uploaded') and audit its start."""
+    async with session_scope() as session:
+        repo = MemoryRepository(session)
+        row = await repo.create_source_document(
+            patient_id=pid,
+            doc_type=kind.value,
+            correlation_id=correlation,
+            filename=filename,
+            content_hash=content_hash,
+            status=IngestionStatus.uploaded.value,
+        )
+        await repo.record_audit(
+            correlation_id=correlation,
+            action="document.ingest",
+            patient_id=PatientId(value=pid),
+        )
+        return row.id
+
+
+async def _mark_status(
+    document_id: int,
+    status: IngestionStatus,
+    *,
+    openemr_document_id: str | None = None,
+    page_count: int | None = None,
+) -> None:
+    """Commit a status transition (and optional upload id / page count) in its own txn.
+
+    Its own committed transaction so the failed-status attempt survives even when
+    the pipeline then re-raises the triggering error.
+    """
+    async with session_scope() as session:
+        row = await MemoryRepository(session).get_source_document(document_id)
+        if row is None:
+            return
+        row.status = status.value
+        if openemr_document_id is not None:
+            row.openemr_document_id = openemr_document_id
+        if page_count is not None:
+            row.page_count = page_count
+        await session.flush()
+
+
+async def _persist_pages(
+    document_id: int,
+    pages: Sequence[RasterizedPage],
+    tokens_by_page: Mapping[int, list[dict[str, object]]],
+) -> None:
+    """Persist each rendered page + its OCR word boxes."""
+    async with session_scope() as session:
+        repo = MemoryRepository(session)
+        for page in pages:
+            await repo.create_document_page(
+                source_document_id=document_id,
+                page_no=page.page_no,
+                image=page.image,
+                width=page.width,
+                height=page.height,
+                ocr_tokens=list(tokens_by_page.get(page.page_no, [])),
+            )
+
+
+async def _load_persisted_pages(
+    document_id: int,
+) -> tuple[list[RasterizedPage], dict[int, list[dict[str, object]]]]:
+    """Re-hydrate a prior document's page renders + OCR tokens (dedupe reuse path)."""
+    async with session_scope() as session:
+        rows = await MemoryRepository(session).get_document_pages(document_id)
+        pages = [
+            RasterizedPage(
+                page_no=row.page_no,
+                width=row.width or 0,
+                height=row.height or 0,
+                image=row.image or b"",
+            )
+            for row in rows
+        ]
+        tokens_by_page = {row.page_no: list(row.ocr_tokens or []) for row in rows}
+    return pages, tokens_by_page
+
+
+async def _persist_extraction(
+    pid: int,
+    document_id: int,
+    model: str,
+    reconciled: Sequence[tuple[ExtractedFact, Reconciliation]],
+    correlation: str,
+) -> tuple[int, int]:
+    """Append one extraction run + its facts; audit + walk status to 'extracted'.
+
+    APPEND-ONLY: a fresh ``extraction`` row (and its facts) every call; prior runs
+    are never mutated. Committed as one transaction, so a re-ingest adds exactly
+    one extraction with its facts.
+    """
+    supported = [recon.match_confidence for _, recon in reconciled if recon.supported]
+    confidence_overall = sum(supported) / len(supported) if supported else None
+    async with session_scope() as session:
+        repo = MemoryRepository(session)
+        extraction = await repo.create_extraction(
+            source_document_id=document_id,
+            correlation_id=correlation,
+            schema_version=SCHEMA_VERSION,
+            model=model,
+            confidence_overall=confidence_overall,
+            status="ok",
+        )
+        for fact, recon in reconciled:
+            await repo.create_extracted_fact(
+                extraction_id=extraction.id,
+                field_path=fact.field_path,
+                value=fact.value,
+                unit=fact.unit,
+                reference_range=fact.reference_range,
+                abnormal_flag=fact.abnormal,
+                collection_date=fact.collection_date,
+                page_no=recon.page_no if recon.supported else fact.page_no,
+                bbox=recon.bbox,
+                match_confidence=recon.match_confidence if recon.supported else None,
+                supported=recon.supported,
+            )
+        await repo.record_audit(
+            correlation_id=correlation,
+            action="extraction.run",
+            patient_id=PatientId(value=pid),
+        )
+        row = await repo.get_source_document(document_id)
+        if row is not None:
+            row.status = IngestionStatus.extracted.value
+        await session.flush()
+        return extraction.id, len(reconciled)
+
+
+def _new_correlation_id() -> str:
+    """A fresh, valid CorrelationId for a direct (non-request) invocation."""
+    return f"doc-ingest-{secrets.token_hex(8)}"

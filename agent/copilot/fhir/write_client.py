@@ -231,6 +231,40 @@ class OpenEmrWriteClient:
             committed_at=self._now(),
         )
 
+    # --- document upload (Week-2 ingestion) -------------------------------
+
+    async def upload_document(
+        self,
+        pid: PatientId,
+        content: bytes,
+        *,
+        filename: str = "document.pdf",
+        doc_type: str = "lab_pdf",
+        category: str | None = None,
+        mime_type: str = "application/pdf",
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Multipart-POST a source document to the Standard API; return its id.
+
+        The Week-2 document-ingestion pipeline stores the source bytes in OpenEMR
+        (which owns the document) before deriving pages/facts from them. Fail-closed
+        like every write: only an explicit ``201`` whose body carries a parseable
+        document id is success; anything else raises ``OpenEmrWriteError``.
+        """
+        files = {"document": (filename, content, mime_type)}
+        data: dict[str, str] = {"doc_type": doc_type}
+        if category:
+            data["path"] = category
+        resp = await self._send(
+            "POST",
+            f"/patient/{pid}/document",
+            files=files,
+            data=data,
+            idempotency_key=idempotency_key,
+        )
+        self._require(resp, 201)
+        return _document_id(self._json(resp))
+
     # --- transport --------------------------------------------------------
 
     async def _send(
@@ -239,13 +273,18 @@ class OpenEmrWriteClient:
         path: str,
         *,
         json_body: Mapping[str, Any] | None = None,
+        files: Mapping[str, tuple[str, bytes, str]] | None = None,
+        data: Mapping[str, str] | None = None,
         idempotency_key: str | None = None,
     ) -> httpx.Response:
         """One request with a single forced-refresh retry on 401.
 
-        Transport errors (timeouts, connection failures) and token-acquisition
-        failures raise ``OpenEmrWriteError`` — the write is unconfirmed, so it is
-        FAILED, never assumed committed.
+        A JSON body (``json_body``) and a multipart body (``files`` + optional
+        ``data`` form fields) are mutually exclusive shapes; multipart sets no
+        explicit ``Content-Type`` so httpx emits the ``multipart/form-data``
+        boundary itself. Transport errors (timeouts, connection failures) and
+        token-acquisition failures raise ``OpenEmrWriteError`` — the write is
+        unconfirmed, so it is FAILED, never assumed committed.
         """
         url = f"{self._base_url}{path}"
 
@@ -255,10 +294,14 @@ class OpenEmrWriteClient:
                 "Authorization": f"{token.token_type} {token.access_token}",
                 "Accept": "application/json",
             }
-            if json_body is not None:
+            if json_body is not None and files is None:
                 headers["Content-Type"] = "application/json"
             if idempotency_key:
                 headers["Idempotency-Key"] = idempotency_key
+            if files is not None:
+                return await self._client.request(
+                    method, url, files=files, data=data, headers=headers
+                )
             return await self._client.request(method, url, json=json_body, headers=headers)
 
         try:
@@ -318,6 +361,30 @@ def _require_id(body: Mapping[str, Any], key: str) -> str:
     if isinstance(value, str) and value.strip():
         return value
     raise OpenEmrWriteError(f"write response missing a usable {key!r} id")
+
+
+def _document_id(body: Mapping[str, Any]) -> str:
+    """Extract a usable document id from the create envelope, or fail-closed.
+
+    OpenEMR's document create envelope is not standardized across ids, so try the
+    document-specific key first, then the generic id/uuid, at the top level and
+    inside a ``data`` object. An int is stringified; a missing/empty/non-scalar id
+    means the upload is unconfirmed — treated FAILED.
+    """
+    sources: list[Mapping[str, Any]] = [body]
+    nested = body.get("data")
+    if isinstance(nested, Mapping):
+        sources.append(nested)
+    for source in sources:
+        for key in ("document_id", "id", "uuid"):
+            value = source.get(key)
+            if isinstance(value, bool):  # bool is an int subclass — never a valid id
+                continue
+            if isinstance(value, int):
+                return str(value)
+            if isinstance(value, str) and value.strip():
+                return value
+    raise OpenEmrWriteError("document upload response missing a usable document id")
 
 
 def _envelope_list(body: Mapping[str, Any]) -> list[Any]:
