@@ -31,7 +31,14 @@ def current_correlation_id() -> str:
 
 
 class Span(Protocol):
-    """Opaque span handle — implementations own the details."""
+    """Opaque span handle — implementations own the details.
+
+    Spans NEST by enclosing context: a ``span()`` opened while another span is
+    still open is a CHILD of that span (parent/child, not a flat sibling). The
+    Langfuse backend threads the correlation id through the whole tree so a
+    multi-agent trace reconstructs from the correlation id alone; the no-op
+    backend keeps the same nesting shape at zero cost.
+    """
 
     def set_attribute(self, key: str, value: Any) -> None: ...
     def set_output(self, value: Any) -> None: ...
@@ -41,10 +48,11 @@ class Observability(Protocol):
     """Protocol every observability backend implements."""
 
     @asynccontextmanager
-    def span(self, name: str, **attributes: Any) -> AsyncIterator[Span]: ...
+    def span(self, name: str, **attributes: Any) -> AsyncIterator[Span]:
+        """Open a span. Nested calls become children of the enclosing span."""
 
     def event(self, name: str, **attributes: Any) -> None:
-        """One-off event — no timing, no children."""
+        """One-off event — no timing; attaches to the enclosing span if any."""
 
     def record_verification(self, *, passed: bool, action: str, patient_id: int) -> None:
         """A verification pass/fail event — matches the dashboard metric."""
@@ -68,7 +76,11 @@ class _NoopSpan:
 
 
 class NoopObservability:
-    """Zero-cost placeholder — safe to inject when Langfuse is not wired."""
+    """Zero-cost placeholder — safe to inject when Langfuse is not wired.
+
+    Nesting is a no-op here: each ``span()`` yields an independent no-op span, so
+    nested-span callers work unchanged without recording anything.
+    """
 
     @asynccontextmanager
     async def span(self, name: str, **attributes: Any) -> AsyncIterator[Span]:
