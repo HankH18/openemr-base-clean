@@ -32,7 +32,9 @@ import httpx
 
 from copilot.domain.primitives import PatientId, utcnow
 from copilot.domain.writes import (
+    AllergyWrite,
     CommittedWrite,
+    MedicalProblemWrite,
     MedicationWrite,
     VitalWrite,
     WritableMetric,
@@ -95,7 +97,8 @@ def _fmt_num(value: float) -> str:
 
 
 class OpenEmrWriteClient:
-    """Small async writer for vitals + medications on the Standard REST API."""
+    """Small async writer for vitals, medications, issues (medical problems /
+    allergies) and documents on the Standard REST API."""
 
     def __init__(
         self,
@@ -226,6 +229,72 @@ class OpenEmrWriteClient:
         new_id = _require_id(self._json(resp), "id")
         return CommittedWrite(
             resource_kind=WriteKind.medication,
+            new_id=new_id,
+            encounter_id=None,
+            committed_at=self._now(),
+        )
+
+    # --- issue writes (F4b: intake-derived, physician-confirmed) ----------
+
+    async def create_medical_problem(
+        self,
+        pid: PatientId,
+        problem: MedicalProblemWrite,
+        *,
+        idempotency_key: str | None = None,
+    ) -> CommittedWrite:
+        """POST a new medical_problem list row. Returns proof or raises.
+
+        Standard-API route ``POST /patient/{pid}/medical_problem`` — the
+        physician-confirmed commit of an intake-derived problem. Fail-closed
+        like every write: only an explicit ``201`` whose body carries a
+        parseable id is success.
+        """
+        payload: dict[str, str] = {"title": problem.title, "begdate": problem.begdate}
+        if problem.diagnosis:
+            payload["diagnosis"] = problem.diagnosis
+        resp = await self._send(
+            "POST",
+            f"/patient/{pid}/medical_problem",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
+        self._require(resp, 201)
+        new_id = _require_id(self._json(resp), "id")
+        return CommittedWrite(
+            resource_kind=WriteKind.medical_problem,
+            new_id=new_id,
+            encounter_id=None,
+            committed_at=self._now(),
+        )
+
+    async def create_allergy(
+        self,
+        pid: PatientId,
+        allergy: AllergyWrite,
+        *,
+        idempotency_key: str | None = None,
+    ) -> CommittedWrite:
+        """POST a new allergy list row. Returns proof or raises.
+
+        Standard-API route ``POST /patient/{pid}/allergy`` — the
+        physician-confirmed commit of an intake-derived allergy. Fail-closed
+        like every write: only an explicit ``201`` whose body carries a
+        parseable id is success.
+        """
+        payload: dict[str, str] = {"title": allergy.title, "begdate": allergy.begdate}
+        if allergy.reaction:
+            payload["reaction"] = allergy.reaction
+        resp = await self._send(
+            "POST",
+            f"/patient/{pid}/allergy",
+            json_body=payload,
+            idempotency_key=idempotency_key,
+        )
+        self._require(resp, 201)
+        new_id = _require_id(self._json(resp), "id")
+        return CommittedWrite(
+            resource_kind=WriteKind.allergy,
             new_id=new_id,
             encounter_id=None,
             committed_at=self._now(),
