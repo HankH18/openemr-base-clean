@@ -8,7 +8,7 @@ never leaks to callers.  See ARCHITECTURE §"Components → memory-store".
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,8 +21,11 @@ from copilot.domain.contracts import (
     ValueDirection,
 )
 from copilot.domain.primitives import (
+    CitationSourceType,
     ClinicianId,
+    DocumentCitation,
     FhirReference,
+    GuidelineCitation,
     PatientId,
     ResourceType,
     utcnow,
@@ -31,12 +34,18 @@ from copilot.memory.models import (
     AuditLogRow,
     ClinicianRow,
     ConversationRow,
+    DocumentPageRow,
+    ExtractedFactRow,
+    ExtractionRow,
+    GuidelineChunkRow,
+    GuidelineDocumentRow,
     LastSeenRow,
     LoginTxnRow,
     MemoryFileRow,
     MessageRow,
     PhysicianSessionRow,
     RoundingCursorRow,
+    SourceDocumentRow,
     SyncStateRow,
 )
 from copilot.memory.records import ConversationMessage, RoundingCursor
@@ -403,8 +412,287 @@ class MemoryRepository:
         result = await self._session.execute(select(LoginTxnRow).where(LoginTxnRow.state == state))
         return result.scalar_one_or_none()
 
+    # --- Week-2 document ingestion (source_document / document_page / extraction /
+    #     extracted_fact) + guideline corpus (guideline_document / guideline_chunk) --
+    #
+    # Phase-0 CRUD gateway: create/get accessors over the six W2 tables. Contracts
+    # in, rows out, no SQL leaks. Grounding (F5) reads back the stored, immutable
+    # rows through these; the append-only extraction discipline lives in the models.
+
+    async def create_source_document(
+        self,
+        *,
+        patient_id: int,
+        doc_type: str,
+        correlation_id: str,
+        openemr_document_id: str | None = None,
+        category_path: str | None = None,
+        filename: str | None = None,
+        content_hash: str = "",
+        page_count: int = 0,
+        status: str = "uploaded",
+        uploaded_by: int | None = None,
+    ) -> SourceDocumentRow:
+        """Register an agent-side handle for a document uploaded to OpenEMR."""
+        row = SourceDocumentRow(
+            patient_id=patient_id,
+            doc_type=doc_type,
+            correlation_id=correlation_id,
+            openemr_document_id=openemr_document_id,
+            category_path=category_path,
+            filename=filename,
+            content_hash=content_hash,
+            page_count=page_count,
+            status=status,
+            uploaded_by=uploaded_by,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_source_document(self, document_id: int) -> SourceDocumentRow | None:
+        result = await self._session.execute(
+            select(SourceDocumentRow).where(SourceDocumentRow.id == document_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_document_page(
+        self,
+        *,
+        source_document_id: int,
+        page_no: int,
+        image: bytes | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        ocr_tokens: list[dict[str, Any]] | None = None,
+    ) -> DocumentPageRow:
+        """Persist one rasterized page render + its OCR word boxes."""
+        row = DocumentPageRow(
+            source_document_id=source_document_id,
+            page_no=page_no,
+            image=image,
+            width=width,
+            height=height,
+            ocr_tokens=ocr_tokens if ocr_tokens is not None else [],
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_document_pages(
+        self, source_document_id: int, page_no: int | None = None
+    ) -> list[DocumentPageRow]:
+        """All pages of a document (ascending), optionally narrowed to one page."""
+        stmt = select(DocumentPageRow).where(
+            DocumentPageRow.source_document_id == source_document_id
+        )
+        if page_no is not None:
+            stmt = stmt.where(DocumentPageRow.page_no == page_no)
+        result = await self._session.execute(stmt.order_by(DocumentPageRow.page_no))
+        return list(result.scalars().all())
+
+    async def create_extraction(
+        self,
+        *,
+        source_document_id: int,
+        correlation_id: str,
+        schema_version: str = "",
+        model: str | None = None,
+        confidence_overall: float | None = None,
+        status: str = "ok",
+    ) -> ExtractionRow:
+        """Append one extraction run over a source document (never mutates prior runs)."""
+        row = ExtractionRow(
+            source_document_id=source_document_id,
+            correlation_id=correlation_id,
+            schema_version=schema_version,
+            model=model,
+            confidence_overall=confidence_overall,
+            status=status,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_extraction(self, extraction_id: int) -> ExtractionRow | None:
+        result = await self._session.execute(
+            select(ExtractionRow).where(ExtractionRow.id == extraction_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_extracted_fact(
+        self,
+        *,
+        extraction_id: int,
+        field_path: str,
+        value: str | None = None,
+        unit: str | None = None,
+        reference_range: str | None = None,
+        abnormal_flag: str | None = None,
+        collection_date: datetime | None = None,
+        page_no: int | None = None,
+        bbox: list[float] | None = None,
+        match_confidence: float | None = None,
+        supported: bool = False,
+    ) -> ExtractedFactRow:
+        """Persist one schema-validated fact with its reconciled page/bbox provenance."""
+        row = ExtractedFactRow(
+            extraction_id=extraction_id,
+            field_path=field_path,
+            value=value,
+            unit=unit,
+            reference_range=reference_range,
+            abnormal_flag=abnormal_flag,
+            collection_date=collection_date,
+            page_no=page_no,
+            bbox=bbox,
+            match_confidence=match_confidence,
+            supported=supported,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_extracted_facts(self, extraction_id: int) -> list[ExtractedFactRow]:
+        """Every fact produced by one extraction run (ascending id)."""
+        result = await self._session.execute(
+            select(ExtractedFactRow)
+            .where(ExtractedFactRow.extraction_id == extraction_id)
+            .order_by(ExtractedFactRow.id)
+        )
+        return list(result.scalars().all())
+
+    async def create_guideline_document(
+        self,
+        *,
+        title: str,
+        source: str | None = None,
+        license: str | None = None,
+    ) -> GuidelineDocumentRow:
+        """Register one source guideline document in the local corpus."""
+        row = GuidelineDocumentRow(title=title, source=source, license=license)
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_guideline_document(
+        self, guideline_document_id: int
+    ) -> GuidelineDocumentRow | None:
+        result = await self._session.execute(
+            select(GuidelineDocumentRow).where(GuidelineDocumentRow.id == guideline_document_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create_guideline_chunk(
+        self,
+        *,
+        guideline_document_id: int,
+        content: str,
+        section: str | None = None,
+        chunk_index: int = 0,
+        embedding: list[float] | None = None,
+    ) -> GuidelineChunkRow:
+        """Persist one retrievable chunk (text + dense embedding + section)."""
+        row = GuidelineChunkRow(
+            guideline_document_id=guideline_document_id,
+            content=content,
+            section=section,
+            chunk_index=chunk_index,
+            embedding=embedding,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def get_guideline_chunks(
+        self, guideline_document_id: int
+    ) -> list[GuidelineChunkRow]:
+        """Every chunk of a guideline document, in chunk order."""
+        result = await self._session.execute(
+            select(GuidelineChunkRow)
+            .where(GuidelineChunkRow.guideline_document_id == guideline_document_id)
+            .order_by(GuidelineChunkRow.chunk_index)
+        )
+        return list(result.scalars().all())
+
 
 # --- (de)serialization ------------------------------------------------------
+
+
+def _citation_to_json(
+    ref: FhirReference | DocumentCitation | GuidelineCitation,
+) -> dict[str, Any]:
+    """Serialize a claim citation, tagged by its ``source_type`` discriminator.
+
+    Hand-written (rather than ``model_dump``) so the on-disk shape is pinned and
+    the deserializer below is its exact inverse — a load→save cycle is byte-equal.
+    """
+    if isinstance(ref, DocumentCitation):
+        return {
+            "source_type": CitationSourceType.document.value,
+            "source_id": ref.source_id,
+            "page_or_section": ref.page_or_section,
+            "field_or_chunk_id": ref.field_or_chunk_id,
+            "quote_or_value": ref.quote_or_value,
+            "bbox": list(ref.bbox) if ref.bbox is not None else None,
+            "confidence": ref.confidence,
+        }
+    if isinstance(ref, GuidelineCitation):
+        return {
+            "source_type": CitationSourceType.guideline.value,
+            "source_id": ref.source_id,
+            "page_or_section": ref.page_or_section,
+            "field_or_chunk_id": ref.field_or_chunk_id,
+            "quote_or_value": ref.quote_or_value,
+        }
+    return {
+        "source_type": CitationSourceType.fhir.value,
+        "resource_type": ref.resource_type.value,
+        "resource_id": ref.resource_id,
+        "field": ref.field,
+        "value": ref.value,
+        "last_updated": ref.last_updated.isoformat() if ref.last_updated else None,
+        "timestamp": ref.timestamp.isoformat() if ref.timestamp else None,
+    }
+
+
+def _citation_from_json(
+    ref: dict[str, Any],
+) -> FhirReference | DocumentCitation | GuidelineCitation:
+    """Rehydrate a citation, dispatching on ``source_type``.
+
+    Back-compat: a Week-1 row carries no ``source_type``, so ``.get`` defaults it
+    to ``fhir`` and the legacy shape rehydrates as a :class:`FhirReference`
+    unchanged.
+    """
+    source_type = ref.get("source_type", CitationSourceType.fhir.value)
+    if source_type == CitationSourceType.document.value:
+        return DocumentCitation(
+            source_id=ref["source_id"],
+            page_or_section=ref["page_or_section"],
+            field_or_chunk_id=ref["field_or_chunk_id"],
+            quote_or_value=ref["quote_or_value"],
+            bbox=ref.get("bbox"),
+            confidence=ref.get("confidence"),
+        )
+    if source_type == CitationSourceType.guideline.value:
+        return GuidelineCitation(
+            source_id=ref["source_id"],
+            page_or_section=ref["page_or_section"],
+            field_or_chunk_id=ref["field_or_chunk_id"],
+            quote_or_value=ref["quote_or_value"],
+        )
+    last_upd = ref.get("last_updated")
+    # Older rows predate `timestamp`; `.get` defaults it to None (backward-compatible).
+    ts = ref.get("timestamp")
+    return FhirReference(
+        resource_type=ResourceType(ref["resource_type"]),
+        resource_id=ref["resource_id"],
+        field=ref["field"],
+        value=ref["value"],
+        last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
+        timestamp=datetime.fromisoformat(ts) if ts else None,
+    )
 
 
 def _claim_to_json(c: Claim) -> dict[str, Any]:
@@ -415,24 +703,11 @@ def _claim_to_json(c: Claim) -> dict[str, Any]:
         "severity": c.severity.value if c.severity is not None else None,
         "trend_direction": c.trend_direction.value if c.trend_direction is not None else None,
         "value_direction": c.value_direction.value if c.value_direction is not None else None,
-        "source_ref": {
-            "resource_type": c.source_ref.resource_type.value,
-            "resource_id": c.source_ref.resource_id,
-            "field": c.source_ref.field,
-            "value": c.source_ref.value,
-            "last_updated": c.source_ref.last_updated.isoformat()
-            if c.source_ref.last_updated
-            else None,
-            "timestamp": c.source_ref.timestamp.isoformat() if c.source_ref.timestamp else None,
-        },
+        "source_ref": _citation_to_json(c.source_ref),
     }
 
 
 def _claim_from_json(c: dict[str, Any]) -> Claim:
-    ref = c["source_ref"]
-    last_upd = ref.get("last_updated")
-    # Older rows predate `timestamp`; `.get` defaults it to None (backward-compatible).
-    ts = ref.get("timestamp")
     # Older rows predate `severity`/`trend_direction`/`value_direction`; `.get`
     # defaults to None so a pre-classification memory file deserializes unchanged.
     severity = c.get("severity")
@@ -443,14 +718,11 @@ def _claim_from_json(c: dict[str, Any]) -> Claim:
         severity=ClaimSeverity(severity) if severity else None,
         trend_direction=TrendDirection(trend) if trend else None,
         value_direction=ValueDirection(value_dir) if value_dir else None,
-        source_ref=FhirReference(
-            resource_type=ResourceType(ref["resource_type"]),
-            resource_id=ref["resource_id"],
-            field=ref["field"],
-            value=ref["value"],
-            last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
-            timestamp=datetime.fromisoformat(ts) if ts else None,
-        ),
+        # `Claim.source_ref` is `SkipValidation[FhirReference]` (see contracts.py):
+        # the static type is the fhir variant so legacy readers stay valid, but at
+        # runtime it holds whichever citation the discriminator selected. This cast
+        # is the single seam of that trick — the value is a real citation instance.
+        source_ref=cast("FhirReference", _citation_from_json(c["source_ref"])),
     )
 
 
