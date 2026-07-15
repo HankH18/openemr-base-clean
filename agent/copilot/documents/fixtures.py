@@ -43,11 +43,11 @@ STUB_INTAKE_FACTS: list[dict[str, Any]] = [
     {"field_path": "chief_complaint", "value": "Hemoglobin", "page_no": 1, "category": "chief_complaint"},
 ]
 
-# Recorded medication-list extraction — one fact per medication, each verbatim
-# drug name present in STUB_PAGE_TOKENS so it reconciles to a bbox. ``category``
-# is omitted on purpose: MedicationFact fixes it to ``medication``, so the stub
-# demonstrates that a medication list is homogeneous without repeating the tag.
+# Recorded medication-list extraction — one IntakeFact per medication, each
+# verbatim drug name present in STUB_PAGE_TOKENS so it reconciles to a bbox. Each
+# carries ``category='medication'``; MedicationListDocument's validator drops any
+# non-medication fact, so the persisted list stays homogeneous.
 STUB_MEDLIST_FACTS: list[dict[str, Any]] = [
-    {"field_path": "medications[0].name", "value": "Lisinopril", "page_no": 1},
-    {"field_path": "medications[1].name", "value": "Metformin", "page_no": 1},
+    {"field_path": "medications[0].name", "value": "Lisinopril", "page_no": 1, "category": "medication"},
+    {"field_path": "medications[1].name", "value": "Metformin", "page_no": 1, "category": "medication"},
 ]

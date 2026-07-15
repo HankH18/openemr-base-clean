@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ExtractedFact(BaseModel):
@@ -112,46 +112,31 @@ class IntakeForm(BaseModel):
     completed_at: datetime | None = Field(default=None, strict=False)
 
 
-class MedicationFact(IntakeFact):
-    """One medication, pinned to the OpenEMR ``medication`` list.
-
-    A medication list is *homogeneous* — every fact is a medication — so the
-    OpenEMR ``category`` is fixed to :attr:`IntakeCategory.medication` rather
-    than left free: the default supplies it (the VLM need not emit it) and a
-    validator rejects any other value, so an allergy or problem can never sneak
-    into a medication list. This is why a dedicated ``MedicationFact`` is cleaner
-    than a bare ``list[IntakeFact]`` — "all medications" becomes a type-level
-    guarantee, not a per-fact convention the caller must uphold.
-
-    It subclasses :class:`IntakeFact` (not :class:`ExtractedFact`) on purpose:
-    the ingestion pipeline already persists ``category`` for every
-    :class:`IntakeFact`, so a medication fact round-trips to ``lists
-    type='medication'`` with no pipeline change. ``value`` stays the verbatim
-    drug name; a dose or frequency is its own fact under a distinct
-    ``field_path``.
-    """
-
-    category: IntakeCategory = Field(default=IntakeCategory.medication, strict=False)
-
-    @field_validator("category")
-    @classmethod
-    def _pin_to_medication(cls, value: IntakeCategory) -> IntakeCategory:
-        if value is not IntakeCategory.medication:
-            raise ValueError("a medication-list fact's category is fixed to 'medication'")
-        return value
-
-
 class MedicationListDocument(BaseModel):
     """Strict schema for a parsed medication list (VLM extraction target).
 
-    Like :class:`LabReport` / :class:`IntakeForm`, ``facts`` is required
-    content — an empty list of medications does not default itself into a valid
-    document. Each fact is a :class:`MedicationFact`, so the whole extraction is
-    pinned to the OpenEMR ``medication`` record type.
+    Uses the same ``list[IntakeFact]`` shape as :class:`IntakeForm` — the shape
+    the real vision path validates reliably — rather than a deeper
+    ``MedicationFact`` subclass: the extra subclass depth made some vision models
+    return ``facts`` as a JSON *string* instead of a list. A medication list is
+    homogeneous, so a ``model_validator`` keeps only ``medication``-category
+    facts: a stray non-medication line (e.g. a scanned patient/header line the
+    VLM picks up) is dropped rather than failing the whole extraction, while the
+    persisted list is still guaranteed to be all medications. ``facts`` is
+    required content (an empty payload does not default itself into a valid doc);
+    each surviving fact round-trips to ``lists type='medication'`` unchanged.
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    facts: list[MedicationFact]
+    facts: list[IntakeFact]
     patient_name: str | None = None
     completed_at: datetime | None = Field(default=None, strict=False)
+
+    @model_validator(mode="after")
+    def _keep_only_medications(self) -> MedicationListDocument:
+        """Drop any non-``medication`` fact so a medication list stays homogeneous."""
+        meds = [fact for fact in self.facts if fact.category is IntakeCategory.medication]
+        if len(meds) == len(self.facts):
+            return self
+        return self.model_copy(update={"facts": meds})

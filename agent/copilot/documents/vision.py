@@ -29,7 +29,6 @@ from copilot.domain.documents import (
     IntakeFact,
     IntakeForm,
     LabReport,
-    MedicationFact,
     MedicationListDocument,
 )
 
@@ -122,7 +121,7 @@ class StubVision:
                 )
             case DocumentType.medication_list:
                 return MedicationListDocument(
-                    facts=[MedicationFact.model_validate(f) for f in STUB_MEDLIST_FACTS]
+                    facts=[IntakeFact.model_validate(f) for f in STUB_MEDLIST_FACTS]
                 )
 
 

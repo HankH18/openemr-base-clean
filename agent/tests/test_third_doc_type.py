@@ -2,11 +2,11 @@
 
 A medication-list document flows through the same upload -> extract -> reconcile
 -> persist pipeline as ``lab_pdf`` and ``intake_form``, driven entirely by
-``schema_for`` (no pipeline edit). These guards prove the wiring end-to-end at the
-extraction boundary: the doc type parses, resolves to the strict
-``MedicationListDocument`` schema, and the keyless stub returns medication facts
-that are pinned to the OpenEMR ``medication`` category, validate strictly, and
-reconcile against the recorded OCR page.
+``schema_for`` (no pipeline edit). ``MedicationListDocument`` uses the same
+``list[IntakeFact]`` shape as ``IntakeForm`` (the shape real vision validates
+reliably) and a validator that keeps only ``medication``-category facts, so a
+stray non-medication line is dropped rather than failing the whole extraction
+while the persisted list stays homogeneous.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from copilot.documents.vision import DocumentType, build_vision, parse_doc_type,
 from copilot.domain.documents import (
     IntakeCategory,
     IntakeFact,
-    MedicationFact,
     MedicationListDocument,
 )
 
@@ -35,36 +34,38 @@ def test_schema_for_returns_medication_list_document() -> None:
     assert schema_for(DocumentType.medication_list) is MedicationListDocument
 
 
-def test_medication_fact_is_pinned_to_the_medication_category() -> None:
-    # The default supplies the category (the VLM need not emit it) ...
-    fact = MedicationFact.model_validate({"field_path": "medications[0].name", "value": "Lisinopril"})
-    assert fact.category is IntakeCategory.medication
-    # ... and it round-trips through the IntakeFact persistence path.
-    assert isinstance(fact, IntakeFact)
-
-
-def test_medication_fact_rejects_a_non_medication_category() -> None:
-    # A medication list is homogeneous — an allergy can never sneak in.
-    with pytest.raises(ValidationError):
-        MedicationFact.model_validate(
-            {"field_path": "medications[0].name", "value": "Penicillin", "category": "allergy"}
-        )
-
-
-def test_medication_fact_keeps_value_a_verbatim_string() -> None:
-    # extra="forbid" + strict: an unknown key or a coerced value fails loudly.
-    fact = MedicationFact.model_validate({"field_path": "medications[0].name", "value": "10"})
-    assert fact.value == "10"
-    assert isinstance(fact.value, str)
-    with pytest.raises(ValidationError):
-        MedicationFact.model_validate(
-            {"field_path": "m", "value": "Lisinopril", "dose": "10mg"}
-        )
+def test_medication_list_keeps_only_medication_facts() -> None:
+    # A stray non-medication line (e.g. a scanned header the VLM picks up) is
+    # dropped, not fatal — the persisted list stays homogeneous.
+    doc = MedicationListDocument.model_validate(
+        {
+            "facts": [
+                {"field_path": "medications[0].name", "value": "Lisinopril", "category": "medication"},
+                {"field_path": "patient.name", "value": "Jordan Rivera", "category": "demographic"},
+                {"field_path": "medications[1].name", "value": "Metformin", "category": "medication"},
+            ]
+        }
+    )
+    assert [f.value for f in doc.facts] == ["Lisinopril", "Metformin"]
+    assert all(f.category is IntakeCategory.medication for f in doc.facts)
 
 
 def test_medication_list_document_requires_facts() -> None:
     with pytest.raises(ValidationError):
         MedicationListDocument.model_validate({})
+
+
+def test_medication_facts_keep_value_a_verbatim_string() -> None:
+    # extra="forbid" + strict: an unknown key or a coerced value fails loudly.
+    doc = MedicationListDocument.model_validate(
+        {"facts": [{"field_path": "medications[0].name", "value": "10", "category": "medication"}]}
+    )
+    assert doc.facts[0].value == "10"
+    assert isinstance(doc.facts[0].value, str)
+    with pytest.raises(ValidationError):
+        MedicationListDocument.model_validate(
+            {"facts": [{"field_path": "m", "value": "Lisinopril", "category": "medication", "dose": "10mg"}]}
+        )
 
 
 def test_stub_extraction_returns_categorized_medication_facts() -> None:
@@ -74,7 +75,7 @@ def test_stub_extraction_returns_categorized_medication_facts() -> None:
     assert isinstance(report, MedicationListDocument)
     assert report.facts, "stub medication-list extraction should return facts"
     for fact in report.facts:
-        assert isinstance(fact, MedicationFact)
+        assert isinstance(fact, IntakeFact)
         assert fact.category is IntakeCategory.medication
         assert isinstance(fact.value, str) and fact.value
 
