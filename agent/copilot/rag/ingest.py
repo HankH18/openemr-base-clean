@@ -3,11 +3,14 @@
 The in-repo corpus lives at ``agent/corpus/`` as Markdown files, each carrying
 a ``---``-fenced front-matter block with per-source provenance metadata
 (``title`` / ``source`` / ``license`` — see ``agent/corpus/LICENSES.md``).
-:func:`ingest_corpus` chunks each document by ``##`` section (long sections
-split on paragraph boundaries), embeds every chunk through the injected
-:class:`~copilot.rag.embeddings.Embedder` (the deterministic keyless Stub in
-tests/CI), and persists rows through the F1 ``MemoryRepository`` guideline
-accessors.
+:func:`ingest_corpus` chunks each document by its Markdown heading structure
+(headings ``#`` to ``######``; a nested heading yields a ``parent/child`` section
+breadcrumb, so a chunk carries the *path* to its section rather than just the
+leaf), splits any over-length section on paragraph boundaries with a small
+carried-over overlap so context is never severed mid-boundary, embeds every
+chunk through the injected :class:`~copilot.rag.embeddings.Embedder` (the
+deterministic keyless Stub in tests/CI), and persists rows through the F1
+``MemoryRepository`` guideline accessors.
 
 Idempotent by design: the front-matter ``source`` is the natural key — a
 document whose ``source`` is already registered is skipped wholesale, so
@@ -33,9 +36,18 @@ CORPUS_DIR = Path(__file__).resolve().parents[2] / "corpus"
 #: chunks (characters, not tokens — deterministic and fully offline).
 MAX_CHUNK_CHARS = 1200
 
+#: When an over-length section is split, this many characters of the previous
+#: piece's tail are carried into the next so a query term that straddles a chunk
+#: boundary still co-occurs in one chunk. Bounded and word-aligned, so the
+#: overlap never grows a chunk unboundedly or begins mid-word.
+CHUNK_OVERLAP_CHARS = 200
+
 _REQUIRED_KEYS = ("title", "source", "license")
 
-_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
+#: Any ATX heading, levels 1 to 6. Group 1 is the ``#`` run (its length = level),
+#: group 2 the heading text. Setext (``===``/``---``) headings are not used by
+#: the corpus and are intentionally out of scope.
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -110,26 +122,43 @@ def parse_front_matter(text: str) -> tuple[dict[str, str], str]:
     raise ValueError("unterminated front-matter block (missing closing '---')")
 
 
-def chunk_body(body: str, *, max_chars: int = MAX_CHUNK_CHARS) -> list[CorpusChunk]:
-    """Deterministically chunk a Markdown body by ``##`` section.
+def chunk_body(
+    body: str,
+    *,
+    max_chars: int = MAX_CHUNK_CHARS,
+    overlap_chars: int = CHUNK_OVERLAP_CHARS,
+) -> list[CorpusChunk]:
+    """Deterministically chunk a Markdown body along its heading structure.
 
-    Each ``##`` heading starts a new section (slugified into the chunk's
-    ``section`` label); text before the first heading becomes a ``preamble``
-    section. Sections longer than ``max_chars`` are split greedily on
-    blank-line paragraph boundaries so no chunk mid-sentence-splits.
+    Each ATX heading (``#`` to ``######``) starts a new section. Headings nest by
+    level, so a chunk's ``section`` label is the slugified breadcrumb of the
+    heading path (``fluid-therapy/rates`` for a ``###`` under a ``##``); a lone
+    top-level heading is just its own slug, so a flat ``##``-only document is
+    unchanged. Text before the first heading becomes a ``preamble`` section.
+
+    Sections longer than ``max_chars`` are split greedily on blank-line
+    paragraph boundaries so no chunk mid-sentence-splits, and each split piece
+    after the first is prefixed with a bounded, word-aligned ``overlap_chars``
+    tail of the previous piece so context spanning the boundary is retained.
     """
     chunks: list[CorpusChunk] = []
-    heading = "preamble"
+    breadcrumb: list[tuple[int, str]] = []
+    section = "preamble"
     buffer: list[str] = []
     for line in body.splitlines():
         match = _HEADING_RE.match(line)
         if match is None:
             buffer.append(line)
             continue
-        chunks.extend(_section_chunks(heading, buffer, max_chars))
-        heading = _slugify(match.group(1))
+        chunks.extend(_section_chunks(section, buffer, max_chars, overlap_chars))
+        level = len(match.group(1))
+        slug = _slugify(match.group(2))
+        while breadcrumb and breadcrumb[-1][0] >= level:
+            breadcrumb.pop()
+        breadcrumb.append((level, slug))
+        section = "/".join(part for _level, part in breadcrumb)
         buffer = []
-    chunks.extend(_section_chunks(heading, buffer, max_chars))
+    chunks.extend(_section_chunks(section, buffer, max_chars, overlap_chars))
     return chunks
 
 
@@ -233,7 +262,9 @@ def _slugify(heading: str) -> str:
     return slug or "section"
 
 
-def _section_chunks(heading: str, lines: list[str], max_chars: int) -> list[CorpusChunk]:
+def _section_chunks(
+    section: str, lines: list[str], max_chars: int, overlap_chars: int
+) -> list[CorpusChunk]:
     text = "\n".join(lines).strip()
     if not text:
         return []
@@ -244,9 +275,27 @@ def _section_chunks(heading: str, lines: list[str], max_chars: int) -> list[Corp
         candidate = f"{current}\n\n{paragraph}" if current else paragraph
         if current and len(candidate) > max_chars:
             pieces.append(current)
-            current = paragraph
+            tail = _overlap_tail(current, overlap_chars)
+            current = f"{tail}\n\n{paragraph}" if tail else paragraph
         else:
             current = candidate
     if current:
         pieces.append(current)
-    return [CorpusChunk(section=heading, content=piece) for piece in pieces]
+    return [CorpusChunk(section=section, content=piece) for piece in pieces]
+
+
+def _overlap_tail(text: str, overlap_chars: int) -> str:
+    """The last ``overlap_chars`` characters of ``text``, aligned to a word start.
+
+    Deterministic and bounded: never longer than ``overlap_chars`` and trimmed
+    forward to the first whitespace so the carried-over context never begins in
+    the middle of a word. Returns ``""`` when overlap is disabled.
+    """
+    if overlap_chars <= 0:
+        return ""
+    if len(text) <= overlap_chars:
+        return text
+    tail = text[-overlap_chars:]
+    parts = re.split(r"\s+", tail, maxsplit=1)
+    remainder = parts[1] if len(parts) == 2 else tail
+    return remainder or tail

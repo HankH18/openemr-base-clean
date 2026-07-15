@@ -14,8 +14,12 @@ Pinned surface (W2_ARCHITECTURE.md §RAG):
   no fabricated citation).
 
 Pipeline: the query is routed through the ``deidentify`` choke point *first*,
-so every downstream egress (embedder, reranker) sees only de-identified text.
-Sparse retrieval is Postgres full-text (``to_tsvector``/``plainto_tsquery``)
+then :func:`~copilot.rag.query.expand_query` rewrites clinical abbreviations
+into the de-identified text (deidentify → expand → retrieve), so every
+downstream egress (embedder, reranker) sees only de-identified — and never
+raw — text, now enriched for recall. A bounded section-heading boost then
+re-prioritises hits whose section matches the query's key terms before the
+rerank. Sparse retrieval is Postgres full-text (``to_tsvector``/``plainto_tsquery``)
 with a portable term-overlap fallback on SQLite; dense retrieval scores cosine
 similarity over the stored embeddings (pgvector on Postgres, a JSON list on
 SQLite). The Cohere rerank is a best-effort refinement: its failure or absence
@@ -43,6 +47,7 @@ from copilot.memory.repository import MemoryRepository
 from copilot.rag._lexical import overlap_score, tokenize
 from copilot.rag.deidentify import deidentify
 from copilot.rag.embeddings import Embedder, build_embedder
+from copilot.rag.query import expand_query
 from copilot.rag.rerank import Reranker, build_reranker
 
 _logger = logging.getLogger(__name__)
@@ -51,6 +56,14 @@ _logger = logging.getLogger(__name__)
 #: fixtures are rank-invariant in k, so the exact value only affects score
 #: magnitudes, never the ordering of clearly-separated candidates.
 RRF_K = 60
+
+#: Additive score boost for a chunk whose section heading shares a term with the
+#: query. Sized as one top-rank reciprocal term (``1/(k+1)``) — a section match
+#: is worth about being one rank higher in one ranking: enough to break near
+#: ties in favour of the on-topic section, not enough to bury a strong
+#: sparse+dense hit. Applied only to already-retrieved candidates, so it
+#: re-prioritises hits and never fabricates retrieval of an unmatched chunk.
+SECTION_MATCH_BOOST = 1.0 / (RRF_K + 1)
 
 
 # --- reciprocal rank fusion -----------------------------------------------------
@@ -129,18 +142,23 @@ class GuidelineRetriever:
     async def retrieve(self, query: str, top_k: int = 4) -> list[GuidelineEvidence]:
         """Return the top-``k`` guideline-evidence chunks for ``query``.
 
-        The query is de-identified before any embedder/reranker call. An empty
-        corpus returns ``[]`` — explicit no-evidence, never a fabricated cite.
+        The query is de-identified *then* expanded (deidentify → expand →
+        retrieve) before any embedder/reranker call, so egress is both
+        PHI-scrubbed and recall-enriched. An empty corpus returns ``[]`` —
+        explicit no-evidence, never a fabricated cite.
         """
         scrubbed = deidentify(query)
+        # Abbreviation expansion runs strictly AFTER the PHI choke point, so it
+        # only ever sees de-identified text and can never re-introduce PHI.
+        expanded = expand_query(scrubbed)
         async with session_scope() as session:
             rows = await MemoryRepository(session).list_guideline_chunks()
             if not rows:
                 return []
-            # Dense: embed the (de-identified) query at retrieve time.
-            query_vec = self._embedder.embed([scrubbed])[0]
+            # Dense: embed the (de-identified, expanded) query at retrieve time.
+            query_vec = self._embedder.embed([expanded])[0]
             dense_ids = _dense_rank(rows, query_vec)
-            sparse_ids = await self._sparse_rank(session, rows, scrubbed)
+            sparse_ids = await self._sparse_rank(session, rows, expanded)
             candidates = {
                 str(row.id): _Candidate(
                     chunk_id=str(row.id),
@@ -151,10 +169,10 @@ class GuidelineRetriever:
                 for row in rows
             }
 
-        scores = rrf_scores(sparse_ids, dense_ids)
+        scores = _boost_section_matches(rrf_scores(sparse_ids, dense_ids), candidates, expanded)
         fused = [cid for cid, _score in sorted(scores.items(), key=lambda kv: -kv[1])]
         fused_candidates = [candidates[cid] for cid in fused if cid in candidates]
-        ordered = self._apply_rerank(scrubbed, fused_candidates)
+        ordered = self._apply_rerank(expanded, fused_candidates)
         return [_to_evidence(candidate, scores) for candidate in ordered[:top_k]]
 
     async def _sparse_rank(
@@ -230,6 +248,28 @@ def _dense_rank(rows: list[GuidelineChunkRow], query_vec: Sequence[float]) -> li
     ]
     scored.sort(key=lambda pair: -pair[1])
     return [chunk_id for chunk_id, _score in scored]
+
+
+def _boost_section_matches(
+    scores: dict[str, float], candidates: dict[str, _Candidate], query: str
+) -> dict[str, float]:
+    """Add :data:`SECTION_MATCH_BOOST` to hits whose section matches the query.
+
+    The heading path is a strong topical signal, so a chunk already retrieved by
+    sparse/dense ranking whose section shares a key term with the (de-identified,
+    expanded) query is promoted by a bounded amount. Only ids already in
+    ``scores`` are touched — the boost re-prioritises hits, never resurrects an
+    unmatched chunk. Deterministic: a plain dict copy with additive boosts.
+    """
+    query_terms = set(tokenize(query))
+    if not query_terms:
+        return scores
+    boosted = dict(scores)
+    for chunk_id in boosted:
+        candidate = candidates.get(chunk_id)
+        if candidate is not None and set(tokenize(candidate.section)) & query_terms:
+            boosted[chunk_id] += SECTION_MATCH_BOOST
+    return boosted
 
 
 def _portable_sparse_rank(rows: list[GuidelineChunkRow], query: str) -> list[str]:
