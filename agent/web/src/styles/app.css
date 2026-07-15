@@ -983,8 +983,52 @@
 .doc-upload {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-width: 0;
+}
+
+/* Document-kind selector — a compact segmented radio group. The selection
+   is sent verbatim as doc_type; the values are the backend's closed enum
+   (lab_pdf / intake_form / medication_list), typed end-to-end. */
+.doc-type-group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.doc-type-chip {
+  padding: 6px 10px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.doc-type-chip + .doc-type-chip {
+  border-left: 1px solid var(--line-soft);
+}
+
+.doc-type-chip[data-hovered] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.doc-type-chip[data-selected] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.doc-type-chip[data-disabled] {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* In the hero action row, the upload sits left while Done stays right. */
@@ -1650,6 +1694,84 @@
   font-size: 10.5px;
   color: var(--ink-faint);
   overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------- guideline evidence */
+
+/* The SEPARATE guideline-evidence block under an answer. Literature, not
+   the patient's record — a dotted frame + section-sign kicker (the same
+   motif as the guideline citation chip), so it can never be mistaken for
+   the grounded claim rows above it. */
+.guideline-block {
+  margin: 12px 14px;
+  padding: 10px 12px;
+  border: 1px dotted var(--line-strong);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.guideline-kicker {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.guideline-glyph {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.guideline-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.guideline-item {
+  padding: 8px 0 6px;
+}
+
+.guideline-item + .guideline-item {
+  border-top: 1px dashed var(--line-soft);
+}
+
+.guideline-section {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.guideline-quote {
+  margin: 3px 0 0;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.guideline-source {
+  margin-top: 4px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.guideline-note {
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px dotted var(--line);
+  font-size: 11.5px;
+  color: var(--ink-faint);
 }
 
 /* Degraded: caution border, normal voice. */

@@ -4,6 +4,7 @@ import type { ObservationSeries, Verification } from '../api/types';
 import type { ChatMessage } from '../state/useChat';
 import { ClaimList } from './ClaimList';
 import type { ConfirmWrite, ProposeWrite } from './EditRecordDialog';
+import { GuidelineEvidenceBlock } from './GuidelineEvidenceBlock';
 
 type FetchTrend = (metric: string) => Promise<ObservationSeries>;
 
@@ -58,6 +59,7 @@ function Answer({
           />
         </div>
       ) : null}
+      <GuidelineEvidenceBlock items={message.guidelineEvidence} />
       {message.correlationId !== null ? (
         <p className="msg-a-foot">corr {message.correlationId}</p>
       ) : null}

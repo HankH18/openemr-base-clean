@@ -284,7 +284,9 @@ function RoundsApp({
                 busy={rounds.busy}
                 onDone={handleDone}
                 fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
-                uploadDocument={(file) => api.uploadDocument(card.patient_id, file)}
+                uploadDocument={(file, docType) =>
+                  api.uploadDocument(card.patient_id, file, docType)
+                }
               />
               <ChatPanel
                 given={entry?.given ?? `patient ${card.patient_id}`}

@@ -1,9 +1,16 @@
 import { useState } from 'react';
-import { Button, FileTrigger } from 'react-aria-components';
-import { DEFAULT_DOC_TYPE, uploadDocument } from '../api/documents';
+import { Button, FileTrigger, Radio, RadioGroup } from 'react-aria-components';
+import {
+  DEFAULT_DOC_TYPE,
+  DOC_TYPES,
+  DOC_TYPE_LABELS,
+  isDocType,
+  uploadDocument,
+  type DocType,
+} from '../api/documents';
 import { ApiError, type DocumentAccepted } from '../api/types';
 
-export type UploadFn = (file: File) => Promise<DocumentAccepted>;
+export type UploadFn = (file: File, docType: DocType) => Promise<DocumentAccepted>;
 
 type Phase = 'idle' | 'uploading' | 'accepted' | 'error';
 
@@ -24,24 +31,31 @@ function failureMessage(error: unknown): string {
  * error. Extraction is async server-side, so "accepted" deliberately does not
  * claim the facts are ready.
  *
+ * A segmented `RadioGroup` beside the trigger picks the document kind; the
+ * selection is sent verbatim as `doc_type`. The choices are the backend's
+ * closed `DocumentType` enum, typed end-to-end (`DocType`), so an invalid
+ * value cannot be sent.
+ *
  * `upload` is injectable (the App seam passes the API adapter's uploader, so
  * mock mode simulates ingestion); it defaults to the real multipart poster.
  */
 export function DocumentUpload({
   patientId,
-  docType = DEFAULT_DOC_TYPE,
+  initialDocType = DEFAULT_DOC_TYPE,
   upload,
   onAccepted,
 }: {
   patientId: number;
-  docType?: string;
+  /** Pre-selected document kind; the physician can change it before uploading. */
+  initialDocType?: DocType;
   upload?: UploadFn;
   onAccepted?: (accepted: DocumentAccepted) => void;
 }): JSX.Element {
   const [phase, setPhase] = useState<Phase>('idle');
   const [message, setMessage] = useState('');
+  const [docType, setDocType] = useState<DocType>(initialDocType);
 
-  const doUpload: UploadFn = upload ?? ((file) => uploadDocument(file, patientId, docType));
+  const doUpload: UploadFn = upload ?? ((file, type) => uploadDocument(file, patientId, type));
 
   const handleSelect = (files: FileList | null): void => {
     const file = files?.[0];
@@ -50,7 +64,7 @@ export function DocumentUpload({
     }
     setPhase('uploading');
     setMessage(`Uploading ${file.name}…`);
-    doUpload(file)
+    doUpload(file, docType)
       .then((accepted) => {
         setPhase('accepted');
         setMessage(`${file.name} accepted — extracting (${accepted.document_id}).`);
@@ -64,6 +78,24 @@ export function DocumentUpload({
 
   return (
     <div className="doc-upload" data-phase={phase}>
+      <RadioGroup
+        className="doc-type-group"
+        aria-label="Document type"
+        orientation="horizontal"
+        value={docType}
+        onChange={(value) => {
+          if (isDocType(value)) {
+            setDocType(value);
+          }
+        }}
+        isDisabled={phase === 'uploading'}
+      >
+        {DOC_TYPES.map((type) => (
+          <Radio key={type} className="doc-type-chip" value={type}>
+            {DOC_TYPE_LABELS[type]}
+          </Radio>
+        ))}
+      </RadioGroup>
       <FileTrigger
         acceptedFileTypes={['application/pdf', 'image/png', 'image/jpeg', 'image/tiff']}
         onSelect={handleSelect}

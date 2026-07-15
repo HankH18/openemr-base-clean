@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { CopilotApi } from '../api/client';
-import type { Claim, Verification } from '../api/types';
+import type { Claim, GuidelineEvidenceItem, Verification } from '../api/types';
 import { newCorrelationId } from '../ids';
 
 export interface ChatMessage {
@@ -8,6 +8,8 @@ export interface ChatMessage {
   kind: 'question' | 'answer' | 'error';
   text: string;
   claims: Claim[];
+  /** Separate guideline backing — literature, never patient-fact claims. */
+  guidelineEvidence: GuidelineEvidenceItem[];
   verification: Verification | null;
   correlationId: string | null;
   pending: boolean;
@@ -62,6 +64,7 @@ export function useChat(api: CopilotApi, clinicianId: number): ChatController {
         kind: 'question',
         text: message,
         claims: [],
+        guidelineEvidence: [],
         verification: null,
         correlationId: null,
         pending: false,
@@ -72,6 +75,7 @@ export function useChat(api: CopilotApi, clinicianId: number): ChatController {
         kind: 'answer',
         text: 'Checking the record…',
         claims: [],
+        guidelineEvidence: [],
         verification: null,
         correlationId: null,
         pending: true,
@@ -92,6 +96,7 @@ export function useChat(api: CopilotApi, clinicianId: number): ChatController {
           kind: 'answer',
           text: response.answer,
           claims: response.claims,
+          guidelineEvidence: response.guideline_evidence ?? [],
           verification: response.verification,
           correlationId: response.correlation_id,
           pending: false,
@@ -102,6 +107,7 @@ export function useChat(api: CopilotApi, clinicianId: number): ChatController {
           kind: 'error',
           text: 'The record service did not respond — this question was not answered. Nothing is inferred without a source.',
           claims: [],
+          guidelineEvidence: [],
           verification: null,
           correlationId: null,
           pending: false,

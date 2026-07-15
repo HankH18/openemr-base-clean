@@ -20,6 +20,7 @@ import type {
   WriteCandidate,
   WriteKind,
 } from './types';
+import type { DocType } from './documents';
 import { createMockApi } from './mock';
 import { createHttpApi } from './http';
 import { resolveApiBase } from './base';
@@ -83,7 +84,7 @@ export interface CopilotApi {
    * extraction. Resolves with the 202 acknowledgement; extraction status is
    * polled separately. The mock adapter simulates acceptance offline.
    */
-  uploadDocument(patientId: number, file: File, docType?: string): Promise<DocumentAccepted>;
+  uploadDocument(patientId: number, file: File, docType?: DocType): Promise<DocumentAccepted>;
 }
 
 export function createApi(): CopilotApi {

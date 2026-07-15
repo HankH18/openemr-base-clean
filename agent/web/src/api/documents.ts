@@ -8,8 +8,30 @@ import { resolveApiBase } from './base';
 import { getCsrfToken } from './session';
 import { ApiError, type DocumentAccepted } from './types';
 
+/**
+ * The closed set of ingestible document kinds — mirrors the backend
+ * `DocumentType` enum (copilot/documents/vision.py) exactly. Modeled as a
+ * const tuple + union so an invalid `doc_type` cannot be sent again (the
+ * service replies 400 to anything outside this set).
+ */
+export const DOC_TYPES = ['lab_pdf', 'intake_form', 'medication_list'] as const;
+
+export type DocType = (typeof DOC_TYPES)[number];
+
+/** Physician-facing labels for the upload selector, keyed by wire value. */
+export const DOC_TYPE_LABELS: Record<DocType, string> = {
+  lab_pdf: 'Lab report (PDF)',
+  intake_form: 'Intake form',
+  medication_list: 'Medication list',
+};
+
+/** Narrow an arbitrary string to a valid `DocType` — parse, don't cast. */
+export function isDocType(value: string): value is DocType {
+  return (DOC_TYPES as readonly string[]).includes(value);
+}
+
 /** Default doc_type for uploads from the rounds UI. */
-export const DEFAULT_DOC_TYPE = 'intake_lab_report';
+export const DEFAULT_DOC_TYPE: DocType = 'lab_pdf';
 
 /**
  * URL of one rendered page image — `GET /v1/documents/{id}/pages/{page_no}`
@@ -50,7 +72,7 @@ function acceptedFrom(payload: unknown): DocumentAccepted {
 export async function uploadDocument(
   file: File,
   patientId: number,
-  docType: string = DEFAULT_DOC_TYPE,
+  docType: DocType = DEFAULT_DOC_TYPE,
   base: string = resolveApiBase(),
 ): Promise<DocumentAccepted> {
   const body = new FormData();
