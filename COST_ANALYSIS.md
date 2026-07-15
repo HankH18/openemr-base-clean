@@ -9,17 +9,27 @@ model is built to be recomputed as real Langfuse token/latency data lands (see
 The point of this document is not a single dollar figure — it is the
 **cost-architecture story**: which components cost money, which are engineered
 to cost *nothing* until work actually changes, and what has to change at each
-order of magnitude.
+order of magnitude. This revision extends the model to the **Week-2 multimodal**
+surface — Claude-vision document extraction, Voyage guideline embeddings, and
+Cohere reranking (§2–§4, §6) — and adds a first-class **latency treatment
+(p50 + p95)** for every meaningful path in **§9**.
 
-Two model IDs and their prices are the source of truth for every LLM figure
-below, and both are read straight from the code:
+The model IDs and their prices are the source of truth for every LLM figure
+below, and all are read straight from the code:
 
 - Models are configured in `agent/copilot/config.py` — `anthropic_model_synthesis`
-  defaults to **`claude-sonnet-5`** ("Model for synthesis and chat") and
+  defaults to **`claude-sonnet-5`** ("Model for synthesis and chat"),
   `anthropic_model_gating` defaults to **`claude-haiku-4-5-20251001`**
-  ("Cheaper model for classification / entailment").
-- Per-token rates live in `agent/copilot/observability/pricing.py`, and USD cost
-  per request is computed deterministically from the reported token counts by
+  ("Cheaper model for classification / entailment"), and the Week-2
+  `anthropic_model_vision` defaults to **`claude-sonnet-5`** (structured
+  extraction from document page images).
+- Week-2 retrieval adds two non-Anthropic SKUs: `voyage_embedding_model` =
+  **`voyage-3.5`** (guideline-corpus embeddings) and `cohere_rerank_model` =
+  **`rerank-v3.5`** (retrieval rerank). Local OCR is **Tesseract**, self-hosted
+  in-container (`ocr_language` / `ocr_dpi`) — no vendor per-call fee.
+- Per-token rates for **all** of these live in
+  `agent/copilot/observability/pricing.py`, and USD cost per request is computed
+  deterministically from the reported token counts by
   `cost_usd(model, input_tokens, output_tokens)`.
 
 ---
@@ -86,24 +96,67 @@ cost the current build incurs.
 This "cost-scales-with-change" design, plus the deterministic-by-default posture,
 is the single most important lever in every tier below.
 
+### 1d. Week-2 multimodal paths — new model calls, same change-gated posture
+
+Week 2 adds two feature surfaces, each with its own model calls. Both are
+**flag-gated and key-gated**: `document_ingestion_enabled` defaults to `False`,
+and with no `VOYAGE_API_KEY` / `COHERE_API_KEY` the embedder and reranker fall
+back to deterministic **keyless stubs** (no outbound call, **$0**). So, exactly
+as with Week-1 synthesis, the Week-2 model spend is **$0 until an operator turns
+the surface on and wires real keys.**
+
+| Week-2 path | Model / tool | When it fires | Cost lever |
+|---|---|---|---|
+| **Document extraction** (`POST /v1/documents` → `ClaudeVision`) | `claude-sonnet-5` (vision), `max_tokens=4096`, tool-forced JSON | Once per uploaded document, on ingest | Page images per doc (tokens ≈ page area); one-shot, batchable |
+| **Local OCR** (`Tesseract`, in-container) | self-hosted CPU | Every ingested page (rasterize → OCR word boxes for bbox reconciliation) | **$0 marginal** — no vendor fee; adds latency, not dollars |
+| **Guideline embeddings** (`voyage-3.5`) | Voyage AI | Corpus **ingest** (once per corpus build/refresh, cached) + **per retrieval query** (embed the de-identified query) | Corpus is one-time/amortized; per-query embed is negligible |
+| **Retrieval rerank** (`rerank-v3.5`) | Cohere | Per guideline-retrieval query (best-effort; fail-open to fused order) | ~1 search/query; the dominant *retrieval-side* unit cost, still tiny |
+
+PHI posture is preserved: document **images** go only to Claude (as in Week 1);
+a `deidentify()` choke-point strips identifiers before any Voyage or Cohere call.
+Guideline retrieval is **fail-open** — a rerank/embed failure degrades evidence
+quality but never withholds the grounded patient answer — so it is a
+quality/latency surface, not an availability one.
+
 ---
 
-## 2. Real Anthropic token pricing (source of truth)
+## 2. Real model + SKU pricing (source of truth)
 
-Per-million-token pricing for the two models this system is configured to call,
-copied verbatim from `agent/copilot/observability/pricing.py` (rate card "as of
-2026-07"; an unrecognised model falls back to the sonnet-tier rate so an unknown
-model is never costed as free):
+Per-million-token pricing for every model + SKU this system is configured to
+call, copied verbatim from `agent/copilot/observability/pricing.py` (rate card
+"as of 2026-07"; an unrecognised model falls back to the sonnet-tier rate so an
+unknown model is never costed as free):
 
 | Model | Role in system | Input $/1M | Output $/1M |
 |---|---|---|---|
-| `claude-sonnet-5` | chat (live) + synthesis (projected) | **$3.00** (intro **$2.00** through 2026‑08‑31) | **$15.00** (intro **$10.00**) |
+| `claude-sonnet-5` | chat (live) + synthesis (projected) + **Week-2 vision extraction** | **$3.00** (intro **$2.00** through 2026‑08‑31) | **$15.00** (intro **$10.00**) |
 | `claude-haiku-4-5-20251001` | optional entailment / gating tier (dormant today) | **$1.00** | **$5.00** |
+| `voyage-3.5` | **Week-2** guideline embeddings (corpus ingest + per query) | **$0.06** | **$0.00** (embeddings emit no output tokens) |
+| `rerank-v3.5` | **Week-2** retrieval rerank (per query) | **$0.25** (normalized — see below) | **$0.00** |
+| **Tesseract OCR** | **Week-2** local page OCR (bbox reconciliation) | **$0.00** (self-hosted, in-container) | **$0.00** |
 
 The intro sonnet-5 rate is a real per-token discount noted in the pricing
 docstring; the `cost_usd` table itself carries the **standard** $3/$15, so every
 figure below uses standard pricing and is therefore conservative — 2026 intro
-pricing would cut the LLM line ~33%.
+pricing would cut the Anthropic line ~33%. Note the **vision** model
+(`anthropic_model_vision`) defaults to `claude-sonnet-5`, so it resolves to the
+same real $3/$15 row — never the unknown-model fallback.
+
+**Two Week-2 rates are documented normalizations, straight from the
+`pricing.py` docstring:**
+
+- **`voyage-3.5`** is Voyage AI's list price, **$0.06 per 1M input tokens**;
+  embedding calls have no output, so the output rate is $0.
+- **`rerank-v3.5`** is priced by Cohere per **search unit** ($2.00 per 1k
+  searches; one unit = query + up to 100 documents), not per token. The pricing
+  table's surface is per-token, so the code normalizes: a rerank call sends
+  ~20 candidate chunks × ~400 tokens ≈ 8k input tokens per search, i.e.
+  `$0.002 / 8k tokens ⇒ $0.25 / 1M input tokens` — deliberately on the
+  conservative (high) side so rerank spend is never under-reported. Per-query,
+  that is Cohere's native **$0.002 / search**.
+- **OCR** is Tesseract running in the container — CPU only, **no vendor
+  per-call fee** ($0 marginal). It contributes to ingestion *latency* (§9c),
+  not to the dollar line.
 
 Prompt caching (used from the 1,000-user tier up): cache **reads** ≈ 0.1× input
 price; cache **writes** ≈ 1.25× (5-minute TTL). Batch API (used at 10k+ for the
@@ -152,6 +205,50 @@ detect real change — not on every poll. **In the current build this line is $0
 (the poller uses the deterministic stub and is off by default); the number is
 what a synthesized change *would* cost once the LLM synthesizer is enabled.
 
+### 3c. One document extraction — `claude-sonnet-5` (vision), `max_tokens=4096` (Week-2)
+
+`ClaudeVision` rasterizes each page at `ocr_dpi=200`, base64-encodes the PNG(s),
+and makes **one** tool-forced call whose input schema *is* the strict extraction
+schema. The input is dominated by the **page images**, not text. Assumptions
+(illustrative; the per-request truth lands on the trace via `cost_usd`):
+
+| Component | Tokens |
+|---|---:|
+| Page images — a letter page at 200 DPI, downscaled to Anthropic's per-image working size (image tokens ≈ width×height ÷ 750), **~1,600 tokens/page**, typical **2-page** doc | 3,200 in |
+| System prompt + forced-tool JSON schema | ~500 in |
+| Structured extraction (facts list) — bounded by `max_tokens=4096` | ~800 out |
+| **Billed total** | **≈ 3,700 in / 800 out** |
+
+Cost = 3,700/1e6 × $3 + 800/1e6 × $15 = $0.0111 + $0.0120 ≈ **$0.023 per
+document** (standard). Round up to **~$0.03/document** for conservative planning
+(≈ $0.015 at intro pricing; a single-page doc ≈ $0.013). Extraction is **one
+shot per upload** and non-interactive, so it is a natural **Batch API (50% off)**
+candidate at scale (§6).
+
+### 3d. Guideline embeddings — `voyage-3.5` (Week-2)
+
+Two distinct cost moments, both tiny:
+
+- **Per-corpus ingest (one-time / on refresh).** Chunks are ≤ `MAX_CHUNK_CHARS`
+  (1,200 chars ≈ ~300 tokens each) and embedded once, then cached. A ~1,000-chunk
+  starter corpus ≈ 300,000 tokens → 300,000/1e6 × $0.06 = **$0.018 one-time**
+  (even a 10,000-chunk corpus is ~$0.18). Amortized across all users ⇒ ~$0/user.
+- **Per query.** Only the short de-identified query is embedded (~40 tokens):
+  40/1e6 × $0.06 ≈ **$0.0000024 / query** — rounds to zero even at millions of
+  queries.
+
+### 3e. Retrieval rerank — `rerank-v3.5` (Week-2)
+
+One Cohere search per guideline-retrieval query over the fused candidate set
+(~20 chunks). At the normalized rate that is 8,000/1e6 × $0.25 = **$0.002 /
+query** (= Cohere's native $2.00/1k searches). Rerank is best-effort and
+**fail-open** — a Cohere error falls back to the fused sparse+dense order at
+$0, so this line is bounded above by the query volume and never blocks an answer.
+
+**Per-retrieval total (embed + rerank) ≈ $0.002/query**, essentially all of it
+Cohere. Retrieval fires only on guideline-seeking chat turns, so it rides on top
+of a fraction of chat turns, not all of them (§4).
+
 ---
 
 ## 4. Per-user monthly usage model (stated assumptions)
@@ -163,6 +260,9 @@ what a synthesized change *would* cost once the LLM synthesizer is enabled.
 | Patients on a clinician's panel | 15 |
 | Substantive syntheses / patient / day (after change-gating; ~144 raw ticks/day at the 300s default interval, but only real changes cost) | 6 |
 | Patient-panel sharing (a patient synthesized once serves every clinician viewing them) | none at 100 users; grows with scale |
+| Documents ingested / clinician / day (Week-2) | 2 |
+| Guideline retrievals / clinician / day (Week-2; fires on ~half of the 25 chat turns) | 12 |
+| Guideline corpus embeds (Week-2) | one-time / on refresh (amortized ≈ $0) |
 
 **Current build (chat is the only live LLM cost):**
 
@@ -177,9 +277,23 @@ what a synthesized change *would* cost once the LLM synthesizer is enabled.
 - Synthesis: 15 patients × 6 × $0.022 = **$1.98**
 - **≈ $3.23 / clinician / day → ≈ $71 / clinician / month** (standard; ≈ $45 at intro).
 
+**Week-2 multimodal add-on (once document ingestion + guideline retrieval are enabled):**
+
+- Vision extraction: 2 docs × $0.03 = **$0.06 / clinician / day**
+- Guideline retrieval (rerank + query embed): 12 × $0.002 = **$0.024 / clinician / day**
+- Corpus embeddings: one-time / amortized ≈ **$0**; OCR (self-hosted) ≈ **$0**
+- **≈ $0.084 / clinician / day → ≈ $1.85 / clinician / month** (standard; round **~$2**).
+
+Stacked on the full system, that is **≈ $73 / clinician / month** (chat +
+synthesis + Week-2 multimodal). The Week-2 model lines are only **~3%** of the
+LLM bill and are dominated by **vision extraction**; retrieval is a rounding
+error, and OCR/corpus-embeds are ~$0.
+
 The projected tier table in §6 costs the **full system** (chat + LLM synthesis),
 since that is the architecture being scaled; the current build sits flat at the
-chat-only ≈ $28/user/mo until the synthesizer is switched on.
+chat-only ≈ $28/user/mo until the synthesizer is switched on. §6 then folds the
+Week-2 multimodal add-on on top, with its own per-tier levers (document dedup,
+Batch API for the non-interactive vision path, amortized corpus embeds).
 
 ---
 
@@ -227,6 +341,28 @@ build, the LLM line is chat-only — divide the per-user figure roughly in half.
 Per-user LLM cost **falls** with scale because each tier unlocks a new cost
 lever (dedup, caching, Haiku routing, Batch API, committed-use pricing) — see
 §7. At 2026 intro pricing every LLM line drops a further ~33%.
+
+### 6b. Week-2 multimodal add-on, folded into the tiers
+
+The Week-2 model lines (§3c–§3e) stack **on top** of the chat + synthesis figures
+above. They carry their own scale levers: a document **extracted once serves
+every clinician viewing that patient** (document dedup, mirroring patient-panel
+dedup), the non-interactive vision path is a **Batch API (50% off)** fit, the
+guideline **corpus is embedded once and shared** (amortized ≈ $0), and prompt
+caching applies to the stable vision system+tool prefix.
+
+| Tier (users) | Week-2 add-on /user/mo | Lever applied | Combined LLM+multimodal /user/mo | **New total/mo** |
+|---:|---:|---|---:|---:|
+| **100** | ~$2.0 | none (baseline) | ~$73 | **≈ $7,360** |
+| **1,000** | ~$1.5 | −20%: doc dedup + vision-prefix caching | ~$58 | **≈ $59,700** |
+| **10,000** | ~$1.1 | −40%: Batch API vision + caching + dedup | ~$43 | **≈ $443,000** |
+| **100,000** | ~$0.8 | −58%: org-wide doc dedup + batch-everything + committed-use | ~$31 | **≈ $3,170,000** |
+
+The add-on is **~3% of the LLM bill at 100 users and shrinks with scale** — the
+cost story is unchanged: chat and (projected) synthesis dominate; the multimodal
+surface is a modest, dedup-friendly increment. All figures standard pricing;
+intro pricing trims the Anthropic-priced portion (chat, synthesis, vision) a
+further ~33%.
 
 ---
 
@@ -313,7 +449,114 @@ lever (dedup, caching, Haiku routing, Batch API, committed-use pricing) — see
    through 2026‑08‑31.
 5. **Patient-panel sharing** — at 10k+ users, org-wide dedup is worth more than
    any single infra optimization.
+6. **Week-2 vision volume** — documents ingested/clinician/day × pages/doc is the
+   whole multimodal cost line (§3c dominates §3d–§3e). It is small today (~3% of
+   the LLM bill) but grows linearly with page count; **document dedup** (extract
+   once, serve every viewer) and **Batch API** on the non-interactive vision path
+   keep it sub-linear with users. Retrieval (Voyage + Cohere) and OCR are rounding
+   errors and move the number negligibly.
 
 Because every request is now traced with tokens + `cost_usd` (`OBSERVABILITY.md`),
 these estimates should be replaced with measured actuals within the first week
 of real traffic.
+
+---
+
+## 9. Latency — p50 and p95 across the meaningful paths
+
+Latency has two sources of truth, and each cell below is labeled **MEASURED** or
+**ESTIMATE**:
+
+1. **Measured service-layer percentiles** from `loadtest/RESULTS.md` (offline
+   httpx driver, `auth_mode=disabled`, **stubbed** LLM, throwaway SQLite —
+   *framework + transport only, no real model or FHIR call*; captured
+   2026-07-10). These are exact for the fast serve paths.
+2. **SLO-anchored estimates** for the paths whose latency is dominated by an
+   upstream model call. The stubbed p50/p95 harness
+   (`agent/scripts/latency_report.py`) measures the LLM-free floor; the
+   end-to-end numbers are estimated against the **published SLO targets**
+   (`OBSERVABILITY.md` §7.1 and Alert 2) because no production traces are
+   retained yet. Every estimate states its basis.
+
+### 9a. Fast serve paths — MEASURED (service layer, 10 concurrent users)
+
+| Path | p50 (ms) | p95 (ms) | Note |
+|---|---:|---:|---|
+| `GET /health` | **1.9** | **7.0** | pure liveness |
+| `GET /ready` | **13.2** | **25.9** | 503 when deps absent (expected) |
+| `GET /v1/rounds/current` (DB read) | **13.0** | **51.8** | deterministic round loop, Postgres read |
+| `POST /v1/rounds/start` | **12.4** | **20.8** | 500 in-harness (no live FHIR); 200 on the deployed stack |
+| `POST /v1/chat` (serve layer, stubbed agent, 200 fail-closed) | **56.0** | **108.5** | full serve path **minus** the live Claude call |
+
+At **50** concurrent users the single uvicorn worker + SQLite become the write
+bottleneck: `rounds/current` widens to **p50 156.3 / p95 414.9 ms** and the
+stubbed chat serve path to **p50 369.9 / p95 1,055.5 ms**, while `/health` stays
+flat (~10 ms p95). This is the empirical motivation for the §7 1,000-user step
+(stateless replicas + managed Postgres + Redis).
+
+### 9b. LLM chat turn (synthesis) — ESTIMATE (SLO-anchored)
+
+Real chat = the ~0.06 s p50 / ~0.1 s p95 **serve-layer floor** measured above
+**plus** the Claude `sonnet-5` tool-use loop (2–3 sequential Anthropic calls +
+a live FHIR re-fetch, §3a). The model calls dominate:
+
+| Path | p50 | p95 | Basis |
+|---|---:|---:|---|
+| **Grounded chat turn** (interactive) | **≈ 3.5 s** *(est)* | **≈ 7.5 s** *(est)* | sized to `OBSERVABILITY.md` Alert 2: chat **p95 < 8 s** warn, **p99 < 15 s** page; 2–3 sequential sonnet-5 calls + FHIR re-fetch |
+| **Background synthesis** (non-interactive, projected) | **≈ 2 s** *(est)* | **≈ 5 s** *(est)* | single sonnet-5 call, no tool loop; tolerant of minutes ⇒ Batch-friendly |
+
+p50 for the chat turn is a **conservative estimate** (~half the p95 SLO): a
+typical two-tool turn makes fewer/faster round-trips than the tail case the SLO
+guards. Replace with measured Langfuse percentiles once traffic flows.
+
+### 9c. Document ingestion (upload → extract) — MEASURED floor + ESTIMATE
+
+Pipeline: upload → rasterize → **Tesseract OCR** → **Claude-vision extraction**
+→ OCR reconcile → append-only persist.
+
+| Path | p50 | p95 | Basis |
+|---|---:|---:|---|
+| **Stub baseline** (keyless, no vision call) | **sub-second** *(measured)* | **sub-second** *(measured)* | `latency_report.py` — rasterize + OCR + reconcile + persist only |
+| **Real ingestion** (vision enabled) | **≈ 5 s** *(est)* | **≈ 10 s** *(est)* | `OBSERVABILITY.md` §7.1: `doc.ingest` **p95 < 12 s** warn / **< 30 s** page; dominated by the one vision call (§3c); CPU rasterize+OCR adds ~0.5–1 s/page |
+
+Ingestion **fails closed** (a failed run persists zero facts) and is
+non-interactive, so the tail matters less than for chat — a document a few
+seconds slow is invisible to the clinician.
+
+### 9d. Hybrid RAG retrieval — MEASURED floor + ESTIMATE
+
+Pipeline: de-identify → **Voyage embed** (query) → pgvector + FTS fuse →
+**Cohere rerank**.
+
+| Path | p50 | p95 | Basis |
+|---|---:|---:|---|
+| **Stub baseline** (keyless embed + rerank) | **low tens of ms** *(measured)* | **low tens of ms** *(measured)* | `latency_report.py` over the seeded corpus — DB fusion only, no network |
+| **Real retrieval** (Voyage + Cohere) | **≈ 450 ms** *(est)* | **≈ 800 ms** *(est)* | `OBSERVABILITY.md` §7.1: `guideline.retrieve` **p95 < 800 ms** warn / **< 2 s** page; two network hops (embed + rerank) dominate |
+
+Retrieval is **fail-open**: a Cohere/Voyage timeout falls back to the fused
+sparse+dense order, so a slow rerank caps *added* latency without ever blocking
+the grounded patient answer.
+
+### 9e. Latency bottleneck reading (per path)
+
+- **Serve layer (Week-1):** single uvicorn worker + SQLite serialize writes at
+  50u — chat climbs to a ~1.06 s p95, `rounds/current` to ~415 ms. Fixed by the
+  §7 1,000-user tier (replicas + managed Postgres + Redis). *Bottleneck: write
+  serialization.*
+- **Chat / synthesis:** the **Anthropic tool-use loop** — 2–3 sequential model
+  calls plus a live FHIR re-fetch — is the whole tail. `tool_calls` is the
+  lever (fewer round-trips ⇒ lower p95); prompt caching cuts per-call input
+  processing. *Bottleneck: sequential upstream model calls.*
+- **Document ingestion:** the **Claude-vision call** dominates; latency scales
+  with page count (per-page image tokens). Batch API trades latency for cost on
+  this non-interactive path. *Bottleneck: the vision model call (+ CPU OCR per
+  page).*
+- **Retrieval:** the **two network hops** (Voyage embed + Cohere rerank)
+  dominate; DB fusion is sub-tens-of-ms. Co-locating/caching the embedder and
+  reranker near the app trims the tail, and fail-open bounds the worst case.
+  *Bottleneck: embed + rerank network round-trips.*
+
+These estimates convert to **measured** p50/p95 as soon as production traces are
+retained — the same Langfuse spans in `OBSERVABILITY.md` §1 and §7.1 carry
+per-path duration, so this section recomputes from the trace exactly as the
+cost lines do.
