@@ -15,6 +15,8 @@ import {
   type ConversationMessage,
   type DeteriorationAlert,
   type Freshness,
+  type GuidelineCitation,
+  type GuidelineEvidenceItem,
   type ObservationSeries,
   type ObservationSeriesPoint,
   type PatientCard,
@@ -208,6 +210,59 @@ function normalizeVerification(v: unknown): Verification {
   return { action, passed: v['passed'] === true };
 }
 
+/** The typed guideline citation inside an evidence item; unreadable → null. */
+function normalizeGuidelineCitation(v: unknown): GuidelineCitation | null {
+  if (!isRecord(v)) {
+    return null;
+  }
+  const sourceId = v['source_id'];
+  const section = v['page_or_section'];
+  const chunkId = v['field_or_chunk_id'];
+  if (typeof sourceId !== 'string' || typeof section !== 'string' || typeof chunkId !== 'string') {
+    return null;
+  }
+  return {
+    source_type: 'guideline',
+    source_id: sourceId,
+    page_or_section: section,
+    field_or_chunk_id: chunkId,
+    quote_or_value: looseString(v['quote_or_value']),
+  };
+}
+
+/**
+ * Tolerant read of the separate guideline-evidence block. Evidence is
+ * best-effort backing, never gating: a missing or malformed block is `[]`
+ * (the grounded answer still renders), and an item with no passage text —
+ * nothing to show — is dropped rather than fabricated.
+ */
+function normalizeGuidelineEvidence(v: unknown): GuidelineEvidenceItem[] {
+  if (!Array.isArray(v)) {
+    return [];
+  }
+  const items: GuidelineEvidenceItem[] = [];
+  for (const raw of v) {
+    if (!isRecord(raw)) {
+      continue;
+    }
+    const content = looseString(raw['content']);
+    if (content === '') {
+      continue;
+    }
+    const score = raw['score'];
+    items.push({
+      source_type: 'guideline',
+      chunk_id: looseString(raw['chunk_id']),
+      document_id: looseString(raw['document_id']),
+      section: looseString(raw['section']),
+      content,
+      score: typeof score === 'number' && Number.isFinite(score) ? score : 0,
+      citation: normalizeGuidelineCitation(raw['citation']),
+    });
+  }
+  return items;
+}
+
 export function normalizeChat(v: unknown): ChatResponse {
   if (!isRecord(v)) {
     fail('chat response');
@@ -218,6 +273,7 @@ export function normalizeChat(v: unknown): ChatResponse {
     verification: normalizeVerification(v['verification']),
     conversation_id: normalizeId(v['conversation_id'], 'chat.conversation_id'),
     correlation_id: asString(v['correlation_id'], 'chat.correlation_id'),
+    guideline_evidence: normalizeGuidelineEvidence(v['guideline_evidence']),
   };
 }
 

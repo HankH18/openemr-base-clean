@@ -141,6 +141,13 @@ export interface ChatResponse {
   verification: Verification;
   conversation_id: number;
   correlation_id: string;
+  /**
+   * Retrieved guideline snippets backing the answer — a SEPARATE top-level
+   * block, deliberately never mixed into the patient-fact `claims` (a
+   * guideline recommendation is not a grounded patient observation). Absent
+   * or empty → the UI renders no guideline block.
+   */
+  guideline_evidence?: GuidelineEvidenceItem[];
 }
 
 export interface ConversationMessage {
@@ -198,6 +205,30 @@ export interface GuidelineCitation {
 
 /** Discriminated citation union — what Week 2 claims carry as their source. */
 export type Citation = FhirCitation | DocumentCitation | GuidelineCitation;
+
+// ------------------------------------------------------ guideline evidence
+
+/**
+ * One retrieved guideline chunk from the separate `guideline_evidence` block
+ * on `POST /v1/chat` — mirrors the backend `GuidelineEvidence` model
+ * (copilot/rag/retriever.py). Deliberately NOT a `Claim`: guideline backing
+ * is literature, never a patient record, and the two surfaces never mix.
+ */
+export interface GuidelineEvidenceItem {
+  source_type: 'guideline';
+  /** guideline_chunk row id — locates the exact corpus span. */
+  chunk_id: string;
+  /** guideline_document row id. */
+  document_id: string;
+  /** Section label within the guideline. */
+  section: string;
+  /** The retrieved passage text. */
+  content: string;
+  /** Retrieval relevance score. */
+  score: number;
+  /** The typed guideline citation for this chunk; null when unreadable. */
+  citation: GuidelineCitation | null;
+}
 
 // ---------------------------------------------------------------- documents
 

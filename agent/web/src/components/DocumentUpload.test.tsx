@@ -63,7 +63,9 @@ describe('DocumentUpload FileTrigger upload flow', () => {
       return;
     }
     expect(body.get('patient_id')).toBe('1003');
-    expect(body.get('doc_type')).toBe('intake_lab_report');
+    // Default doc_type is a VALID backend enum value (lab_pdf) — the old
+    // 'intake_lab_report' default was outside the enum and now 400s.
+    expect(body.get('doc_type')).toBe('lab_pdf');
     const sent = body.get('file');
     expect(sent).toBeInstanceOf(File);
     if (sent instanceof File) {
@@ -130,5 +132,62 @@ describe('DocumentUpload FileTrigger upload flow', () => {
     await screen.findByText(/accepted — extracting/i);
     expect(upload).toHaveBeenCalledTimes(1);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocumentUpload document-type selector', () => {
+  it('offers exactly the three valid backend kinds, lab report preselected', () => {
+    vi.stubGlobal('fetch', vi.fn<FetchFn>());
+    render(<DocumentUpload patientId={1003} />);
+
+    const group = screen.getByRole('radiogroup', { name: 'Document type' });
+    expect(group).toBeDefined();
+    const radios = screen.getAllByRole('radio');
+    expect(radios.map((r) => (r as HTMLInputElement).value)).toEqual([
+      'lab_pdf',
+      'intake_form',
+      'medication_list',
+    ]);
+    const lab = screen.getByRole('radio', { name: 'Lab report (PDF)' }) as HTMLInputElement;
+    expect(lab.checked).toBe(true);
+  });
+
+  it('sends the chosen doc_type when the physician picks a different kind', async () => {
+    const fetchMock = vi.fn<FetchFn>().mockResolvedValue(accepted202());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container } = render(<DocumentUpload patientId={1003} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Medication list' }));
+    selectFile(container, labFile());
+
+    await screen.findByText(/accepted — extracting/i);
+
+    const call = fetchMock.mock.calls[0];
+    expect(call).toBeDefined();
+    if (call === undefined) {
+      return;
+    }
+    const body = call[1]?.body;
+    expect(body).toBeInstanceOf(FormData);
+    if (!(body instanceof FormData)) {
+      return;
+    }
+    expect(body.get('doc_type')).toBe('medication_list');
+  });
+
+  it('hands the chosen doc_type to an injected upload function', async () => {
+    vi.stubGlobal('fetch', vi.fn<FetchFn>());
+    const upload = vi.fn().mockResolvedValue({
+      document_id: 'mock-doc-2',
+      status: 'processing',
+      correlation_id: null,
+    });
+
+    const { container } = render(<DocumentUpload patientId={1003} upload={upload} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Intake form' }));
+    selectFile(container, labFile());
+
+    await screen.findByText(/accepted — extracting/i);
+    expect(upload).toHaveBeenCalledWith(expect.any(File), 'intake_form');
   });
 });
