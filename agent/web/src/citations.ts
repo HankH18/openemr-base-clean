@@ -40,6 +40,11 @@ export interface CitationChipModel {
   pageNumber: number | null;
   /** The cited document/guideline id, when the source carries one. */
   sourceId: string | null;
+  /**
+   * Verbatim quoted text — labels the overlay's highlighted region.
+   * Document citations only, else null.
+   */
+  quote: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -78,6 +83,7 @@ function unknownModel(raw: unknown): CitationChipModel {
     bbox: null,
     pageNumber: null,
     sourceId: null,
+    quote: null,
   };
 }
 
@@ -102,6 +108,7 @@ function fhirModel(raw: Record<string, unknown>): CitationChipModel {
     bbox: null,
     pageNumber: null,
     sourceId: null,
+    quote: null,
   };
 }
 
@@ -133,6 +140,7 @@ function documentModel(raw: Record<string, unknown>): CitationChipModel {
     bbox: normalizedBbox(raw['bbox']),
     pageNumber,
     sourceId: sourceId !== '' ? sourceId : null,
+    quote: quote !== '' ? quote : null,
   };
 }
 
@@ -159,6 +167,7 @@ function guidelineModel(raw: Record<string, unknown>): CitationChipModel {
     bbox: null,
     pageNumber: null,
     sourceId: sourceId !== '' ? sourceId : null,
+    quote: null,
   };
 }
 

@@ -18,6 +18,7 @@ describe('citation adapter', () => {
     expect(model.details.map((d) => d.term)).toEqual(['Resource', 'Recorded value', 'Recorded']);
     expect(model.details.find((d) => d.emphasis)?.value).toBe('Ceftriaxone 1 g IV q24h');
     expect(model.bbox).toBeNull();
+    expect(model.quote).toBeNull();
   });
 
   it('defaults a legacy source_ref without source_type to the fhir variant', () => {
@@ -48,6 +49,7 @@ describe('citation adapter', () => {
     expect(model.pageNumber).toBe(3);
     expect(model.sourceId).toBe('doc-19');
     expect(model.bbox).toEqual([0.25, 0.5, 0.5, 0.25]);
+    expect(model.quote).toBe('Hemoglobin 9.1 g/dL');
     expect(model.details.find((d) => d.term === 'Match')?.value).toBe('92%');
     expect(model.details.find((d) => d.emphasis)?.value).toBe('Hemoglobin 9.1 g/dL');
   });

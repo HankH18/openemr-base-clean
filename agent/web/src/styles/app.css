@@ -949,6 +949,35 @@
   vector-effect: non-scaling-stroke;
 }
 
+/* The popover-embedded evidence figure (DocumentEvidence): a quiet
+   placeholder while the page image loads, then the overlay. A failed image
+   renders nothing — the text rows below remain the fallback view. */
+
+.prov-pop-dialog--evidence {
+  width: 420px;
+}
+
+.evidence-figure {
+  margin: 0 0 12px;
+}
+
+.evidence-loading {
+  display: grid;
+  place-items: center;
+  min-height: 140px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 2px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.evidence-probe {
+  display: none;
+}
+
 /* ------------------------------------------------------ document upload */
 
 .doc-upload {

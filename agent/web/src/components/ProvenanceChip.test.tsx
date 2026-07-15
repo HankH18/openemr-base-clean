@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { ProvenanceChip } from './ProvenanceChip';
 import type { Citation, SourceRef } from '../api/types';
@@ -34,6 +34,18 @@ function chipButton(): HTMLElement {
   const button = screen.getByRole('button');
   expect(button).toBeTruthy();
   return button;
+}
+
+/** Press the chip and wait for its React Aria popover dialog to appear. */
+async function openPopover(): Promise<HTMLElement> {
+  fireEvent.click(chipButton());
+  return screen.findByRole('dialog');
+}
+
+/** jsdom never decodes images, so intrinsic dimensions are stubbed per test. */
+function setIntrinsicSize(image: HTMLImageElement, width: number, height: number): void {
+  Object.defineProperty(image, 'naturalWidth', { value: width, configurable: true });
+  Object.defineProperty(image, 'naturalHeight', { value: height, configurable: true });
 }
 
 describe('ProvenanceChip', () => {
@@ -90,6 +102,70 @@ describe('ProvenanceChip', () => {
     const labels = new Set(seen.map((s) => s.label));
     expect(variants.size).toBe(3);
     expect(labels.size).toBe(3);
+  });
+
+  it('boxes the cited region on the page image when a document citation opens', async () => {
+    render(<ProvenanceChip source={DOCUMENT} />);
+    const dialog = await openPopover();
+
+    // The page image URL goes through the documents API module (shared
+    // base-URL normalization — '' → same-origin in tests).
+    const probe = dialog.querySelector<HTMLImageElement>('img.evidence-probe');
+    expect(probe).not.toBeNull();
+    if (probe === null) {
+      return;
+    }
+    expect(probe.getAttribute('src')).toBe('/v1/documents/doc-19/pages/3');
+
+    setIntrinsicSize(probe, 1000, 800);
+    fireEvent.load(probe);
+
+    // EvidenceOverlay renders in the popover with the probed intrinsic
+    // dimensions, and the citation's bbox lands on the right pixels.
+    const svg = dialog.querySelector('svg.evidence-svg');
+    expect(svg?.getAttribute('viewBox')).toBe('0 0 1000 800');
+    const rect = dialog.querySelector('rect.evidence-box');
+    expect(rect).not.toBeNull();
+    expect(Number.parseFloat(rect?.getAttribute('x') ?? '')).toBeCloseTo(250, 5);
+    expect(Number.parseFloat(rect?.getAttribute('y') ?? '')).toBeCloseTo(400, 5);
+    expect(Number.parseFloat(rect?.getAttribute('width') ?? '')).toBeCloseTo(500, 5);
+    expect(Number.parseFloat(rect?.getAttribute('height') ?? '')).toBeCloseTo(200, 5);
+    expect(rect?.querySelector('title')?.textContent).toBe('Hemoglobin 9.1 g/dL');
+
+    const page = dialog.querySelector('img.evidence-page');
+    expect(page?.getAttribute('alt')).toContain('page 3');
+
+    // The text details stay alongside the visual.
+    expect(dialog.textContent).toContain('Hemoglobin 9.1 g/dL');
+    expect(dialog.textContent).toContain('92%');
+  });
+
+  it('falls back to the text-only popover when the page image fails to load', async () => {
+    render(<ProvenanceChip source={DOCUMENT} />);
+    const dialog = await openPopover();
+
+    const probe = dialog.querySelector<HTMLImageElement>('img.evidence-probe');
+    expect(probe).not.toBeNull();
+    if (probe === null) {
+      return;
+    }
+    fireEvent.error(probe);
+
+    // No broken image, no overlay — the text details carry the citation.
+    expect(dialog.querySelector('img')).toBeNull();
+    expect(dialog.querySelector('svg')).toBeNull();
+    expect(dialog.textContent).toContain('Hemoglobin 9.1 g/dL');
+    expect(dialog.textContent).toContain('Page');
+    expect(dialog.textContent).toContain('92%');
+  });
+
+  it('never renders a page image for non-document citations', async () => {
+    render(<ProvenanceChip source={GUIDELINE} />);
+    const dialog = await openPopover();
+
+    expect(dialog.querySelector('img')).toBeNull();
+    expect(dialog.querySelector('svg')).toBeNull();
+    expect(dialog.textContent).toContain('Fluid resuscitation');
   });
 
   it('renders a safe fallback chip for an unknown citation type instead of crashing', () => {

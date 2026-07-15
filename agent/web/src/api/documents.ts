@@ -11,6 +11,21 @@ import { ApiError, type DocumentAccepted } from './types';
 /** Default doc_type for uploads from the rounds UI. */
 export const DEFAULT_DOC_TYPE = 'intake_lab_report';
 
+/**
+ * URL of one rendered page image — `GET /v1/documents/{id}/pages/{page_no}`
+ * (image/png), the backdrop the evidence overlay draws bounding boxes over.
+ * Same base-URL normalization as every other call; the browser's <img> fetch
+ * carries the session cookie itself (an <img> request includes credentials,
+ * matching the JSON layer's `credentials: 'include'`).
+ */
+export function documentPageUrl(
+  documentId: string,
+  pageNo: number,
+  base: string = resolveApiBase(),
+): string {
+  return `${base}/v1/documents/${encodeURIComponent(documentId)}/pages/${encodeURIComponent(String(pageNo))}`;
+}
+
 function acceptedFrom(payload: unknown): DocumentAccepted {
   if (typeof payload === 'object' && payload !== null) {
     const raw = payload as Record<string, unknown>;
