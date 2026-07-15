@@ -23,6 +23,13 @@ RUN uv venv /opt/venv --python 3.12
 ENV PATH="/opt/venv/bin:$PATH"
 RUN uv pip install --no-cache -e .
 
+# Guideline corpus + operator scripts (copied AFTER the dep install so a corpus
+# edit doesn't bust the cached dependency layer). The corpus is baked in so the
+# deployed image is self-contained and the RAG ingest is reproducible from the
+# image alone; scripts/ingest_guidelines.py reads the default /app/corpus.
+COPY corpus ./corpus
+COPY scripts ./scripts
+
 
 FROM python:3.12-slim AS runtime
 

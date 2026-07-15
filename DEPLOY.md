@@ -635,12 +635,14 @@ docker compose -f docker-compose.deploy.yml build agent
 
 # 3. Apply DB migrations (0005 document_ingestion + 0006 guideline_rag, which also
 #    enables the `vector` extension). Additive; existing rows untouched.
-docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent upgrade head
+docker compose -f docker-compose.deploy.yml run --rm -T --entrypoint alembic agent upgrade head
 
 # 4. Ingest the guideline corpus into guideline_chunk. REQUIRED for the RAG half —
 #    migrations only create empty tables, so hybrid retrieval returns nothing until
-#    this runs. Chunks + embeds agent/corpus/*.md (keyless stub embedder by default).
-docker compose -f docker-compose.deploy.yml run --rm --no-deps \
+#    this runs. The corpus is baked into the image at /app/corpus (the script's
+#    default); chunks + embeds it with the keyless stub embedder by default. The
+#    `-T` disables the pseudo-TTY so the run does not swallow a piped/heredoc stdin.
+docker compose -f docker-compose.deploy.yml run --rm -T --no-deps \
   --entrypoint python agent scripts/ingest_guidelines.py
 
 # 5. Rebuild the React UI bundle Caddy serves (upload control, provenance chips,
