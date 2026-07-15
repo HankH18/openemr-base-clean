@@ -22,14 +22,21 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from copilot.config import Settings
-from copilot.documents.fixtures import STUB_INTAKE_FACTS, STUB_LAB_FACTS
+from copilot.documents.fixtures import STUB_INTAKE_FACTS, STUB_LAB_FACTS, STUB_MEDLIST_FACTS
 from copilot.documents.raster import RasterizedPage
-from copilot.domain.documents import ExtractedFact, IntakeFact, IntakeForm, LabReport
+from copilot.domain.documents import (
+    ExtractedFact,
+    IntakeFact,
+    IntakeForm,
+    LabReport,
+    MedicationFact,
+    MedicationListDocument,
+)
 
 # The schema version stamped on every extraction row this extractor produces.
 SCHEMA_VERSION = "w2-v1"
 
-ExtractionResult = LabReport | IntakeForm
+ExtractionResult = LabReport | IntakeForm | MedicationListDocument
 
 _MAX_TOKENS = 4096
 
@@ -41,7 +48,10 @@ _EXTRACTION_PROMPT = (
     "not printed. Omit anything you cannot read. For a patient-intake form, set "
     "each fact's category to the OpenEMR record type it belongs to: demographic "
     "(name/DOB/sex/contact), chief_complaint, medication, allergy, "
-    "medical_problem, or family_history."
+    "medical_problem, or family_history. For a medication list, record one fact "
+    "per medication: copy the drug name verbatim as the value and its dose and "
+    "frequency exactly as printed — never infer a medication, dose, or schedule "
+    "that is not written on the page."
 )
 
 
@@ -50,6 +60,7 @@ class DocumentType(StrEnum):
 
     lab_pdf = "lab_pdf"
     intake_form = "intake_form"
+    medication_list = "medication_list"
 
 
 def parse_doc_type(raw: str) -> DocumentType:
@@ -60,13 +71,17 @@ def parse_doc_type(raw: str) -> DocumentType:
         return DocumentType.lab_pdf
 
 
-def schema_for(doc_type: DocumentType) -> type[LabReport] | type[IntakeForm]:
+def schema_for(
+    doc_type: DocumentType,
+) -> type[LabReport] | type[IntakeForm] | type[MedicationListDocument]:
     """The strict extraction schema for a document type — exhaustive ``match``."""
     match doc_type:
         case DocumentType.lab_pdf:
             return LabReport
         case DocumentType.intake_form:
             return IntakeForm
+        case DocumentType.medication_list:
+            return MedicationListDocument
 
 
 class VisionExtractionError(RuntimeError):
@@ -104,6 +119,10 @@ class StubVision:
             case DocumentType.intake_form:
                 return IntakeForm(
                     facts=[IntakeFact.model_validate(f) for f in STUB_INTAKE_FACTS]
+                )
+            case DocumentType.medication_list:
+                return MedicationListDocument(
+                    facts=[MedicationFact.model_validate(f) for f in STUB_MEDLIST_FACTS]
                 )
 
 
