@@ -140,3 +140,44 @@ page images in the agent DB (source bytes authoritative in OpenEMR).
 scale path, not built.
 **Fragility flag:** At document-heavy scale, move page images to MinIO/S3 and vectors to a dedicated
 store.
+
+## 10. Intake schema — align extraction to OpenEMR record types (NEXT PHASE — Early Submission)
+
+**Status:** DEFERRED to the Early Submission. MVP ships the intake extraction as generic,
+strictly-validated, per-fact-cited `ExtractedFact` rows (free-form `field_path`) — all required
+intake fields (chief concern, current medications, allergies, family history, demographics) are
+extracted and cited, but not yet tagged to the OpenEMR record type each belongs to.
+
+**Plan (confirmed direction):** reshape the intake extraction so every fact maps to where OpenEMR
+actually stores it, so intake round-trips cleanly and the allergy/medication/problem facts flow
+straight into the existing write-back path. OpenEMR storage reference:
+
+| Intake field | OpenEMR storage | Key columns |
+|---|---|---|
+| Demographics | `patient_data` (1 row/patient) | `fname, lname, mname, DOB, sex, street, city, state, phone_home, email` |
+| Chief concern | `form_encounter.reason` | `reason` |
+| Current medications | `lists` `type='medication'` | `title, begdate, enddate, diagnosis` |
+| Allergies | `lists` `type='allergy'` | `title, begdate, reaction` |
+| Medical problems | `lists` `type='medical_problem'` | `title, begdate, diagnosis` |
+| Family history | `history_data` (1 row/patient) | `history_*` free-text columns |
+
+Note OpenEMR unifies meds/allergies/problems in one type-discriminated `lists` table; our
+`domain/writes.py` (`MedicationWrite`/`AllergyWrite`/`MedicalProblemWrite`) already mirrors those
+columns exactly.
+
+**Two implementation levels (pick at build time):**
+- **(A) Category-tag (lower risk):** add an `IntakeCategory` enum — `demographic | chief_complaint |
+  medication | allergy | medical_problem | family_history` — to each intake fact, mapping 1:1 to
+  `lists.type` / `patient_data` / `form_encounter.reason` / `history_data`. Keeps the strict schema +
+  per-fact bbox citations; likely needs a small `extracted_fact.category` migration (0007) + repo
+  serializer + vision/stub extraction + gate-fixture updates.
+- **(B) Full typed sections (fuller match):** restructure `IntakeForm` into typed sub-models
+  (`demographics`, `medications[]`, `allergies[]`, `family_history[]`) mirroring the OpenEMR columns;
+  reworks the reconciliation/provenance flow so each structured field carries its own bbox citation.
+
+**Why deferred:** MVP was already deployed + submission-ready; the change touches frozen-green code,
+the eval gate (`feat_ingestion`), the extraction path, fixtures, and requires a redeploy — not worth
+the regression risk on the MVP deadline for a field-tagging refinement. Do it as a guarded change
+(re-run the eval gate + acceptance suite; redeploy) in the Early Submission window.
+**Fragility flag:** family history in `history_data` is free-text per-patient columns, not a
+`lists`-style row set — mapping it structurally is the least clean of the six; scope it last.

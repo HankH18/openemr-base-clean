@@ -281,6 +281,15 @@ deliberate call:)
   step, already documented in the Week 1 deploy runbook.
 - Page-image storage is agent-DB `bytea` for demo scale; MinIO object store is the noted scale path,
   not built.
+- **Intake schema ↔ OpenEMR record types (next phase).** Intake facts are currently extracted as
+  generic, strictly-validated, per-fact-cited `ExtractedFact` rows (free-form `field_path`) — every
+  required field (chief concern, medications, allergies, family history, demographics) is extracted
+  and cited, but not yet tagged to the OpenEMR record it belongs to (`lists.type` for
+  medication/allergy/medical_problem, `patient_data` for demographics, `form_encounter.reason` for
+  chief concern, `history_data` for family history). Planned for the Early Submission: tag each fact
+  with its OpenEMR record type so intake round-trips 1:1 and the allergy/medication/problem facts
+  flow into the existing write-back path. Full mapping + two implementation options in
+  `agent/research/week2/04-technical-decisions.md` §10.
 
 ## Testing strategy
 
