@@ -77,3 +77,15 @@ owns: evals/eval_dataset.jsonl, fixtures
 - **C5–C7**: convergence — fix regressions/stalls, harden, live-verify; C6 quality-review; protect at-target metrics.
 Never parallelize two tasks sharing a file (codebase-map hotspots: config.py, primitives/contracts, models/
 repository, verification/core, pyproject deps, web contract files — single-writer per cycle).
+
+## CLOSEOUT — converged cycle 3/7 (12/12 targets), see reports/final-report.md
+- Cycles 3 (F8+F9+F10b) + 4 (graph-into-chat completeness) + 5 (guarded cleanup) landed on main;
+  all 12 metrics green at c3, c4, and c5. Worktrees + task/* branches cleaned up. HEAD ba8adb7.
+- **DEFERRED quality backlog:**
+  1. ~~Repository-gateway consolidation~~ **DONE (cycle 5)**: the 5 inline by-id/by-hash/by-source
+     select() fetches (verification/serve.py, graph/intake_extractor.py, documents/pipeline.py dedupe,
+     rag/retriever.py, rag/ingest.py) now route through MemoryRepository accessors (07b1868 added
+     accessors; ba8adb7 wired call sites + dropped dead SELECTs). ~12 scoped aggregates/sweeps/cursor
+     (status.py, retention.py, worker/runtime.py) left as-is — not gateway erosion.
+  2. ~~_ISO_DATE_RE dedup~~ **DONE (a31ede6)**: one ISO_DATE_RE + is_iso_date() in domain/primitives.py.
+  3. Real* graph workers realness vs stubs — **STILL DEFERRED**; needs a keyed env; investigate, don't force.
