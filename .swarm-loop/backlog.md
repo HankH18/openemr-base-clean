@@ -88,4 +88,6 @@ repository, verification/core, pyproject deps, web contract files — single-wri
      accessors; ba8adb7 wired call sites + dropped dead SELECTs). ~12 scoped aggregates/sweeps/cursor
      (status.py, retention.py, worker/runtime.py) left as-is — not gateway erosion.
   2. ~~_ISO_DATE_RE dedup~~ **DONE (a31ede6)**: one ISO_DATE_RE + is_iso_date() in domain/primitives.py.
-  3. Real* graph workers realness vs stubs — **STILL DEFERRED**; needs a keyed env; investigate, don't force.
+  3. ~~Real* graph workers realness vs stubs~~ **DONE (Early Submission)**: RealCritic gained a genuine
+     keyed LLM consistency/safety pass (demote-only, fail-safe); the evidence-retriever + intake-extractor
+     cosmetic Stub/Real duals were collapsed (realness lives in the wrapped retriever/vision pipeline).

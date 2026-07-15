@@ -23,9 +23,15 @@ evidence-retriever) plus a critic, with logged handoffs and nested traces. Quali
 a **two-tier eval gate**: a deterministic, PR-blocking suite of 50 boolean-rubric cases that fails
 CI on regression, and a separate non-blocking live-model quality run.
 
-The system is intentionally **narrow**: exactly two document types, one small guideline corpus,
-one supervisor + two workers, one regression gate. No third document type, no visual multi-vector
-indexing (both are documented future work).
+The system is intentionally **narrow**: the MVP shipped exactly two document types, one small
+guideline corpus, one supervisor + two workers, one regression gate. **Post-MVP (Early Submission)
+additions, all behind the same frozen 12/12 harness:** a third document type (`medication_list`);
+contextual-retrieval upgrades (clinical-abbreviation query expansion after the de-identify choke
+point, heading-aware chunking, section-match boost); a write-back auto-propose bridge (categorized
+intake facts → `ProposedWrite` candidates through the propose→confirm gate, agent never
+self-commits); and a genuinely keyed `RealCritic` (an LLM consistency/safety pass that can only
+demote cited claims, never loosen the citation gate). Still deliberately out of scope: visual
+multi-vector (ColQwen2) indexing and a MinIO/Grafana scale-out (documented scale paths).
 
 ## Design principles & constraints
 

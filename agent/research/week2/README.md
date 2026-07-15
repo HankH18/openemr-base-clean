@@ -28,5 +28,7 @@ decisions → deliverables), grounded in a live read of the Week 1 codebase.
 9. Deploy → **pgvector swap** on the existing droplet; auto-mounted route; Caddy body-size bump
 
 Scope is deliberately narrow (2 doc types, 1 supervisor + 2 workers + critic, 1 small corpus, 1 gate).
-**Future plans (documented, not built):** third document type, contextual-retrieval upgrades are IN;
-ColQwen2/multi-vector indexing and a MinIO/Grafana scale-out are noted scale paths.
+**Post-MVP (Early Submission) — now BUILT:** third document type (`medication_list`),
+contextual-retrieval upgrades (query expansion + heading-aware chunking + section boost), the
+write-back auto-propose bridge, and a genuinely keyed `RealCritic`. Still noted scale paths (not
+built): ColQwen2/multi-vector indexing and a MinIO/Grafana scale-out.

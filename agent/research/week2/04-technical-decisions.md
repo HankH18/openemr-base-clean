@@ -155,9 +155,12 @@ extraction is byte-for-byte unchanged). Persisted via a nullable `extracted_fact
 (migration `0007`, additive/reversible). The vision tool-schema for intake now requires `category`,
 so the model tags every fact; the extraction prompt names the six homes. Frozen harness stayed 12/12
 (cycle 7). Live-verified: real Claude vision tags demographics/chief-concern/medications/allergies/
-family-history correctly. **Still open (next):** wire an auto-propose bridge from categorized intake
-facts → `WriteKind` write candidates (allergy/medication/medical_problem) through the existing
-propose→confirm gate — the category makes this a typed lookup instead of a `field_path` heuristic.
+family-history correctly. **Auto-propose bridge — now DONE (Early Submission):**
+`writeback/intake_bridge.py` (`IntakeWritebackBridge`) reads a document's categorized facts and, for
+the three `lists`-backed categories (allergy/medication/medical_problem), emits `ProposedWrite`
+candidates through the existing propose→confirm gate (`POST /v1/writes/propose-from-document/{id}`,
+published in the OpenAPI contract). The agent has no commit path (propose-only); a cross-patient
+guard prevents proposing one patient's facts onto another's chart.
 
 **Plan (confirmed direction):** reshape the intake extraction so every fact maps to where OpenEMR
 actually stores it, so intake round-trips cleanly and the allergy/medication/problem facts flow

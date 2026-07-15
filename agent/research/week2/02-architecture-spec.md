@@ -21,8 +21,10 @@ a **two-tier eval gate**: a deterministic, PR-blocking suite of 50 boolean-rubri
 CI on regression, and a separate non-blocking live-model quality run.
 
 The system is intentionally **narrow**: exactly two document types, one small guideline corpus,
-one supervisor + two workers, one regression gate. No third document type, no visual multi-vector
-indexing (both are documented future work).
+one supervisor + two workers, one regression gate. (Post-MVP/Early-Submission additions — a third
+document type, contextual-retrieval upgrades, a write-back auto-propose bridge, and a keyed
+RealCritic — are now built; see `04-technical-decisions.md` §10 and `W2_ARCHITECTURE.md`. Visual
+multi-vector indexing remains documented future work.)
 
 ## Design principles & constraints
 
