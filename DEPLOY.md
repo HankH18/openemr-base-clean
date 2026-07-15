@@ -602,3 +602,68 @@ organization before real PHI flows (full detail: `agent/COMPLIANCE.md` §3):
 - **§164.308 / §164.310** administrative and physical safeguards (risk analysis,
   workforce training, contingency/backup, incident response, facility controls)
   — organization policy, outside this codebase.
+
+## 18. Ship the Week-2 multimodal build (document ingestion + graph + RAG)
+
+The authoritative runbook to bring the **Week-2** surface live (document upload →
+strict-schema extraction → hybrid RAG → source-grounded answer with citations →
+supervisor/worker/critic graph). Supersedes §15 for a Week-2 deploy — it adds two
+steps §15 omits (**guideline-corpus ingest** and the **graph flag**). All new
+migrations (`0005` document-ingestion, `0006` guideline-RAG) are additive; the
+`agent-postgres` image is already `pgvector/pgvector:pg16` and the agent
+`Dockerfile` already installs Tesseract, so no operator action beyond the rebuild.
+
+```bash
+ssh root@agentforge.hankholcomb.com
+cd /root/openemr-base-clean
+git pull                                                          # pull the Week-2 code
+
+# 1. (Optional) enable the multi-agent graph for serve-time chat. Without this the
+#    inline agent+verify path still returns grounded answers + guideline_evidence;
+#    with it, chat routes through supervisor -> intake-extractor/evidence-retriever
+#    -> critic, with nested Langfuse spans + worker.handoff events.
+grep -q '^COPILOT_CHAT_GRAPH_ENABLED=' .env \
+  && sed -i 's/^COPILOT_CHAT_GRAPH_ENABLED=.*/COPILOT_CHAT_GRAPH_ENABLED=true/' .env \
+  || echo 'COPILOT_CHAT_GRAPH_ENABLED=true' >> .env
+#    Real hybrid RAG is optional: leave VOYAGE_API_KEY / COHERE_API_KEY unset to use
+#    the deterministic keyless embedding/rerank stubs (retrieval still returns
+#    grounded, cited guideline evidence). Set them in .env for real voyage-3.5
+#    embeddings + rerank-v3.5. Anthropic key (already set) drives real Claude vision.
+
+# 2. Rebuild the agent image from the pulled source (adds Tesseract, W2 packages).
+docker compose -f docker-compose.deploy.yml build agent
+
+# 3. Apply DB migrations (0005 document_ingestion + 0006 guideline_rag, which also
+#    enables the `vector` extension). Additive; existing rows untouched.
+docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent upgrade head
+
+# 4. Ingest the guideline corpus into guideline_chunk. REQUIRED for the RAG half —
+#    migrations only create empty tables, so hybrid retrieval returns nothing until
+#    this runs. Chunks + embeds agent/corpus/*.md (keyless stub embedder by default).
+docker compose -f docker-compose.deploy.yml run --rm --no-deps \
+  --entrypoint python agent scripts/ingest_guidelines.py
+
+# 5. Rebuild the React UI bundle Caddy serves (upload control, provenance chips,
+#    evidence overlay).
+cd agent/web && npm ci && npm run build && cd -
+
+# 6. Restart the agent (new image + env) and Caddy (new bundle).
+docker compose -f docker-compose.deploy.yml --env-file .env up -d agent caddy
+
+# 7. Verify graded readiness — document_store ok (gating); pgvector/embedder/
+#    reranker may report `degraded`/`stub (keyless)` and that is expected & serving.
+docker compose -f docker-compose.deploy.yml exec agent \
+  python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
+```
+
+**Smoke the Week-2 flow** (server-side, no browser login needed) — upload a fixture
+lab PDF and confirm extraction + citations round-trip: hit `POST /v1/documents`
+then `GET /v1/documents/{id}/evidence` (see the Postman/Bruno collection in
+`api-collection/`, "Week 2" folder), or drive the browser flow at
+`https://agentforge.hankholcomb.com` after SMART sign-in.
+
+> **Rollback.** Additive and reversible. Code: `git checkout early-submission-failsafe`
+> then rebuild the agent + web (that tag is the pre-Week-2 live state). Schema:
+> `docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent
+> downgrade 0004` drops the Week-2 tables. The prior agent image also remains in the
+> local Docker cache until pruned.

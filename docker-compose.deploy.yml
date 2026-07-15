@@ -188,6 +188,14 @@ services:
       COPILOT_ANTHROPIC_MODEL_SYNTHESIS: ${ANTHROPIC_MODEL_SYNTHESIS:-claude-sonnet-5}
       COPILOT_ANTHROPIC_MODEL_GATING: ${ANTHROPIC_MODEL_GATING:-claude-haiku-4-5-20251001}
       COPILOT_POLLER_ENABLED: ${POLLER_ENABLED:-false}
+      # Week-2 multimodal flags. Defaults match copilot/config.py, so an unset
+      # .env leaves behavior byte-for-byte unchanged. CHAT_GRAPH_ENABLED routes
+      # serve-time chat through the supervisor/worker/critic graph. Voyage/Cohere
+      # blank ⇒ deterministic keyless stubs for embeddings/rerank; set them for
+      # real hybrid RAG + rerank.
+      COPILOT_CHAT_GRAPH_ENABLED: ${COPILOT_CHAT_GRAPH_ENABLED:-false}
+      COPILOT_VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      COPILOT_COHERE_API_KEY: ${COHERE_API_KEY:-}
       # Langfuse (observability). Cloud by default (set the keys in .env). To
       # keep PHI-adjacent traces on the droplet, bring up the self-hosted
       # services below with `--profile observability` and set
