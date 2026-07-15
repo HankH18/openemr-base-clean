@@ -406,6 +406,34 @@ components:
       - value
       title: PatientId
       type: object
+    ProposeFromDocumentRequest:
+      description: 'Identify the patient (and, in disabled mode, the acting clinician)
+        for a
+
+        document-driven batch proposal. The document itself is named in the path.
+
+
+        ``clinician_id`` follows the same auth-mode contract as :class:`ProposeRequest`:
+
+        it identifies the acting clinician in ``disabled`` mode and, in ``smart``
+        mode,
+
+        is only validated against the session cookie (mismatch → 403).'
+      properties:
+        clinician_id:
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
+        patient_id:
+          exclusiveMinimum: 0.0
+          title: Patient Id
+          type: integer
+      required:
+      - patient_id
+      title: ProposeFromDocumentRequest
+      type: object
     ProposeRequest:
       description: 'A raw physician write request, parsed into a typed candidate server-side.
 
@@ -1250,6 +1278,42 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Propose a physician write and get the echo-back to confirm
+      tags:
+      - writes
+  /v1/writes/propose-from-document/{document_id}:
+    post:
+      operationId: propose_writes_from_document_v1_writes_propose_from_document__document_id__post
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          exclusiveMinimum: 0
+          title: Document Id
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProposeFromDocumentRequest'
+        required: true
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                title: Response Propose Writes From Document V1 Writes Propose From
+                  Document  Document Id  Post
+                type: object
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Propose write candidates from a document's categorized intake facts
       tags:
       - writes
   /v1/writes/{idempotency_key}/confirm:
