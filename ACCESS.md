@@ -20,6 +20,11 @@ values are in gitignored `.env` files or handed off separately.
   page carries an AgentForge restyle (`custom/assets`: "AgentForge — Clinical
   Co-Pilot" wordmark, accent sign-in button, patient-login/email hidden), served
   publicly because Caddy proxies `/custom/*` for the login page.
+- **Retrieval keys (by design):** the public demo runs **real Claude vision** (Anthropic
+  key set) but the RAG **embeddings + rerank are the keyless deterministic stubs** —
+  `VOYAGE_API_KEY`/`COHERE_API_KEY` are intentionally not set on the droplet, so `/ready`
+  reports `embedder`/`reranker` = `stub (keyless)` (advisory, still serving). Retrieval still
+  returns grounded, cited guideline evidence; set those two keys to run real Voyage/Cohere.
 - **Status:** the UI, per-physician SMART login, live patient data (rounds/chat over
   the seeded 15-patient census), and `/ready` (all deps green incl. Langfuse) are
   live.

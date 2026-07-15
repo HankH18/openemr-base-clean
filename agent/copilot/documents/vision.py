@@ -17,6 +17,7 @@ extraction. ``build_vision`` returns the stub whenever there is no Anthropic key
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, Protocol
@@ -178,6 +179,10 @@ class ClaudeVision:
         payload = _tool_input(response, "record_extraction")
         if payload is None:
             raise VisionExtractionError("vision model returned no structured extraction")
+        # Recover a JSON-stringified payload/facts before strict validation — dense
+        # real documents occasionally make the model return ``facts`` (or the whole
+        # object) as a JSON string instead of structured JSON.
+        payload = _destringify(payload)
         # Strict validation — a wrong-typed or partial payload raises here.
         return schema.model_validate(payload)
 
@@ -190,6 +195,32 @@ def _tool_input(response: Any, name: str) -> dict[str, Any] | None:
             if isinstance(data, dict):
                 return data
     return None
+
+
+def _destringify(payload: dict[str, Any]) -> dict[str, Any]:
+    """Undo a model that JSON-encoded its structured output as a string.
+
+    Tool-forced JSON is meant to arrive structured, but on dense documents a
+    vision model sometimes returns ``facts`` — or the entire object — as a JSON
+    *string*. That would fail strict validation (``facts`` is not a ``list``), so
+    recover it here rather than lose a real extraction. Only touches a string
+    ``facts`` value; a well-formed structured payload passes through untouched.
+    A string that does not parse is left as-is (strict validation then rejects it
+    loudly, never silently).
+    """
+    facts = payload.get("facts")
+    if not isinstance(facts, str):
+        return payload
+    try:
+        parsed = json.loads(facts)
+    except (json.JSONDecodeError, TypeError):
+        return payload
+    if isinstance(parsed, list):
+        return {**payload, "facts": parsed}
+    # The model stringified the whole object under "facts" — use the parsed object.
+    if isinstance(parsed, dict) and isinstance(parsed.get("facts"), list):
+        return parsed
+    return payload
 
 
 def build_vision(settings: Settings) -> VisionExtractor:

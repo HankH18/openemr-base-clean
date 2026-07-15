@@ -31,6 +31,7 @@ from copilot.api.deps import resolve_acting_context
 from copilot.auth import is_authorized
 from copilot.config import Settings, get_settings
 from copilot.documents import DerivedOnlyUploader, DocumentIngestionService, DocumentUploader
+from copilot.documents.vision import DocumentType
 from copilot.domain.primitives import PatientId
 from copilot.fhir.provider import build_write_client_for_session
 from copilot.memory.db import session_scope
@@ -115,6 +116,16 @@ async def upload_document(
     # no established round has an empty authorized set → refused.
     if not await is_authorized(cid, pid):
         raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
+
+    # Fail loud on an unknown doc_type instead of silently coercing it to lab_pdf
+    # — a mis-typed upload would otherwise extract an intake form / medication
+    # list with the wrong (lab) schema. Parse, don't silently default.
+    if doc_type not in {kind.value for kind in DocumentType}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported doc_type '{doc_type}'; expected one of "
+            f"{sorted(kind.value for kind in DocumentType)}",
+        )
 
     content = await file.read()
     if not content:

@@ -89,7 +89,7 @@ are in [`ACCESS.md`](ACCESS.md).
 cd docker/development-easy && docker compose up --detach --wait
 ```
 
-**Option A — mock UI** (frontend only, no backend, fully reproducible; this is what the demo films):
+**Option A — mock UI** (frontend only, no backend, fully reproducible local option; the walkthrough video runs the live deployed flow — see [`demo/VIDEO.md`](demo/VIDEO.md)):
 
 ```bash
 cd agent/web && npm install && npm run dev      # http://localhost:5173  (built-in demo cohort)
@@ -151,6 +151,12 @@ Two **distinct** tiers — keep them straight:
    two ways: a git **pre-push hook** ([`.githooks/pre-push`](.githooks/pre-push)) locally and the
    GitLab CI **`agent:tests`** job. `python evals/gate.py --inject-regression` drops the pass rate to
    0, proving the gate is non-vacuous.
+
+   *Scope, stated honestly:* the gate scores **recorded rubric fixtures** — it verifies the rubric
+   logic and the fixtures' consistency, and blocks a regression in that scored set. Coverage of the
+   **live agent's behavior** comes from the 578-case `pytest tests evals` + acceptance suites (also
+   run in the same CI job). The two together — behavioral suites + the rubric gate — are what block a
+   regression from reaching the demo.
 
 ## Docs & submission deliverables
 

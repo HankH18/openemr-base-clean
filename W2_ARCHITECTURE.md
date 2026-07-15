@@ -146,7 +146,7 @@ on Postgres. New tables (Pydantic contracts in/out via `MemoryRepository`, `JSON
 columns, a dialect-switching vector column for embeddings):
 
 - **`source_document`** — `id` PK · `patient_id` · `openemr_document_id` (authoritative source
-  ref) · `doc_type` enum(`lab_pdf`,`intake_form`) · `category_path` · `content_hash` · `page_count`
+  ref) · `doc_type` enum(`lab_pdf`,`intake_form`,`medication_list`) · `category_path` · `content_hash` · `page_count`
   · `status` enum(`uploaded`,`extracting`,`extracted`,`failed`) · `correlation_id` · `created_at`.
 - **`document_page`** — `id` PK · `source_document_id` FK · `page_no` · `image` (bytea, re-derivable
   cache) · `width` · `height` · `ocr_tokens` JSONB `[{text, bbox:[x,y,w,h], conf}]`.
