@@ -43,7 +43,7 @@ from copilot.documents.vision import (
     build_vision,
     parse_doc_type,
 )
-from copilot.domain.documents import ExtractedFact
+from copilot.domain.documents import ExtractedFact, IntakeFact
 from copilot.domain.primitives import PatientId
 from copilot.fhir.provider import build_write_client
 from copilot.memory.db import session_scope
@@ -451,6 +451,7 @@ async def _persist_extraction(
                 bbox=recon.bbox,
                 match_confidence=recon.match_confidence if recon.supported else None,
                 supported=recon.supported,
+                category=fact.category.value if isinstance(fact, IntakeFact) else None,
             )
         await repo.record_audit(
             correlation_id=correlation,

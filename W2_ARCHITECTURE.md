@@ -149,7 +149,8 @@ columns, a dialect-switching vector column for embeddings):
   new row).
 - **`extracted_fact`** — `id` PK · `extraction_id` FK · `field_path` · `value` · `unit?` ·
   `reference_range?` · `abnormal_flag?` · `collection_date?` · `page_no` · `bbox` JSONB ·
-  `match_confidence` · `supported` bool.
+  `match_confidence` · `supported` bool · `category?` (`IntakeCategory` — the OpenEMR record type
+  for an intake fact; NULL for lab facts).
 - **`guideline_document`** — `id` PK · `title` · `source` · `license` · `ingested_at`.
 - **`guideline_chunk`** — `id` PK · `guideline_document_id` FK · `section` · `chunk_index` · `text`
   · `embedding vector(1024)` · `fts tsvector` (GIN-indexed).
@@ -281,15 +282,13 @@ deliberate call:)
   step, already documented in the Week 1 deploy runbook.
 - Page-image storage is agent-DB `bytea` for demo scale; MinIO object store is the noted scale path,
   not built.
-- **Intake schema ↔ OpenEMR record types (next phase).** Intake facts are currently extracted as
-  generic, strictly-validated, per-fact-cited `ExtractedFact` rows (free-form `field_path`) — every
-  required field (chief concern, medications, allergies, family history, demographics) is extracted
-  and cited, but not yet tagged to the OpenEMR record it belongs to (`lists.type` for
-  medication/allergy/medical_problem, `patient_data` for demographics, `form_encounter.reason` for
-  chief concern, `history_data` for family history). Planned for the Early Submission: tag each fact
-  with its OpenEMR record type so intake round-trips 1:1 and the allergy/medication/problem facts
-  flow into the existing write-back path. Full mapping + two implementation options in
-  `agent/research/week2/04-technical-decisions.md` §10.
+- **Intake schema ↔ OpenEMR record types — DONE.** Each intake fact is tagged with a typed
+  `IntakeCategory` (`demographic` → `patient_data`, `chief_complaint` → `form_encounter.reason`,
+  `medication`/`allergy`/`medical_problem` → `lists.type`, `family_history` → `history_data`) via an
+  `IntakeFact(ExtractedFact)` subclass, persisted on `extracted_fact.category` (migration `0007`).
+  Lab extraction is unchanged (plain `ExtractedFact`). The `allergy`/`medication`/`medical_problem`
+  facts now map 1:1 into the write-back path. Still open: an auto-propose bridge from categorized
+  intake facts → write candidates (see `agent/research/week2/04-technical-decisions.md` §10).
 
 ## Testing strategy
 

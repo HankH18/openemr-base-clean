@@ -365,6 +365,10 @@ class ExtractedFactRow(Base):
     bbox: Mapped[list[float] | None] = mapped_column(JSONType, nullable=True)  # normalized [x,y,w,h]
     match_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # OpenEMR record type for an intake-form fact (IntakeCategory value); NULL for
+    # lab facts. Lets intake facts map 1:1 to their OpenEMR home (lists / patient_data
+    # / form_encounter.reason / history_data).
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     extraction: Mapped[ExtractionRow] = relationship(back_populates="facts")
 

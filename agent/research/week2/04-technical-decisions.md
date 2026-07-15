@@ -143,10 +143,21 @@ store.
 
 ## 10. Intake schema — align extraction to OpenEMR record types (NEXT PHASE — Early Submission)
 
-**Status:** DEFERRED to the Early Submission. MVP ships the intake extraction as generic,
-strictly-validated, per-fact-cited `ExtractedFact` rows (free-form `field_path`) — all required
-intake fields (chief concern, current medications, allergies, family history, demographics) are
-extracted and cited, but not yet tagged to the OpenEMR record type each belongs to.
+**Status:** DONE (Early Submission) via **approach (A) — category-tag**. Each intake fact now
+carries a typed OpenEMR `category` so it maps 1:1 to the record it round-trips to. (MVP had shipped
+generic, strictly-validated, per-fact-cited `ExtractedFact` rows with a free-form `field_path` — all
+required intake fields extracted + cited, but untagged.)
+
+**As built:** `IntakeCategory` StrEnum (`demographic | chief_complaint | medication | allergy |
+medical_problem | family_history`) + `IntakeFact(ExtractedFact)` with a required `category`;
+`IntakeForm.facts: list[IntakeFact]` (lab `LabReport.facts` stays plain `ExtractedFact`, so lab
+extraction is byte-for-byte unchanged). Persisted via a nullable `extracted_fact.category` column
+(migration `0007`, additive/reversible). The vision tool-schema for intake now requires `category`,
+so the model tags every fact; the extraction prompt names the six homes. Frozen harness stayed 12/12
+(cycle 7). Live-verified: real Claude vision tags demographics/chief-concern/medications/allergies/
+family-history correctly. **Still open (next):** wire an auto-propose bridge from categorized intake
+facts → `WriteKind` write candidates (allergy/medication/medical_problem) through the existing
+propose→confirm gate — the category makes this a typed lookup instead of a `field_path` heuristic.
 
 **Plan (confirmed direction):** reshape the intake extraction so every fact maps to where OpenEMR
 actually stores it, so intake round-trips cleanly and the allergy/medication/problem facts flow

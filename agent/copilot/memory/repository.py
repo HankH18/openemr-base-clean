@@ -570,8 +570,13 @@ class MemoryRepository:
         bbox: list[float] | None = None,
         match_confidence: float | None = None,
         supported: bool = False,
+        category: str | None = None,
     ) -> ExtractedFactRow:
-        """Persist one schema-validated fact with its reconciled page/bbox provenance."""
+        """Persist one schema-validated fact with its reconciled page/bbox provenance.
+
+        ``category`` is the OpenEMR record type for an intake fact (an
+        ``IntakeCategory`` value) and ``None`` for lab facts.
+        """
         row = ExtractedFactRow(
             extraction_id=extraction_id,
             field_path=field_path,
@@ -584,6 +589,7 @@ class MemoryRepository:
             bbox=bbox,
             match_confidence=match_confidence,
             supported=supported,
+            category=category,
         )
         self._session.add(row)
         await self._session.flush()

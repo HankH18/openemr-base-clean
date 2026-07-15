@@ -24,7 +24,7 @@ from typing import Any, Protocol
 from copilot.config import Settings
 from copilot.documents.fixtures import STUB_INTAKE_FACTS, STUB_LAB_FACTS
 from copilot.documents.raster import RasterizedPage
-from copilot.domain.documents import ExtractedFact, IntakeForm, LabReport
+from copilot.domain.documents import ExtractedFact, IntakeFact, IntakeForm, LabReport
 
 # The schema version stamped on every extraction row this extractor produces.
 SCHEMA_VERSION = "w2-v1"
@@ -38,7 +38,10 @@ _EXTRACTION_PROMPT = (
     "document page images. Call the record_extraction tool exactly once with the "
     "facts you can read verbatim from the page. Copy each value character-for-"
     "character from the page — never normalize, infer, or invent a value that is "
-    "not printed. Omit anything you cannot read."
+    "not printed. Omit anything you cannot read. For a patient-intake form, set "
+    "each fact's category to the OpenEMR record type it belongs to: demographic "
+    "(name/DOB/sex/contact), chief_complaint, medication, allergy, "
+    "medical_problem, or family_history."
 )
 
 
@@ -100,7 +103,7 @@ class StubVision:
                 return LabReport(facts=[ExtractedFact.model_validate(f) for f in STUB_LAB_FACTS])
             case DocumentType.intake_form:
                 return IntakeForm(
-                    facts=[ExtractedFact.model_validate(f) for f in STUB_INTAKE_FACTS]
+                    facts=[IntakeFact.model_validate(f) for f in STUB_INTAKE_FACTS]
                 )
 
 

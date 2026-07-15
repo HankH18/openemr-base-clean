@@ -33,8 +33,8 @@ STUB_LAB_FACTS: list[dict[str, Any]] = [
 ]
 
 # Recorded intake-form extraction (kept consistent with the OCR page so it, too,
-# reconciles). The intake path is not exercised by the acceptance suite but must
-# behave the same way.
+# reconciles). Each intake fact carries its OpenEMR ``category`` (IntakeFact). The
+# intake path is not exercised by the acceptance suite but must behave the same way.
 STUB_INTAKE_FACTS: list[dict[str, Any]] = [
-    {"field_path": "chief_complaint", "value": "Hemoglobin", "page_no": 1},
+    {"field_path": "chief_complaint", "value": "Hemoglobin", "page_no": 1, "category": "chief_complaint"},
 ]

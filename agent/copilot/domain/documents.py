@@ -17,6 +17,7 @@ reconciliation + verification layers compare against the source, so coercing
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,16 +67,46 @@ class LabReport(BaseModel):
     collected_at: datetime | None = Field(default=None, strict=False)
 
 
+class IntakeCategory(StrEnum):
+    """Where an intake fact belongs in OpenEMR — one value per record type.
+
+    This is what makes the intake extraction *match OpenEMR's schema*: every
+    intake fact is tagged with the OpenEMR record it round-trips to, so the
+    ``allergy``/``medication``/``medical_problem`` facts map 1:1 into the
+    existing write-back path (all three are ``lists`` rows keyed by ``type``).
+    """
+
+    demographic = "demographic"  # -> patient_data (fname/lname/DOB/sex/...)
+    chief_complaint = "chief_complaint"  # -> form_encounter.reason
+    medication = "medication"  # -> lists type='medication'
+    allergy = "allergy"  # -> lists type='allergy'
+    medical_problem = "medical_problem"  # -> lists type='medical_problem'
+    family_history = "family_history"  # -> history_data
+
+
+class IntakeFact(ExtractedFact):
+    """An :class:`ExtractedFact` tagged with its OpenEMR record type.
+
+    Intake facts additionally carry a required :class:`IntakeCategory` so the
+    downstream mapping to an OpenEMR record is typed, not a ``field_path`` string
+    heuristic. ``strict=False`` on the enum so it parses the plain string value a
+    vision model returns (``"allergy"``) — the model emits JSON, not enum members.
+    """
+
+    category: IntakeCategory = Field(strict=False)
+
+
 class IntakeForm(BaseModel):
     """Strict schema for a parsed patient-intake form (VLM extraction target).
 
     Like :class:`LabReport`, ``facts`` is required content — a blank form does
-    not validate.
+    not validate. Each fact is an :class:`IntakeFact` (carries its OpenEMR
+    ``category``).
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    facts: list[ExtractedFact]
+    facts: list[IntakeFact]
     patient_name: str | None = None
     date_of_birth: str | None = None
     completed_at: datetime | None = Field(default=None, strict=False)
