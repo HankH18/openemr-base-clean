@@ -24,6 +24,10 @@ STUB_PAGE_TOKENS: list[dict[str, Any]] = [
     {"text": "Hemoglobin", "bbox": [0.10, 0.10, 0.20, 0.03], "conf": 0.98},
     {"text": "13.5", "bbox": [0.32, 0.10, 0.06, 0.03], "conf": 0.97},
     {"text": "g/dL", "bbox": [0.40, 0.10, 0.06, 0.03], "conf": 0.96},
+    # Drug-name tokens for the recorded medication-list extraction below. Additive
+    # only — the lab/intake stubs above still reconcile against their own tokens.
+    {"text": "Lisinopril", "bbox": [0.10, 0.20, 0.18, 0.03], "conf": 0.98},
+    {"text": "Metformin", "bbox": [0.10, 0.25, 0.16, 0.03], "conf": 0.97},
 ]
 
 # Recorded lab-report extraction — one fact whose verbatim value is present in
@@ -37,4 +41,13 @@ STUB_LAB_FACTS: list[dict[str, Any]] = [
 # intake path is not exercised by the acceptance suite but must behave the same way.
 STUB_INTAKE_FACTS: list[dict[str, Any]] = [
     {"field_path": "chief_complaint", "value": "Hemoglobin", "page_no": 1, "category": "chief_complaint"},
+]
+
+# Recorded medication-list extraction — one fact per medication, each verbatim
+# drug name present in STUB_PAGE_TOKENS so it reconciles to a bbox. ``category``
+# is omitted on purpose: MedicationFact fixes it to ``medication``, so the stub
+# demonstrates that a medication list is homogeneous without repeating the tag.
+STUB_MEDLIST_FACTS: list[dict[str, Any]] = [
+    {"field_path": "medications[0].name", "value": "Lisinopril", "page_no": 1},
+    {"field_path": "medications[1].name", "value": "Metformin", "page_no": 1},
 ]
