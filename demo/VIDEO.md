@@ -1,20 +1,23 @@
-# Demo Video — AgentForge Clinical Co-Pilot
+# Demo Video — AgentForge Clinical Co-Pilot (Week 2)
 
-**▶ Watch the walkthrough: https://www.loom.com/share/762e2fa76307493594f48862e8cccee5**
+**▶ Watch the walkthrough: https://www.loom.com/share/ef4fc41b32f345bab2d9a21e0dd7ebf7**
+*"Document Upload MVP, OCR, and RAG Update"*
 
-A recorded walkthrough of the deployed Rounds Co-Pilot (live at
-**https://agentforge.hankholcomb.com**, per-physician SMART login) end to end:
+A walkthrough of the Week-2 multimodal flow on the deployed app (live at
+**https://agentforge.hankholcomb.com**, per-physician SMART login):
 
-- **Sickest-first triage** — the agent ranks the clinician's full patient census and
-  opens on the most acute patient (Marcus Webb, DKA) instead of a dashboard.
-- **Grounded, source-cited chart summary** — one row per metric with trends, and a
-  provenance chip on every claim (no ungrounded text).
-- **Grounded chat, fail-closed** — a SERVED answer that cites the record, and a WITHHELD
-  refusal when asked about data that isn't there ("I can't confirm that from this
-  patient's record") rather than a hallucination.
-- **Proactive deterioration + physician-in-control** — a not-yet-seen patient (June
-  Okafor, sepsis) is surfaced for a jump; the physician decides; the round advances by
-  acuity, not room number.
+- **Document ingestion** — upload a scanned lab PDF and an intake form; the pipeline
+  rasterizes → runs OCR → Claude-vision structured extraction into strict schemas
+  (the sample documents live in [`sample_docs/`](sample_docs/)).
+- **Extraction with provenance** — each extracted fact (lab: test name, value, unit,
+  reference range, abnormal flag; intake: demographics, chief concern, meds, allergies,
+  family history) carries a citation, and a document claim opens the scanned page with its
+  bounding box drawn.
+- **Hybrid RAG evidence** — guideline evidence retrieved (sparse + dense → rerank) and kept
+  as a labeled block, separate from patient-record facts.
 
-See [`SCRIPT.md`](SCRIPT.md) for the shot list and [`../ACCESS.md`](../ACCESS.md) for how
-to reach both the live and local environments.
+Builds on the Week-1 baseline (sickest-first rounds, grounded fail-closed chat).
+
+See [`W2_MVP_SCRIPT.md`](W2_MVP_SCRIPT.md) for the full Week-2 shot list, [`SCRIPT.md`](SCRIPT.md)
+for the Week-1 script, and [`../ACCESS.md`](../ACCESS.md) for how to reach the live and local
+environments.

@@ -166,7 +166,7 @@ Two **distinct** tiers — keep them straight:
 | Access / run guide | [`ACCESS.md`](ACCESS.md) |
 | API collection | [`api-collection/`](api-collection/) — Bruno + Postman |
 | Deployed application | **https://agentforge.hankholcomb.com** (chat graph on; per-physician SMART login) |
-| **Demo video** | ▶ [Loom walkthrough](https://www.loom.com/share/762e2fa76307493594f48862e8cccee5) ([`demo/VIDEO.md`](demo/VIDEO.md)) · recording companion [`demo/DEMO_GUIDE.md`](demo/DEMO_GUIDE.md) |
+| **Demo video** | ▶ [Loom walkthrough — Document Upload, OCR & RAG](https://www.loom.com/share/ef4fc41b32f345bab2d9a21e0dd7ebf7) ([`demo/VIDEO.md`](demo/VIDEO.md)) · shot list [`demo/W2_MVP_SCRIPT.md`](demo/W2_MVP_SCRIPT.md) |
 | Observability + rigor (bonus) | [`OBSERVABILITY.md`](OBSERVABILITY.md) · [`agent/COMPLIANCE.md`](agent/COMPLIANCE.md) · load test [`loadtest/RESULTS.md`](loadtest/RESULTS.md) · [`NOTES.md`](NOTES.md) · [`RUNLOG.md`](RUNLOG.md) |
 
 <!-- ────────────────────────────────────────────────────────────────────── -->
