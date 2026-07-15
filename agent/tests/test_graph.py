@@ -25,8 +25,8 @@ from copilot.graph import (
     build_intake_extractor,
 )
 from copilot.graph.critic import RealCritic, StubCritic
-from copilot.graph.evidence_retriever import StubEvidenceRetriever
-from copilot.graph.intake_extractor import StubIntakeExtractor
+from copilot.graph.evidence_retriever import GuidelineEvidenceRetriever
+from copilot.graph.intake_extractor import DocumentIntakeExtractor
 from copilot.graph.supervisor import StubSupervisor, build_supervisor
 from copilot.observability.base import correlation_id_var
 from copilot.observability.langfuse_backend import LangfuseObservability
@@ -135,11 +135,11 @@ class TestCritic:
 
 
 class TestWorkerFactories:
-    def test_intake_keyless_is_stub(self) -> None:
-        assert isinstance(build_intake_extractor(_keyless()), StubIntakeExtractor)
+    def test_intake_builds_document_extractor(self) -> None:
+        assert isinstance(build_intake_extractor(_keyless()), DocumentIntakeExtractor)
 
-    def test_evidence_keyless_is_stub(self) -> None:
-        assert isinstance(build_evidence_retriever(_keyless()), StubEvidenceRetriever)
+    def test_evidence_builds_guideline_retriever(self) -> None:
+        assert isinstance(build_evidence_retriever(_keyless()), GuidelineEvidenceRetriever)
 
 
 # --- flat -> nested span export ---------------------------------------------

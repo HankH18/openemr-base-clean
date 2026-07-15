@@ -5,12 +5,16 @@ Wraps the F3 document pipeline (:func:`copilot.documents.attach_and_extract` /
 :class:`~copilot.graph.contracts.AgentTask` whose ``document_ids`` name
 already-ingested source documents, the worker surfaces each document's stored
 extraction confidence + supported-fact count so the finalize step can ground on
-them. When the deployment is keyed for a real vision model, the Real variant can
-additionally ingest fresh bytes through ``attach_and_extract``; keyless
-deployments select the deterministic Stub.
+them. :meth:`~DocumentIntakeExtractor.ingest_content` is the ``attach_and_extract``
+entry point for ingesting fresh bytes with the configured vision model.
 
-Stub/Real live behind the :class:`IntakeExtractor` Protocol; ``build_intake_extractor``
-picks one on API-key presence (keyless → Stub, so the graph runs with no key).
+There is ONE worker class behind the :class:`IntakeExtractor` Protocol — the
+keyed vs keyless distinction lives entirely in the wrapped F3 vision pipeline
+(the real Claude-vision extractor when keyed, the deterministic stub extractor
+otherwise, selected inside ``attach_and_extract`` / ``build_vision``). Reading
+stored extractions is deterministic regardless of key, so there is nothing for a
+Real/Stub split at this layer to differentiate. ``build_intake_extractor`` builds
+the worker; the whole read path runs with no key.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ class IntakeReport:
 
 
 class IntakeExtractor(Protocol):
-    """The swappable intake-extractor surface (Stub/Real behind this Protocol)."""
+    """The intake-extractor surface (one implementation behind this Protocol)."""
 
     async def run(self, task: AgentTask) -> IntakeReport: ...
 
@@ -70,24 +74,14 @@ async def _read_extractions(document_ids: list[str]) -> IntakeReport:
     )
 
 
-class StubIntakeExtractor:
-    """Deterministic, keyless intake-extractor.
+class DocumentIntakeExtractor:
+    """Surfaces stored extractions and can ingest fresh bytes via the F3 pipeline.
 
-    Surfaces the stored extraction confidence for the task's referenced
-    documents; runs no model and makes no outbound call.
-    """
-
-    async def run(self, task: AgentTask) -> IntakeReport:
-        return await _read_extractions(task.document_ids)
-
-
-class RealIntakeExtractor:
-    """Keyed intake-extractor — wraps the real vision-model document pipeline.
-
-    For a task that references already-ingested documents it surfaces their
-    stored extraction (identical to the Stub); :meth:`ingest_content` is the
-    ``attach_and_extract`` entry point for ingesting fresh bytes with the
-    configured vision model.
+    :meth:`run` reads the stored extraction for a task's referenced documents
+    (deterministic, no model call). :meth:`ingest_content` ingests fresh document
+    bytes through ``attach_and_extract`` — whose vision step is the real
+    Claude-vision extractor when keyed and the deterministic stub otherwise, so
+    the keyed/keyless distinction is resolved in the wrapped pipeline, not here.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -120,7 +114,5 @@ class RealIntakeExtractor:
 
 
 def build_intake_extractor(settings: Settings) -> IntakeExtractor:
-    """Keyless settings → the deterministic Stub; a key → the Real extractor."""
-    if not settings.anthropic_api_key:
-        return StubIntakeExtractor()
-    return RealIntakeExtractor(settings)
+    """Build the intake-extractor; the keyed/keyless split lives in the pipeline."""
+    return DocumentIntakeExtractor(settings)
