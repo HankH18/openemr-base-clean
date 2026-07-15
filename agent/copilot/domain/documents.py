@@ -38,7 +38,10 @@ class ExtractedFact(BaseModel):
     unit: str | None = None
     reference_range: str | None = None
     abnormal: str | None = None
-    collection_date: datetime | None = None
+    # Vision models return dates as ISO strings (JSON has no datetime), so this one
+    # field parses leniently even though the model is strict — otherwise a real
+    # extraction with a collection date (a required lab field) fails validation.
+    collection_date: datetime | None = Field(default=None, strict=False)
     page_no: int | None = Field(default=None, ge=1)
     bbox: list[float] | None = Field(
         default=None, description="Normalized [x, y, w, h] of the reconciled OCR span."
@@ -60,7 +63,7 @@ class LabReport(BaseModel):
     facts: list[ExtractedFact]
     ordering_provider: str | None = None
     specimen: str | None = None
-    collected_at: datetime | None = None
+    collected_at: datetime | None = Field(default=None, strict=False)
 
 
 class IntakeForm(BaseModel):
@@ -75,4 +78,4 @@ class IntakeForm(BaseModel):
     facts: list[ExtractedFact]
     patient_name: str | None = None
     date_of_birth: str | None = None
-    completed_at: datetime | None = None
+    completed_at: datetime | None = Field(default=None, strict=False)
