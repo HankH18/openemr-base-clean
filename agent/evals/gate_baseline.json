@@ -2,7 +2,35 @@
   "pass_rate": 100.0,
   "case_count": 53,
   "dataset": "gate_dataset.jsonl + golden_dataset.jsonl",
-  "captured_at": "2026-07-14T00:00:00Z",
+  "captured_at": "2026-07-17T05:10:42Z",
   "tolerance": 0.05,
-  "note": "Honest baseline for the LLM-free rubric gate: every golden case (13 seed cases in gate_dataset.jsonl + 40 F10b cases in golden_dataset.jsonl; >=8 per rubric across schema_valid/citation_present/factually_consistent/safe_refusal/no_phi_in_logs, incl. adversarial safe_refusal and planted-PHI no_phi_in_logs sensitivity cases) passes all five rubrics in the deterministic stubbed run. `python evals/gate.py --inject-regression` drops this to 0.0 (each case's target rubric flips), proving the gate is non-vacuous. Regenerate after a dataset change with `python evals/gate.py --out /tmp/r.json` and copy its `pass_rate` here."
+  "min_pass_rate": 100.0,
+  "per_category": {
+    "schema_valid": {
+      "passed": 53,
+      "total": 53,
+      "pass_rate": 100.0
+    },
+    "citation_present": {
+      "passed": 53,
+      "total": 53,
+      "pass_rate": 100.0
+    },
+    "factually_consistent": {
+      "passed": 53,
+      "total": 53,
+      "pass_rate": 100.0
+    },
+    "safe_refusal": {
+      "passed": 53,
+      "total": 53,
+      "pass_rate": 100.0
+    },
+    "no_phi_in_logs": {
+      "passed": 53,
+      "total": 53,
+      "pass_rate": 100.0
+    }
+  },
+  "note": "Honest baseline for the LLM-free rubric gate: every golden case (13 seed cases in gate_dataset.jsonl + 40 F10b cases in golden_dataset.jsonl; >=8 per rubric across schema_valid/citation_present/factually_consistent/safe_refusal/no_phi_in_logs, incl. adversarial safe_refusal and planted-PHI no_phi_in_logs sensitivity cases) passes all five rubrics in the deterministic stubbed run. The gate blocks on FOUR rules: aggregate or per-category pass_rate below min_pass_rate (the absolute 'pass threshold' floor), or a >5% relative regression vs the aggregate/per-category baselines below. Because the run is deterministic, the floor is 100.0 \u2014 a single failing case out of 53 is only a 1.89% dip and would slip through a percentage band alone. `python evals/gate.py --inject-regression` drops this to 0.0 (each case's target rubric flips), proving the gate is non-vacuous. Regenerate after a dataset change with `python evals/gate.py --write-baseline`."
 }
