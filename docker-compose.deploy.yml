@@ -231,6 +231,27 @@ services:
       COPILOT_AUTH_MODE: ${COPILOT_AUTH_MODE:-disabled}
       COPILOT_SESSION_ENC_KEY: ${COPILOT_SESSION_ENC_KEY:-}
       COPILOT_AUDIT_RETENTION_YEARS: ${COPILOT_AUDIT_RETENTION_YEARS:-6}
+      COPILOT_CHAT_RETENTION_DAYS: ${COPILOT_CHAT_RETENTION_DAYS:-}
+      COPILOT_SESSION_IDLE_SECONDS: ${COPILOT_SESSION_IDLE_SECONDS:-}
+      COPILOT_SESSION_ABSOLUTE_SECONDS: ${COPILOT_SESSION_ABSOLUTE_SECONDS:-}
+      COPILOT_TLS_VERIFY: ${COPILOT_TLS_VERIFY:-}
+      # Ingestion limits — the guards that stop a 544-BYTE pdf declaring a 60x60in
+      # page from rendering to 1.1 GB and OOM-killing the box. raster.py's own docs
+      # say "raise it on a larger box", which was impossible: Settings defined these
+      # and compose never passed them, so 27 of 53 settings were unreachable. A knob
+      # an operator cannot reach is not a knob.
+      COPILOT_OCR_DPI: ${COPILOT_OCR_DPI:-}
+      COPILOT_RASTER_MAX_PAGE_PIXELS: ${COPILOT_RASTER_MAX_PAGE_PIXELS:-}
+      COPILOT_RASTER_MAX_PAGES: ${COPILOT_RASTER_MAX_PAGES:-}
+      COPILOT_VISION_MAX_PAGES_PER_CALL: ${COPILOT_VISION_MAX_PAGES_PER_CALL:-}
+      # Keyed digest for the patient pseudonym on Langfuse spans. UNSET IS SAFE and
+      # stays the default: with no key the backend DROPS patient_id rather than emit
+      # a per-process id that changes on restart (an operator grouping by that reads
+      # one patient as two). Setting it trades nothing away — the third party still
+      # never sees a raw id — it only makes traces groupable by patient across
+      # restarts. Until now it could not be set here at all, so the deployment got
+      # the safe behaviour by accident rather than by choice.
+      COPILOT_OBSERVABILITY_PSEUDONYM_KEY: ${COPILOT_OBSERVABILITY_PSEUDONYM_KEY:-}
     volumes:
       # Backend Services client private key (PEM). Create it BEFORE `up`-ing the
       # agent (see DEPLOY.md §10): scripts/register_backend_client.py writes it to

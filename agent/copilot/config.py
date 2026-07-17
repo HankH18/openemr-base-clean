@@ -9,9 +9,9 @@ against a real backend.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +24,41 @@ class Settings(BaseSettings):
         env_prefix="COPILOT_",
         extra="ignore",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_env_means_unset(cls, data: Any) -> Any:
+        """An empty env var means "unset" for a non-``str`` field, not "invalid".
+
+        ``${COPILOT_OCR_DPI:-}`` is THE standard compose idiom for passing an
+        optional knob through, and it hands the container an EMPTY STRING when the
+        operator has not set it. Pydantic then parses ``""`` into ``int``/``bool``
+        and raises — so the app does not start. Measured: 8 of the 9 knobs an
+        operator would most want to tune (ocr_dpi, the raster caps, tls_verify,
+        the session timeouts, chat retention) hard-brick the boot that way, with
+        nothing to warn them. The idiom is not exotic; it is what the compose docs
+        teach, and it means "I am not setting this".
+
+        So an empty value for a typed field is dropped here and the field's default
+        applies — which is what the operator asked for.
+
+        Deliberately scoped to non-``str`` fields. For a plain ``str`` setting, ""
+        is a MEANINGFUL value the code already reads (an empty ``anthropic_api_key``
+        selects the keyless stub; an empty ``fhir_patient_id_template`` means "no
+        mapping configured" and makes the write client refuse). Dropping those would
+        silently swap a deliberate "off" for a default, which is the opposite of the
+        bug being fixed.
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned: dict[str, Any] = {}
+        for key, value in data.items():
+            if value == "":
+                field = cls.model_fields.get(key)
+                if field is not None and field.annotation is not str:
+                    continue  # non-str field, empty env var -> use the default
+            cleaned[key] = value
+        return cleaned
 
     # --- Database ---------------------------------------------------------
 
