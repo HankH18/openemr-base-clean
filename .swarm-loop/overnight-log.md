@@ -523,3 +523,35 @@ page numbers and page_no carried no schema description, so the model returned No
 reconciler defaulted every fact to page 1 — those 9 page-3 facts would have been matched
 against PAGE 1's tokens, either failing verification or falsely matching something on the
 wrong page. On the single-page demo docs the bug was invisible.
+
+## FEATURE BACKLOG (user, 2026-07-17) — GATED on a bug-free audit cycle
+
+Only after a cycle finds nothing worth fixing, and only if tokens remain:
+
+1. **Non-standard document variants.** Today's three demo docs are crisp, digitally
+   rendered, and structurally uniform. Real intake forms/med lists/labs differ per clinic:
+   different field labels, column orders, multi-column layouts, rotated/skewed scans,
+   faxes, photos of paper, non-English labels.
+2. **Handwriting recognition.** Real intake forms are hand-completed.
+
+**What tonight's work already implies for these — read before starting:**
+- The 0.95 coverage threshold was measured on CRISP 200-DPI digital renders, where real
+  OCR noise bottomed at 0.9545. The agent explicitly flagged the margin as THIN: "on a
+  scanned/faxed page 0.95 would start rejecting honest values (in the safe direction)."
+  Fax/handwriting will push OCR confidence and coverage DOWN. Expect the no-invention gate
+  to reject honest handwritten values. The threshold likely has to become a function of
+  input quality — which means the gate needs a notion of source quality it does not have.
+- Tesseract is the OCR engine and it is poor at handwriting. Claude vision reads the page
+  directly, but reconciliation verifies against TESSERACT tokens — so if Tesseract cannot
+  read the handwriting, NOTHING will reconcile and every handwritten fact becomes
+  unsupported, no matter how well vision read it. **The architecture's no-invention gate
+  is bottlenecked on the OCR engine, not the VLM.** That is the central design question for
+  handwriting, and it is not a tuning problem.
+- The wrapped-cell geometry derives its tolerances from median token height, so it should
+  survive DPI changes — but it assumes axis-aligned text. A skewed/rotated scan breaks the
+  "wrap returns to the cell's left edge" assumption.
+- Variant layouts are mostly a VISION-prompt/schema question (field_path is already free
+  text, and IntakeCategory is a closed set), so they are likely EASIER than handwriting.
+
+Suggested order: variants first (cheaper, tests the schema's generality), then handwriting
+(which needs an answer to the OCR-bottleneck question above first).
