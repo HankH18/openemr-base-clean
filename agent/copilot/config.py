@@ -313,13 +313,19 @@ class Settings(BaseSettings):
         ),
     )
     document_ingestion_enabled: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Master switch for the Week-2 document-ingestion HTTP surface "
-            "(upload/attach endpoints). Defaults OFF so a deployed app is "
-            "byte-for-byte unchanged until an operator opts in. Gates the API "
-            "surface only — the pipeline service stays directly invocable "
-            "(tests, CLI, background jobs)."
+            "Kill switch for the Week-2 document-ingestion HTTP surface: when "
+            "false, POST /v1/documents returns 503 and no document is accepted. "
+            "Gates the upload surface only — the pipeline service stays directly "
+            "invocable (tests, CLI, background jobs), and already-ingested "
+            "documents remain readable. Defaults TRUE because ingestion is a core "
+            "Week-2 capability and is already live; the flag exists so an operator "
+            "can actually disable intake (e.g. pending an incident). "
+            "NOTE: this previously defaulted to false and was read NOWHERE — a "
+            "phantom switch that made operators believe intake was off or "
+            "disableable when it was neither. It is now genuinely enforced in "
+            "api/routes/documents.py; the default preserves today's behavior."
         ),
     )
     chat_graph_enabled: bool = Field(

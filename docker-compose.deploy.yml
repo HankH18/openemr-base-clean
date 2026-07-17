@@ -194,6 +194,9 @@ services:
       # blank ⇒ deterministic keyless stubs for embeddings/rerank; set them for
       # real hybrid RAG + rerank.
       COPILOT_CHAT_GRAPH_ENABLED: ${COPILOT_CHAT_GRAPH_ENABLED:-false}
+      # Ingestion kill switch — on by default (ingestion is the Week-2 capability);
+      # set false to make POST /v1/documents return 503 without redeploying code.
+      COPILOT_DOCUMENT_INGESTION_ENABLED: ${COPILOT_DOCUMENT_INGESTION_ENABLED:-true}
       COPILOT_VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
       COPILOT_COHERE_API_KEY: ${COHERE_API_KEY:-}
       # Langfuse (observability). Cloud by default (set the keys in .env). To

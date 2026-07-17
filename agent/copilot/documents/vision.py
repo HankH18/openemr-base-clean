@@ -63,12 +63,27 @@ class DocumentType(StrEnum):
     medication_list = "medication_list"
 
 
+class UnknownDocumentTypeError(ValueError):
+    """The requested document type is not an ingestible kind."""
+
+
 def parse_doc_type(raw: str) -> DocumentType:
-    """Parse a raw doc-type string into the enum, defaulting to ``lab_pdf``."""
+    """Parse a raw doc-type string into the enum; raise on an unknown kind.
+
+    Parse, don't validate — and *fail loud at the source*. This used to default a
+    unknown string to ``lab_pdf``, so a mistyped/renamed kind was silently
+    extracted with the WRONG schema (an intake form parsed as a lab report) with
+    no error anywhere. The HTTP route rejects unknown types too, but that is the
+    sink; every caller of the service (CLI, background jobs, the graph's
+    intake-extractor) reaches this parser instead, so the guarantee belongs here.
+    """
     try:
         return DocumentType(raw)
-    except ValueError:
-        return DocumentType.lab_pdf
+    except ValueError as exc:
+        expected = sorted(kind.value for kind in DocumentType)
+        raise UnknownDocumentTypeError(
+            f"unsupported doc_type {raw!r}; expected one of {expected}"
+        ) from exc
 
 
 def schema_for(

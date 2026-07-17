@@ -52,6 +52,7 @@ from copilot.observability import current_correlation_id
 router = APIRouter(prefix="/v1", tags=["documents"])
 
 _UNAUTHORIZED_DETAIL = "Patient is not on your rounding list"
+_INGESTION_DISABLED_DETAIL = "Document ingestion is disabled on this deployment"
 
 
 def _uploader_factory(
@@ -118,6 +119,12 @@ async def upload_document(
 ) -> dict[str, Any]:
     settings = get_settings()
     correlation_id = current_correlation_id()
+
+    # The ingestion kill switch, genuinely enforced (it used to be declared in
+    # config and read nowhere). Same contract as the writeback gate: a clear 503,
+    # never a 500, and nothing is accepted or stored.
+    if not settings.document_ingestion_enabled:
+        raise HTTPException(status_code=503, detail=_INGESTION_DISABLED_DETAIL)
 
     # Identity per the auth-mode contract (disabled → the form clinician_id;
     # smart → the session cookie, 401/403 on absence/mismatch).
