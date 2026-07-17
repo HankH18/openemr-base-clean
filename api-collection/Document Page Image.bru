@@ -1,0 +1,35 @@
+meta {
+  name: Document Page Image
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{baseUrl}}/v1/documents/{{document_id}}/pages/{{page_no}}?clinician_id={{clinician_id}}
+  body: none
+  auth: none
+}
+
+params:query {
+  clinician_id: {{clinician_id}}
+}
+
+params:path {
+  document_id: {{document_id}}
+  page_no: {{page_no}}
+}
+
+docs {
+  GET /v1/documents/{document_id}/pages/{page_no}?clinician_id= — the rendered
+  page image the bbox-overlay UI draws on. Returns raw image/png bytes (not JSON);
+  Bruno previews it in the response pane.
+
+  page_no is 1-based (integer >= 1; {{page_no}} defaults to 1). Take the page from
+  a citation's page_or_section in "Document Status" and draw that citation's bbox
+  over this image — that is the pixel-level provenance for the extracted value.
+
+  This is PHI: identity is resolved BEFORE the store is touched (smart mode: 401
+  without an af_session cookie), then 404 "Document not found" / "Page not found"
+  (page never rendered or out of range), then 403 "Patient is not on your rounding
+  list". 422 if page_no < 1 or document_id < 1.
+}

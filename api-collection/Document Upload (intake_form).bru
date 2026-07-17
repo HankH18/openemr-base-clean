@@ -1,0 +1,37 @@
+meta {
+  name: Document Upload (intake_form)
+  type: http
+  seq: 20
+}
+
+post {
+  url: {{baseUrl}}/v1/documents
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(../demo/sample_docs/sample_intake_form.pdf)
+  patient_id: {{patient_id}}
+  clinician_id: {{clinician_id}}
+  doc_type: intake_form
+}
+
+vars:post-response {
+  document_id: res.body.document_id
+}
+
+docs {
+  POST /v1/documents with doc_type=intake_form — the same endpoint as "Document
+  Upload (lab_pdf)"; only the sample file and the extraction schema differ.
+
+  Uses the committed sample ../demo/sample_docs/sample_intake_form.pdf
+  (demographics, chief concern, current meds, allergies, family history — all
+  fictional). Intake facts are tagged with an IntakeCategory, and the three
+  lists-backed ones (allergy / medication / medical_problem) are exactly what
+  "Writes Propose from Document" drafts candidates from — so run THIS upload (or
+  the medication_list one), not the lab_pdf, before that request.
+
+  Captures document_id into {{document_id}}. Same fields, status codes and
+  auth-mode contract as the lab_pdf upload — see its docs.
+}
