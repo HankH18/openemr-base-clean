@@ -239,6 +239,55 @@ export interface DocumentAccepted {
   correlation_id: string | null;
 }
 
+/**
+ * One schema-validated extracted fact from `GET /v1/documents/{id}` with its
+ * reconciled page/bbox provenance (mirrors `_fact_body` in
+ * copilot/api/routes/documents.py). `supported` is the no-invention gate:
+ * true only when the extracted value was actually located in the page's OCR
+ * tokens (bbox + match_confidence set). An unsupported fact is surfaced as
+ * such — never silently dressed up as grounded.
+ */
+export interface ExtractedFact {
+  /** extracted_fact row id, stringified — the citation join key. */
+  id: string;
+  /** Schema path of the field, e.g. "hemoglobin" or "medications[0].name". */
+  field_path: string;
+  /** Extracted value, verbatim. */
+  value: string;
+  unit: string;
+  reference_range: string;
+  abnormal_flag: string;
+  /** Cited page (1-based); null when reconciliation found no page. */
+  page_no: number | null;
+  /** Normalized [x, y, w, h] on the cited page; null when not located. */
+  bbox: number[] | null;
+  /** OCR reconciliation confidence, 0–1; null when not located. */
+  match_confidence: number | null;
+  supported: boolean;
+  /**
+   * The document citation the service emitted for this fact (supported facts
+   * only), pre-joined on `field_or_chunk_id` by the normalizer. Null when the
+   * service emitted none — the fact then renders without a source chip.
+   */
+  citation: DocumentCitation | null;
+}
+
+/**
+ * `GET /v1/documents/{document_id}` — ingestion status plus the latest
+ * extraction's facts. Polled after upload until `status` is terminal
+ * ('extracted' | 'failed').
+ */
+export interface DocumentDetail {
+  document_id: string;
+  patient_id: number;
+  /** Ingestion status; 'extracted' and 'failed' are terminal. */
+  status: string;
+  doc_type: string;
+  page_count: number | null;
+  /** The latest extraction's facts, each carrying its own citation. */
+  facts: ExtractedFact[];
+}
+
 // ------------------------------------------------------------ write-back
 
 /**

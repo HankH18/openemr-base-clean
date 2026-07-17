@@ -1050,6 +1050,83 @@
   color: var(--critical);
 }
 
+/* ------------------------------------------- extracted document facts */
+
+/* The post-upload extraction panel: the async pipeline's facts, rendered in
+   the same ledger idiom as the claim lists. Every supported fact carries a
+   document-variant provenance chip (page + bbox → the evidence overlay); a
+   fact the no-invention gate could NOT locate on the page is dimmed and
+   wears an amber "not found on page" tag — unverified shown as unverified. */
+
+.doc-extract-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15.5px;
+  color: var(--ink-faint);
+}
+
+.doc-extract-wait::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .doc-extract-wait::before {
+    animation: soft-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+.doc-extract-error {
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13.5px;
+  color: var(--critical);
+}
+
+/* Abnormal flag verbatim from the source ("H", "L", …) — caution-tinted,
+   mono, never the sole signal (the reference range sits beside it). */
+.doc-fact-flag {
+  font-family: var(--font-data);
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warning);
+}
+
+.doc-fact-range {
+  font-family: var(--font-data);
+  font-size: 0.8em;
+  color: var(--ink-faint);
+}
+
+/* A fact the OCR-reconciliation gate rejected: dimmed value + amber tag.
+   Amber (not red): the document is fine, this one value is unverified. */
+.claim--unsupported .claim-val {
+  color: var(--ink-faint);
+}
+
+.doc-fact-unsupported {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warning);
+  border: 1px dashed var(--warning);
+  border-radius: 2px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
 /* The action chips that trail a claim (view trend + provenance). */
 .claim-tools {
   flex: none;

@@ -13,6 +13,7 @@ import type {
   ConversationMessage,
   DeteriorationAlert,
   DocumentAccepted,
+  DocumentDetail,
   ObservationSeries,
   ProposedWrite,
   RefreshOutcome,
@@ -85,6 +86,14 @@ export interface CopilotApi {
    * polled separately. The mock adapter simulates acceptance offline.
    */
   uploadDocument(patientId: number, file: File, docType?: DocType): Promise<DocumentAccepted>;
+  /**
+   * Read one uploaded document's ingestion status plus the latest
+   * extraction's facts and their document citations
+   * (`GET /v1/documents/{id}`). Polled after upload until `status` is
+   * terminal ('extracted' | 'failed'). A malformed body normalizes to a safe
+   * empty detail; transport failures throw `ApiError` so the poller can retry.
+   */
+  getDocument(clinicianId: number, documentId: string): Promise<DocumentDetail>;
 }
 
 export function createApi(): CopilotApi {
