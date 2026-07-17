@@ -840,3 +840,66 @@ at StubSynthesizer/rounds; page-1 token fallback (pipeline.py:390) can produce f
 citations (pre-existing); test_reconcile_multiword.py:548 flagged vacuous, unreviewed;
 mypy does not cover evals/ (25 errors there); the Langfuse BAA question; self-granted
 authorization.
+
+## Cycle 8 CLOSED — deployed and verified live (HEAD 7335cdf, tree 9165 files)
+
+1228 tests green, mypy clean, gate 0, ingestion 8, pass_rate 97.83, harness intact.
+Live: UI 200, conversations/1 -> 401, agent healthy, migrations at head.
+
+Verified on the DEPLOYED build by exercising the defects:
+  critic:    'unsafe_action: dose is 10x max' -> withholds=True   (was: SERVED)
+  reconcile: page 3 OCR empty -> supported=False, bbox=None       (was: True, page-1 bbox, 0.97)
+  RAG:       warfarin/major-bleed -> major-bleeding-on-warfarin    (was: INR-hold advice)
+             nephrotoxins in AKI  -> nephrotoxin-stewardship       (was: initial-evaluation)
+             all 3 gate-pinned queries unmoved
+
+### Fixed (issues 55-58)
+- **#55 the no-invention gate INVERTED on the pages it exists to protect** (7335cdf).
+  `tokens_by_page.get(page_no) or tokens_by_page.get(1) or []` — an empty list is FALSY,
+  so a page whose OCR found nothing borrowed page 1's tokens while keeping its own page
+  number on the citation. supported=True, conf=0.97, bbox from the wrong page, drawn on
+  the right page's image. The trigger is exactly HANDWRITING / faxes / photographed pages.
+  A page that DOESN'T EXIST got supported=True at 0.97.
+- **#56 the critic failed OPEN on every plausible reason string** (600b0fe). `12` and
+  `None` — which an LLM never emits — withheld correctly; `'unsafe_action: dose is 10x
+  max'` did not. The physician read "Give 10x the insulin dose" with its evidence quietly
+  stripped. Lenient is now the whitelist.
+- **#57 the sparse leg had no IDF** (fc14843). BM25 — measured: load-bearing for the
+  NEPHROTOXIN query; the warfarin query was already fixed by 7bc9839's section-feeding.
+  Attribution measured by sabotage, not assumed.
+- **#58 unit dropped on persist->rehydrate + ungrounded on the rounds path** (771b1a0).
+  Plus a hole the audit missed: the rounds card rendered the unit in TEXT while its
+  source_ref carried none.
+
+### Two agents DIED on API 529 mid-work — and that is a finding about the loop
+The RAG agent died on the line "Now the real test: run the actual implemented code" —
+its BM25 was coherent (imports, mypy, suite green) but its CENTRAL CLAIM WAS UNVERIFIED
+and it had written NO tests. The critic agent died mid-test-writing. Both left working
+code and an unproven story. I finished and verified both rather than taking the green:
+**a fix nobody watched work is a hypothesis, and a dead agent's green suite is exactly
+the shape this whole night has been about.**
+
+### THE FINDING THAT MATTERS FOR THE HANDWRITING WORK
+The page-scope agent measured the real corpus with real tesseract:
+
+  sample_intake_form.pdf      page 1: 411 tokens
+  sample_lab_report.pdf       page 1: 383 tokens
+  sample_medication_list.pdf  page 1: 383 tokens
+  TOTAL: 3 pages, 0 with zero tokens — ALL THREE DOCS ARE SINGLE-PAGE
+
+**The demo corpus has the same blind spot as StubOcr's single-page fixture.** Single-page
++ clean-OCR is precisely the shape that makes #55 invisible, which is why it survived.
+extraction_field_pass_rate could not move on this corpus — before == after — not because
+the fix is inert but because there are no wrong-page matches to withdraw when there is
+only one page. The bug was LATENT, and upload is live: it fires the first time anyone
+uploads a handwritten, faxed, or multi-page document. That is the user's next frontier,
+and #55 was sitting directly in it.
+
+### Also
+- my own probe's `gate exit=` came back EMPTY because $? captured `tail`'s status — trap
+  #1 from my own verify-the-deploy skill, committed minutes after writing it.
+- my first critic sabotage clipped a multi-line statement -> IndentationError, i.e. a
+  broken experiment rather than a red test. Caught by the "an unexplained result is a bug
+  in your experiment" rule. Redone cleanly: 4 red.
+- the junk-duplicate sync is STILL active (a " 3.py" appeared). Cleaned; source is clean;
+  only .venv/node_modules retain them. Worth a .gitignore guard.
