@@ -56,7 +56,7 @@ from typing import Any
 import sqlalchemy as sa
 
 import copilot.memory.models  # noqa: F401  (registers the tables on Base.metadata)
-from copilot.chat.service import ChatReply, ChatService
+from copilot.chat.service import ChatReply, ChatService, _TurnOutcome
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import Claim, VerificationAction
 from copilot.domain.primitives import ClinicianId, PatientId, ResourceType
@@ -181,7 +181,7 @@ def _claim_payload(claims: list[Claim]) -> list[dict[str, Any]]:
     ]
 
 
-async def _turn(message: str) -> tuple[str, list[Claim], VerificationAction, bool]:
+async def _turn(message: str) -> _TurnOutcome:
     """Run one REAL serve-time chat turn through ``ChatService._answer_inline``.
 
     This is the production function the auditor sabotaged: it calls
