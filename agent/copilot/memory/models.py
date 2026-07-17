@@ -398,6 +398,20 @@ class GuidelineDocumentRow(Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     source: Mapped[str | None] = mapped_column(String(512), nullable=True)
     license: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # sha256 of the material this document was ingested FROM (title + license +
+    # every chunk's section/content) — see copilot.rag.ingest.CorpusDocument.
+    # ``source`` alone cannot answer "is the stored copy still what the file says?",
+    # so an ingest keyed on it alone re-registers a corrected guideline as
+    # "skipped (already ingested)" and keeps serving the superseded text. The
+    # serve-time verifier re-reads the same stale row, so the stale quote matches
+    # itself verbatim and passes the grounding gate — the staleness is
+    # self-consistent and structurally invisible to verification. This column is
+    # what makes a changed file detectable.
+    #
+    # NULL = unknown, not "no content": rows written before migration 0009 have no
+    # recorded hash, so their freshness cannot be established. Ingest treats NULL
+    # as stale and rebuilds once (see ingest_corpus) rather than trusting them.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utc_default)
 
     chunks: Mapped[list[GuidelineChunkRow]] = relationship(

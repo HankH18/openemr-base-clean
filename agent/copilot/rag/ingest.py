@@ -12,20 +12,37 @@ chunk through the injected :class:`~copilot.rag.embeddings.Embedder` (the
 deterministic keyless Stub in tests/CI), and persists rows through the F1
 ``MemoryRepository`` guideline accessors.
 
-Idempotent by design: the front-matter ``source`` is the natural key — a
-document whose ``source`` is already registered is skipped wholesale, so
-re-running the ingest never duplicates documents or chunks, and stub
-embeddings make a from-scratch re-ingest byte-identical.
+Idempotent by *content*, not merely by name. The front-matter ``source`` is the
+natural key — it says *which* document a file is, never *which version*. So the
+skip decision is keyed on a sha256 of the material actually persisted (title,
+license, and every chunk's section/content), recorded on
+``guideline_document.content_hash``: an unchanged file is skipped without
+re-embedding, and an **edited** file is rebuilt automatically. Stub embeddings
+make a from-scratch re-ingest byte-identical.
+
+Why the hash is not optional bookkeeping: skipping on ``source`` alone meant a
+corrected guideline silently did not apply. Fix a wrong dose in a corpus file,
+re-run the ingest, and it reported ``skipped (already ingested)`` — which reads
+as success — while retrieval kept serving the superseded text. And because the
+serve-time verifier (``copilot.verification.serve``) re-materializes the quoted
+chunk from that same stale row, the stale quote matched itself verbatim and was
+served as **grounded**. The staleness was self-consistent, so the verification
+gate structurally could not catch it. Comparing against the file is what breaks
+that loop.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from copilot.memory.models import GuidelineDocumentRow
 from copilot.memory.repository import MemoryRepository
 from copilot.rag.embeddings import Embedder
 
@@ -68,6 +85,58 @@ class CorpusDocument:
     license: str
     chunks: tuple[CorpusChunk, ...]
 
+    @property
+    def content_hash(self) -> str:
+        """sha256 of everything this document persists, for change detection.
+
+        Derived rather than stored, so it cannot drift from the content it
+        describes. Covers the *material* fields — ``title``, ``license``, and each
+        chunk's ``section``/``content`` — i.e. exactly the values written to
+        ``guideline_document`` / ``guideline_chunk``. Hashing the derived chunks
+        rather than the raw file body is deliberate: it also moves when the
+        *chunker* changes (new ``MAX_CHUNK_CHARS``, heading handling), which
+        likewise makes the stored rows wrong, and it ignores edits that change no
+        persisted value (a comment in the front matter, trailing whitespace).
+
+        ``source`` is excluded: it is the lookup key this hash is compared *under*,
+        so it is identical on both sides of every comparison by construction.
+
+        ``path`` is excluded too — moving a corpus file without editing it changes
+        nothing that is served, and re-embedding the corpus over a rename would be
+        pure cost.
+
+        Canonical JSON (sorted keys, fixed separators) so the digest depends on
+        values only, never on dict ordering — mirroring
+        ``copilot.worker.hashing.content_hash_for_resources``.
+        """
+        payload = {
+            "title": self.title,
+            "license": self.license,
+            "chunks": [
+                {"section": chunk.section, "content": chunk.content} for chunk in self.chunks
+            ],
+        }
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+#: Why a document was (re-)ingested or skipped. ``unchanged`` is the only value
+#: that skips; every other value rebuilds the document.
+IngestReason = Literal["new", "changed", "unknown-hash", "forced", "unchanged"]
+
+#: Operator-facing wording for each reason — the ingest report is the only signal
+#: an operator gets, and "skipped" alone is what made the staleness bug read as
+#: success. Each line now says what the ingester actually concluded.
+REASON_LABELS: dict[IngestReason, str] = {
+    "new": "ingested (new)",
+    "changed": "re-ingested (content changed)",
+    "unknown-hash": "re-ingested (no recorded hash — pre-0009 row, freshness unknown)",
+    "forced": "re-ingested (--force)",
+    "unchanged": "skipped (unchanged)",
+}
+
 
 @dataclass(frozen=True)
 class DocumentResult:
@@ -77,6 +146,12 @@ class DocumentResult:
     source: str
     skipped: bool
     chunk_count: int
+    reason: IngestReason = "unchanged"
+
+    @property
+    def label(self) -> str:
+        """Operator-facing description of this outcome."""
+        return REASON_LABELS[self.reason]
 
 
 @dataclass(frozen=True)
@@ -208,42 +283,75 @@ async def ingest_corpus(
     corpus_dir: Path | None = None,
     force: bool = False,
 ) -> IngestReport:
-    """Chunk, embed, and persist the corpus; already-ingested sources are skipped.
+    """Chunk, embed, and persist the corpus; only *unchanged* sources are skipped.
 
     Rows are written through the F1 ``MemoryRepository`` guideline accessors.
     Embeddings are computed once per document (one batched ``embed`` call) and
-    persisted on each ``guideline_chunk`` row, so a later run never re-embeds
-    existing content. The caller owns the transaction (commit/rollback).
+    persisted on each ``guideline_chunk`` row. The caller owns the transaction
+    (commit/rollback).
 
-    ``force`` deletes each discovered source's existing document + chunks before
-    re-ingesting it. This exists because the skip-if-registered default makes a
-    re-ingest a **silent no-op**, which is a trap whenever the *embedder* changes:
-    vectors written by the old embedder are incomparable with queries embedded by
-    the new one, so the corpus keeps scoring as noise and nothing says why. Safe
-    by design — the corpus is reproducible from the repo (see
-    ``discover_corpus``), so rebuilding these rows destroys nothing irreplaceable.
+    The skip decision compares the file's :attr:`CorpusDocument.content_hash` with
+    the hash recorded on the stored row, so re-running the ingest after editing a
+    corpus file **applies the edit**. This is the correct default rather than an
+    opt-in flag: a clinical guideline that has been corrected must not keep being
+    served, and the previous name-only check made that failure both silent and
+    *unverifiable* — the serve-time verifier re-reads the same stale row, so the
+    stale quote matched itself and was served as grounded. An operator cannot be
+    expected to remember a flag to avoid citing a retracted dose.
+
+    Costs nothing when nothing changed: the hash is compared *before* any
+    ``embed`` call, so an unchanged corpus still performs zero embedding work and
+    zero writes.
+
+    Three states rebuild a document:
+
+    * **new** — no row for this ``source`` yet.
+    * **changed** — recorded hash differs from the file's.
+    * **unknown-hash** — the row predates migration 0009 and carries ``NULL``. That
+      is *unknown*, not *unchanged*: nothing on the row can establish whether it
+      matches the file. Rebuilding once is the only honest reading — treating it as
+      current would preserve the exact staleness bug for every corpus already
+      deployed, which is the population most likely to hold the stale text. It is a
+      one-time cost per document: the rebuild records a hash, and subsequent runs
+      take the cheap unchanged path.
+
+    ``force`` rebuilds unconditionally, hash or no hash. Still required when the
+    *embedder* changes: vectors written by an old embedder are incomparable with
+    queries embedded by a new one, and that degradation lives in the embedding, not
+    in the corpus text — the content hash cannot see it. Safe by design — the corpus
+    is reproducible from the repo (see ``discover_corpus``), so rebuilding these rows
+    destroys nothing irreplaceable.
     """
     repository = MemoryRepository(session)
     results: list[DocumentResult] = []
     for document in discover_corpus(corpus_dir):
-        if force:
-            await repository.delete_guideline_document_by_source(document.source)
-        if await _document_exists(session, document.source):
+        existing = await repository.get_guideline_document_by_source(document.source)
+        reason = _ingest_reason(existing, document, force=force)
+        if reason == "unchanged":
             results.append(
                 DocumentResult(
                     title=document.title,
                     source=document.source,
                     skipped=True,
                     chunk_count=0,
+                    reason=reason,
                 )
             )
             continue
+        if existing is not None:
+            # Replace, never accumulate: a second row for one source would
+            # double-count in retrieval and let the stale chunks stay reachable.
+            await repository.delete_guideline_document_by_source(document.source)
         vectors = embedder.embed([chunk.content for chunk in document.chunks])
         row = await repository.create_guideline_document(
             title=document.title,
             source=document.source,
             license=document.license,
         )
+        # Recorded in the same unit of work as the chunks it describes: a hash
+        # committed without its chunks (or vice versa) would claim a freshness the
+        # rows do not have, and the next run would trust it and skip.
+        row.content_hash = document.content_hash
         for index, (chunk, vector) in enumerate(zip(document.chunks, vectors, strict=True)):
             await repository.create_guideline_chunk(
                 guideline_document_id=row.id,
@@ -258,14 +366,32 @@ async def ingest_corpus(
                 source=document.source,
                 skipped=False,
                 chunk_count=len(document.chunks),
+                reason=reason,
             )
         )
     return IngestReport(results=tuple(results))
 
 
-async def _document_exists(session: AsyncSession, source: str) -> bool:
-    """Idempotency probe (read-only), routed through the repository gateway."""
-    return await MemoryRepository(session).get_guideline_document_by_source(source) is not None
+def _ingest_reason(
+    existing: GuidelineDocumentRow | None, document: CorpusDocument, *, force: bool
+) -> IngestReason:
+    """Classify one document's outcome — the whole skip/rebuild decision, in one place.
+
+    Ordered most-decisive first. ``force`` wins over every state (it exists to
+    rebuild rows the hash cannot judge, e.g. after an embedder change), and an
+    absent or unhashed row is rebuilt before any hash comparison is attempted —
+    comparing against ``None`` would silently be a mismatch and get the right
+    answer for the wrong reason.
+    """
+    if force:
+        return "forced"
+    if existing is None:
+        return "new"
+    if existing.content_hash is None:
+        return "unknown-hash"
+    if existing.content_hash != document.content_hash:
+        return "changed"
+    return "unchanged"
 
 
 def _slugify(heading: str) -> str:

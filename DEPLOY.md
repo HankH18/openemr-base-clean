@@ -657,7 +657,8 @@ grep -q '^COPILOT_CHAT_GRAPH_ENABLED=' .env \
 docker compose -f docker-compose.deploy.yml build agent
 
 # 3. Apply DB migrations (0005 document_ingestion + 0006 guideline_rag, which also
-#    enables the `vector` extension). Additive; existing rows untouched.
+#    enables the `vector` extension; 0009 adds guideline_document.content_hash).
+#    Additive; existing rows untouched.
 docker compose -f docker-compose.deploy.yml run --rm -T --entrypoint alembic agent upgrade head
 
 # 4. Ingest the guideline corpus into guideline_chunk. REQUIRED for the RAG half —
@@ -665,6 +666,14 @@ docker compose -f docker-compose.deploy.yml run --rm -T --entrypoint alembic age
 #    this runs. The corpus is baked into the image at /app/corpus (the script's
 #    default); chunks + embeds it with the keyless stub embedder by default. The
 #    `-T` disables the pseudo-TTY so the run does not swallow a piped/heredoc stdin.
+#
+#    Safe to re-run, and re-running APPLIES CORPUS EDITS: each source is skipped
+#    only while its stored content_hash still matches the file, so a corrected
+#    guideline is re-ingested automatically — no flag. Documents ingested before
+#    migration 0009 carry no hash and are rebuilt once, then settle onto the cheap
+#    skip path. Read the per-document lines: "skipped (unchanged)" vs
+#    "re-ingested (content changed)" is the difference between the corpus being
+#    current and it merely being present.
 docker compose -f docker-compose.deploy.yml run --rm -T --no-deps \
   --entrypoint python agent scripts/ingest_guidelines.py
 
@@ -764,25 +773,38 @@ The gate is **stubbed and LLM-free**, so it needs no API key and no database —
 exactly why it survives losing everything else. The **guideline corpus** is equally
 repo-reproducible: `guideline_chunk` rows are agent-DB-owned but are *derived*, and
 `scripts/ingest_guidelines.py` deterministically rebuilds them from the committed
-Markdown. Idempotency is **automatic, not a flag** — the front-matter `source` is the
-natural key and an already-registered document is **skipped wholesale**
-(`copilot/rag/ingest.py:15-18`), so re-running never duplicates; with the stub embedder
-a from-scratch re-ingest is byte-identical. **RPO 0 / RTO ≈ 1 minute for both.**
+Markdown. Idempotency is **automatic, not a flag** — each source is skipped only while
+its stored `guideline_document.content_hash` still matches the file, so re-running
+never duplicates *and* an edited corpus file is re-ingested automatically; with the
+stub embedder a from-scratch re-ingest is byte-identical. **RPO 0 / RTO ≈ 1 minute for
+both.**
 
 > **Two honest limits of this claim.**
 > 1. "Reproducible from the repo alone" covers the eval set, rubrics, baseline, and
 >    guideline corpus — the whole quality-defence apparatus. It does **not** cover
 >    patient data, and nothing here should be read as implying otherwise.
-> 2. **The re-ingest cannot *upgrade* stub vectors to real ones in place.** Because an
->    already-registered `source` is skipped wholesale, re-running with `VOYAGE_API_KEY`
->    set against a populated corpus is a **no-op** — it will not re-embed. Real vectors
->    are only produced when the ingest runs against an **empty** corpus with the key
->    set. So: on a from-scratch restore, export `VOYAGE_API_KEY` **before** step 4 of
->    §19.4 and you get real `voyage-3.5` vectors (cheap — one-time corpus embed, §3d);
->    to re-embed an already-populated corpus you must clear `guideline_chunk` +
->    `guideline_document` first (or restore the agent dump, which already carries the
->    real vectors). There is no `--force` / `--reset` flag — the only CLI argument is
->    `--corpus-dir`.
+> 2. **A plain re-ingest will not *upgrade* stub vectors to real ones — use `--force`.**
+>    The skip is keyed on the corpus *text*, and swapping the embedder changes no text,
+>    so re-running with `VOYAGE_API_KEY` newly set against an unchanged populated corpus
+>    is a **no-op**: it will not re-embed. This is the one degradation a content hash
+>    cannot see, and it is what `--force` is for — it rebuilds every source
+>    unconditionally (`scripts/ingest_guidelines.py --force`), which is the supported way
+>    to re-embed in place. You do **not** need to clear `guideline_chunk` /
+>    `guideline_document` by hand:
+>
+>    ```bash
+>    docker compose -f docker-compose.deploy.yml run --rm -T --no-deps \
+>      --entrypoint python agent scripts/ingest_guidelines.py --force
+>    ```
+>
+>    On a from-scratch restore, exporting `VOYAGE_API_KEY` **before** step 4 of §19.4
+>    gets you real `voyage-3.5` vectors with no flag at all (cheap — one-time corpus
+>    embed, §3d).
+>
+>    *Corrected 2026-07-17: this note previously claimed "there is no `--force` /
+>    `--reset` flag — the only CLI argument is `--corpus-dir`". That was false;
+>    `--force` has existed since the flag was added and `--help` lists it. Acting on
+>    the old text meant hand-deleting rows in prod for a job the CLI already does.*
 
 ### 19.3 Manual backup procedure (install this — it is not running)
 
@@ -862,9 +884,10 @@ git clone <fork-url> && cd openemr-base-clean          # eval set + corpus arriv
 cd agent && python evals/gate.py                        # prove the gate is intact: 53 cases, exit 0
 
 # Re-seed guideline_chunk. Set VOYAGE_API_KEY in .env BEFORE this runs if you want real
-# voyage-3.5 vectors: the ingest skips already-registered documents wholesale, so a later
-# re-run will NOT re-embed a populated corpus (see §19.2). Keyless = stub vectors, which
-# still serve grounded, cited evidence.
+# voyage-3.5 vectors: the ingest skips a document whose content_hash still matches, and
+# an embedder swap changes no text, so a later plain re-run will NOT re-embed a populated
+# corpus — that case needs `--force` (see §19.2). Keyless = stub vectors, which still
+# serve grounded, cited evidence. (Corpus *edits* need no flag; they are detected.)
 docker compose -f docker-compose.deploy.yml run --rm -T --no-deps \
   --entrypoint python agent scripts/ingest_guidelines.py
 ```

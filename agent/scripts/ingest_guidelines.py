@@ -10,12 +10,16 @@ Chunks every front-mattered Markdown source under ``agent/corpus/``
 Offline/CI-safe by default: with no ``COPILOT_VOYAGE_API_KEY`` set,
 ``build_embedder`` selects the deterministic keyless Voyage stub, so the run
 makes zero network calls and produces byte-identical vectors every time.
-Idempotent: a source whose front-matter ``source`` is already registered is
-skipped, so re-running never duplicates documents or chunks.
+
+Idempotent by *content*: each source is skipped only when its stored
+``content_hash`` still matches the file, so re-running never duplicates documents
+or chunks — but **editing a corpus file and re-running does apply the edit**, with
+no flag required. Correcting a guideline is the case that must never silently
+no-op (see ``copilot.rag.ingest``).
 
 Usage (from the ``agent/`` directory)::
 
-    python scripts/ingest_guidelines.py [--corpus-dir PATH]
+    python scripts/ingest_guidelines.py [--corpus-dir PATH] [--force]
 
 For SQLite targets the schema is created on the fly (test/dev convenience);
 Postgres deployments must have Alembic migrations applied first — the script
@@ -64,11 +68,11 @@ async def _run(corpus_dir: Path | None, force: bool) -> None:
 
     print("=== AgentForge guideline-corpus ingest ===")
     for result in report.results:
-        state = (
-            "skipped (already ingested)"
-            if result.skipped
-            else f"ingested ({result.chunk_count} chunks)"
-        )
+        # ``result.label`` says WHY, not just whether — the old report printed
+        # "skipped (already ingested)" for a corpus file that had been corrected
+        # and not applied, so the one line an operator reads asserted success at
+        # the exact moment the ingest was serving superseded clinical text.
+        state = result.label if result.skipped else f"{result.label} — {result.chunk_count} chunks"
         print(f"- {result.title} [{result.source}]: {state}")
     print(
         f"documents ingested: {report.documents_ingested}  "
@@ -92,11 +96,13 @@ def main() -> None:
         "--force",
         action="store_true",
         help=(
-            "Delete each discovered source's existing rows and re-ingest. REQUIRED "
-            "after an embedder change: stored vectors are incomparable with queries "
-            "embedded by a different embedder, and the default skip-if-registered "
-            "makes a plain re-ingest a SILENT NO-OP. Safe — the corpus is "
-            "reproducible from the repo."
+            "Delete every discovered source's existing rows and re-ingest, changed "
+            "or not. NOT needed for an edited corpus file — the default already "
+            "detects that by content hash. REQUIRED after an EMBEDDER change: "
+            "stored vectors are incomparable with queries embedded by a different "
+            "embedder, and that degradation lives in the embedding, not the text, "
+            "so no content hash can see it. Safe — the corpus is reproducible from "
+            "the repo."
         ),
     )
     args = parser.parse_args()
