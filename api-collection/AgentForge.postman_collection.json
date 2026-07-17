@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "AgentForge Clinical Co-Pilot",
-    "description": "Grounded clinical co-pilot agent (copilot): auth + rounds + chat + observations + write-back + health/ready. Requests point at {{baseUrl}}. In smart mode (deployed droplet) the interactive data routes need the af_session cookie from the browser SMART login and return 401 without it; in disabled mode (local) identity comes from the request clinician_id. Write-back is flag-gated (503 when writeback_enabled is false).",
+    "description": "Grounded clinical co-pilot agent (copilot): auth + rounds + chat + observations + document ingestion + write-back + status/health. Covers every path the live app publishes at {{baseUrl}}/openapi.json. Requests point at {{baseUrl}}. In smart mode (deployed droplet) the interactive data routes (chat, rounds/*, observations, writes, documents/*) need the af_session cookie from the browser SMART login and return 401 without it; in disabled mode (local) identity comes from the request clinician_id. Write-back is flag-gated (503 when writeback_enabled is false); document upload works either way (derived-only ingestion when write-back is off). Week-2 flow: Document Upload -> Document Status (poll until extracted) -> Document Page Image -> Chat (evidence) -> Writes Propose from Document -> Writes Confirm.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,7 +10,9 @@
     { "key": "patient_id", "value": "101" },
     { "key": "conversation_id", "value": "1" },
     { "key": "metric", "value": "Potassium" },
-    { "key": "idempotency_key", "value": "write-demo-001" }
+    { "key": "idempotency_key", "value": "write-demo-001" },
+    { "key": "document_id", "value": "1" },
+    { "key": "page_no", "value": "1" }
   ],
   "item": [
     {
@@ -235,6 +237,326 @@
           "path": ["v1", "writes", "{{idempotency_key}}", "confirm"]
         },
         "description": "POST /v1/writes/{idempotency_key}/confirm — the distinct, human-initiated second transaction that commits the candidate append-only and returns proof. REQUIRES writeback_enabled; 503 when off. TEMPLATE: paste the idempotency_key + candidate EXACTLY as returned by Writes Propose (candidate carries typed ids as {value: N}); the URL key must equal candidate.idempotency_key (else 400). Response: {resource_kind, new_id, encounter_id, committed_at} (encounter_id set for vitals, null for meds). Errors: 403 / 400 / 502 (write not confirmed upstream) / 503."
+      }
+    },
+    {
+      "name": "Document Upload (lab_pdf)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Chain the Week-2 flow: hand document_id to the document reads,",
+              "// the evidence chat and the propose-from-document bridge.",
+              "if (pm.response.code === 202) {",
+              "    pm.collectionVariables.set('document_id', pm.response.json().document_id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "demo/sample_docs/sample_lab_report.pdf",
+              "description": "REQUIRED. Postman cannot resolve a repo-relative path for security reasons: re-select ../demo/sample_docs/sample_lab_report.pdf in the Body tab if the file shows as missing."
+            },
+            {
+              "key": "patient_id",
+              "value": "{{patient_id}}",
+              "type": "text"
+            },
+            {
+              "key": "clinician_id",
+              "value": "{{clinician_id}}",
+              "type": "text"
+            },
+            {
+              "key": "doc_type",
+              "value": "lab_pdf",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/documents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "documents"
+          ]
+        },
+        "description": "POST /v1/documents \u2014 multipart upload + Week-2 ingestion (rasterize -> OCR -> structured vision extraction -> OCR-reconcile page+bbox -> append-only persist). Fields: file (REQUIRED, the committed sample ../demo/sample_docs/sample_lab_report.pdf \u2014 fictional patient, no real PHI), patient_id (REQUIRED, >0), clinician_id (OPTIONAL, >0 \u2014 optional on purpose so smart mode, where the cookie is authoritative, does not 422 before auth runs; disabled mode still 400s without an asserted id), doc_type (OPTIONAL, default lab_pdf; CLOSED set lab_pdf|intake_form|medication_list \u2014 an unknown value fails loud with 400, never silently coerced). Response 202: {document_id, status, correlation_id}; status = uploaded|extracting|extracted|failed. A test script captures document_id into the collection variable, so the rest of the flow chains with no copy-paste. Errors: 400 (bad doc_type / empty file), 403 (patient not on your rounding list \u2014 run Rounds Start first), 422 (missing file/patient_id). With write-back off the derived-only uploader still ingests + extracts locally; openemr_document_id stays null."
+      }
+    },
+    {
+      "name": "Document Upload (intake_form)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Chain the Week-2 flow: hand document_id to the document reads,",
+              "// the evidence chat and the propose-from-document bridge.",
+              "if (pm.response.code === 202) {",
+              "    pm.collectionVariables.set('document_id', pm.response.json().document_id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "demo/sample_docs/sample_intake_form.pdf",
+              "description": "REQUIRED. Postman cannot resolve a repo-relative path for security reasons: re-select ../demo/sample_docs/sample_intake_form.pdf in the Body tab if the file shows as missing."
+            },
+            {
+              "key": "patient_id",
+              "value": "{{patient_id}}",
+              "type": "text"
+            },
+            {
+              "key": "clinician_id",
+              "value": "{{clinician_id}}",
+              "type": "text"
+            },
+            {
+              "key": "doc_type",
+              "value": "intake_form",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/documents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "documents"
+          ]
+        },
+        "description": "POST /v1/documents with doc_type=intake_form \u2014 same endpoint, different sample + extraction schema. Uses ../demo/sample_docs/sample_intake_form.pdf (demographics, chief concern, meds, allergies, family history \u2014 all fictional). Intake facts are tagged with an IntakeCategory; the three lists-backed ones (allergy / medication / medical_problem) are what 'Writes Propose from Document' drafts candidates from \u2014 so run this upload (or medication_list), not lab_pdf, before that request. Captures document_id. Same fields/status codes/auth contract as the lab_pdf upload."
+      }
+    },
+    {
+      "name": "Document Upload (medication_list)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Chain the Week-2 flow: hand document_id to the document reads,",
+              "// the evidence chat and the propose-from-document bridge.",
+              "if (pm.response.code === 202) {",
+              "    pm.collectionVariables.set('document_id', pm.response.json().document_id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "demo/sample_docs/sample_medication_list.pdf",
+              "description": "REQUIRED. Postman cannot resolve a repo-relative path for security reasons: re-select ../demo/sample_docs/sample_medication_list.pdf in the Body tab if the file shows as missing."
+            },
+            {
+              "key": "patient_id",
+              "value": "{{patient_id}}",
+              "type": "text"
+            },
+            {
+              "key": "clinician_id",
+              "value": "{{clinician_id}}",
+              "type": "text"
+            },
+            {
+              "key": "doc_type",
+              "value": "medication_list",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/documents",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "documents"
+          ]
+        },
+        "description": "POST /v1/documents with doc_type=medication_list \u2014 the third member of the closed doc_type set. Uses ../demo/sample_docs/sample_medication_list.pdf (pharmacy med-rec printout: 6 meds with dose/route/frequency, fictional). Each med maps to a lists type='medication' fact \u2014 the densest input for the write-back bridge. Captures document_id. Same fields/status codes/auth contract as the lab_pdf upload."
+      }
+    },
+    {
+      "name": "Document Status (facts + citations)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/documents/{{document_id}}?clinician_id={{clinician_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "documents",
+            "{{document_id}}"
+          ],
+          "query": [
+            {
+              "key": "clinician_id",
+              "value": "{{clinician_id}}"
+            }
+          ]
+        },
+        "description": "GET /v1/documents/{document_id}?clinician_id= \u2014 extraction status plus the latest extraction's schema-validated facts and their document-typed citations. POLL this after an upload until status is 'extracted' (or 'failed'). document_id is captured by the upload requests; clinician_id (query) is optional >0 (smart mode sends none; disabled mode demands an asserted id). Response 200: {document_id, patient_id, status, doc_type, page_count, openemr_document_id (null when write-back is off), correlation_id, extraction {extraction_id, model, schema_version, confidence_overall, facts[]}, citations[]}. facts[]: {id, field_path, value, unit, reference_range, abnormal_flag, page_no, bbox, match_confidence, supported}. citations[] are emitted for SUPPORTED facts only \u2014 an unreconciled fact stays in facts[] with supported=false but is DENIED a citation (fail-closed provenance). Errors in check order: identity first (smart: 401 without the cookie \u2014 an unauthenticated caller must not even learn whether a document id exists), then 404 'Document not found', then 403 'Patient is not on your rounding list'."
+      }
+    },
+    {
+      "name": "Document Page Image",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/documents/{{document_id}}/pages/{{page_no}}?clinician_id={{clinician_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "documents",
+            "{{document_id}}",
+            "pages",
+            "{{page_no}}"
+          ],
+          "query": [
+            {
+              "key": "clinician_id",
+              "value": "{{clinician_id}}"
+            }
+          ]
+        },
+        "description": "GET /v1/documents/{document_id}/pages/{page_no}?clinician_id= \u2014 the rendered page image the bbox-overlay UI draws on. Returns raw image/png bytes (not JSON); Postman previews it. page_no is 1-based (>=1). Take the page from a citation's page_or_section in Document Status and draw that citation's bbox over this image \u2014 pixel-level provenance for the extracted value. PHI: identity is resolved BEFORE the store is touched (smart: 401 without the cookie), then 404 'Document not found' / 'Page not found', then 403 'Patient is not on your rounding list'. 422 if page_no < 1 or document_id < 1."
+      }
+    },
+    {
+      "name": "Chat (document + guideline evidence)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": {{patient_id}},\n  \"message\": \"What did the uploaded lab report show, and what do the guidelines recommend?\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat"
+          ]
+        },
+        "description": "POST /v1/chat \u2014 the same endpoint as 'Chat (grounded drill-down)', asked the Week-2 way: this is how you retrieve EVIDENCE from an ingested document. Upload first, poll Document Status until status='extracted', then send this. Two grounding surfaces come back and never mix: claims[] are patient-fact claims, each with a source_ref (a fact from an ingested document carries a document-typed citation with page + bbox); guideline_evidence[] is a SEPARATE labeled block of retrieved guideline chunks (source_type='guideline' + chunk_id/section) \u2014 a guideline recommendation is not a grounded patient observation, so it is kept out of claims[]. Evidence retrieval is best-effort: an empty corpus or a retrieval failure yields [] and never withholds the grounded answer. Also returns answer, verification {action, passed}, conversation_id, correlation_id. The samples are a deliberate sepsis-with-AKI picture, so this question retrieves the sepsis/AKI guideline chunks. 403 unless the patient is on your rounding list; identity: disabled -> body clinician_id, smart -> af_session cookie."
+      }
+    },
+    {
+      "name": "Writes Propose from Document (flag-gated)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"clinician_id\": {{clinician_id}},\n  \"patient_id\": {{patient_id}}\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/writes/propose-from-document/{{document_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "writes",
+            "propose-from-document",
+            "{{document_id}}"
+          ]
+        },
+        "description": "POST /v1/writes/propose-from-document/{document_id} \u2014 the intake -> proposed-writes bridge: a document's categorized intake facts become a BATCH of proposed candidates by composing the existing propose gate. Run Document Upload (intake_form) or (medication_list) first \u2014 a lab_pdf yields no proposals (labs are not lists-backed writes). Only allergy / medication / medical_problem categories map to a write kind; other facts are skipped. Body: patient_id REQUIRED (>0), clinician_id OPTIONAL (>0, usual auth-mode contract); the document is named in the PATH. SAFETY INVARIANT \u2014 propose-only by construction: the bridge calls only WriteService.propose, builds no write client, makes no OpenEMR call, and has no code path to commit, so even an adversarial document can at most DRAFT typed, range-checked candidates for a human. Each proposal carries entry_mode 'agent_proposed_physician_confirmed' (vs 'human_direct'), so the audit trail distinguishes them forever. FLAG-GATED: 503 when writeback_enabled is false (as on the droplet). Response 200: {document_id, count, proposals[]} \u2014 each proposal is the Writes Propose echo-back shape; copy one's idempotency_key + candidate verbatim into Writes Confirm. Never confirm a blocked verdict. Errors in check order: 403 (patient not on your rounding list) is checked BEFORE the 503 flag gate so availability never leaks; then 503; then 400 / 404 'Document not found' (which also covers a document belonging to another patient \u2014 collapsed into one error so a document outside your authorization boundary is never observable)."
+      }
+    },
+    {
+      "name": "Status (metrics dashboard)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/status",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "status"
+          ]
+        },
+        "description": "GET /v1/status \u2014 the agent-served status page: health aggregates from the agent DB + the committed eval artifacts. UNAUTHENTICATED (no session, no clinician_id) and safe to run first \u2014 the fastest way to see whether an instance has ingested anything. Response 200: ingestion_count (source_document rows), extraction_field_pass_rate (supported/total fields), retrieval_hit_rate, routing_decisions (audit action -> count), eval_by_category ({passed, total, pass_rate} per category), latency_ms {p50, p95}, error_rate (failed/total ingestions). NO PHI by construction: every value is a count, rate or latency number. Defensive: a missing/malformed artifact degrades to empty aggregates and zeros rather than raising. Upload a document and re-run to watch ingestion_count move."
+      }
+    },
+    {
+      "name": "Status (root alias, local only)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/status",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "status"
+          ]
+        },
+        "description": "GET /status \u2014 the unprefixed alias of GET /v1/status: same handler, same payload, also unauthenticated. Listed so the collection covers every path the app publishes at /openapi.json. LOCAL ONLY \u2014 it does NOT work on the droplet, and that is a deployment fact, not a bug in this request: the edge (Caddy) reverse-proxies only `path /v1/* /health /ready /openapi.json /docs /docs/*` to the agent, so /status falls through to the SPA catch-all and returns 200 text/html (the web UI), not the JSON. Verified against the live droplet: /status -> text/html, /v1/status -> application/json. Use 'Status (metrics dashboard)' (/v1/status) everywhere \u2014 the versioned surface and the only one reachable through the edge. This request is useful against a Local instance (uvicorn direct, no Caddy), where both paths return the identical JSON."
       }
     }
   ]

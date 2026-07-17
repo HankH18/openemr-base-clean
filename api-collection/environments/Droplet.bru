@@ -5,27 +5,6 @@ vars {
   conversation_id: 1
   metric: Potassium
   idempotency_key: write-demo-001
-}
-
-docs {
-  Deployed droplet — HTTPS via Caddy + Let's Encrypt. No basic-auth: the
-  previous "demo" guard is removed; the SMART login is the gate.
-
-  auth_mode = smart. The interactive DATA routes (chat, rounds/*, refresh,
-  alerts, observations, writes) resolve the clinician from a server-side session
-  and require the HttpOnly af_session cookie set by the SMART login. Raw calls
-  from Bruno/Postman WITHOUT that cookie return 401 "Not authenticated" (a body
-  clinician_id that disagrees with the session is 403).
-
-  How to exercise the data routes here:
-    - Complete the SMART login in a BROWSER at
-      https://agentforge.hankholcomb.com (the OpenEMR consent + callback set the
-      af_session cookie). The full UI flow is the intended way to use these
-      routes in smart mode.
-    - Or point at a disabled-mode instance (see the Local environment), where
-      the request clinician_id is authoritative and no login/cookie is needed.
-
-  Unauthenticated routes work here directly: GET /health, GET /ready,
-  GET /v1/auth/status (reports auth_mode + authenticated). Write-back is OFF
-  (writeback_enabled=false) so /v1/writes and its confirm return 503.
+  document_id: 1
+  page_no: 1
 }
