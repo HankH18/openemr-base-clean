@@ -25,7 +25,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 
 from copilot.api.deps import resolve_acting_context
 from copilot.auth import is_authorized
@@ -149,7 +159,18 @@ async def upload_document(
 
 
 @router.get("/documents/{document_id}", summary="Ingestion status, facts, and citations")
-async def get_document(document_id: int) -> dict[str, Any]:
+async def get_document(
+    document_id: Annotated[int, Path(gt=0)],
+    request: Request,
+    clinician_id: Annotated[int | None, Query(gt=0)] = None,
+) -> dict[str, Any]:
+    # Identity FIRST, before any read: this response carries extracted clinical
+    # values (citations[].quote_or_value), so an unauthenticated caller must not
+    # even learn whether a document id exists. Same auth-mode contract as the
+    # upload/chat/observations routes (smart → session cookie, 401 if none).
+    acting = await resolve_acting_context(get_settings(), request, clinician_id)
+    cid = acting.clinician_id
+
     async with session_scope() as session:
         repo = MemoryRepository(session)
         doc = await repo.get_source_document(document_id)
@@ -157,6 +178,11 @@ async def get_document(document_id: int) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Document not found")
         latest = await repo.get_latest_extraction(document_id)
         fact_rows = await repo.get_extracted_facts(latest.id) if latest is not None else []
+
+    # Authorization boundary (UC-6), identical to upload/chat/observations: the
+    # document's patient must be on the clinician's rounding list.
+    if not await is_authorized(cid, PatientId(value=doc.patient_id)):
+        raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
 
     facts = [_fact_body(f) for f in fact_rows]
     citations = [_citation_body(document_id, f) for f in fact_rows if f.supported]
@@ -183,13 +209,28 @@ async def get_document(document_id: int) -> dict[str, Any]:
     "/documents/{document_id}/pages/{page_no}",
     summary="The rendered page image (bbox-overlay backdrop)",
 )
-async def get_document_page(document_id: int, page_no: int) -> Response:
+async def get_document_page(
+    document_id: Annotated[int, Path(gt=0)],
+    page_no: Annotated[int, Path(ge=1)],
+    request: Request,
+    clinician_id: Annotated[int | None, Query(gt=0)] = None,
+) -> Response:
+    # Identity FIRST: this returns the rendered page image of a scanned clinical
+    # document — PHI. Unauthenticated callers must not reach the store at all.
+    acting = await resolve_acting_context(get_settings(), request, clinician_id)
+    cid = acting.clinician_id
+
     async with session_scope() as session:
         repo = MemoryRepository(session)
         doc = await repo.get_source_document(document_id)
         if doc is None:
             raise HTTPException(status_code=404, detail="Document not found")
         pages = await repo.get_document_pages(document_id, page_no=page_no)
+
+    # Authorization boundary (UC-6): the document's patient must be on the
+    # clinician's rounding list before any page bytes are returned.
+    if not await is_authorized(cid, PatientId(value=doc.patient_id)):
+        raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
 
     if not pages or pages[0].image is None:
         raise HTTPException(status_code=404, detail="Page not found")

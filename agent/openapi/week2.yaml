@@ -974,8 +974,18 @@ paths:
         name: document_id
         required: true
         schema:
+          exclusiveMinimum: 0
           title: Document Id
           type: integer
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
       responses:
         '200':
           content:
@@ -1002,14 +1012,25 @@ paths:
         name: document_id
         required: true
         schema:
+          exclusiveMinimum: 0
           title: Document Id
           type: integer
       - in: path
         name: page_no
         required: true
         schema:
+          minimum: 1
           title: Page No
           type: integer
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
       responses:
         '200':
           content:
