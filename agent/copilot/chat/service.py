@@ -292,13 +292,23 @@ class ChatService:
         # anyway would make the critic decorative.
         claims = _critic_narrowed(_passed_claims(verification), result.critic)
 
+        # An `unsafe_action` flag condemns the PROSE, not just the citation.
+        # Dropping the claim removes the evidence but leaves the model's unsafe
+        # sentence in `result.answer` — the physician still reads "give 10x the
+        # insulin dose", now merely unfootnoted, which is worse than useless. The
+        # answer is not separable from the suggestion, so the whole turn is
+        # withheld. Same reflex as everywhere else in this system: if we cannot
+        # serve it safely, we do not serve it. (A `narrative_inconsistency` needs
+        # no such escalation — dropping the unsupported claim contains it.)
+        unsafe_flagged = bool(result.critic and result.critic.unsafe)
+
         # Identical fail-closed invariant to the inline path: an answer that
         # grounded no verified claims is withheld, never served, regardless of
         # the verifier's empty-claims convenience. `not claims` folds the
         # critic's all-rejected case into that same existing policy rather than
         # inventing a state: nothing survived both gates, so there is nothing we
         # can prove — which is exactly what "withheld" already means.
-        if not verification.claims or not claims:
+        if unsafe_flagged or not verification.claims or not claims:
             action = VerificationAction.withheld
             passed = False
         else:

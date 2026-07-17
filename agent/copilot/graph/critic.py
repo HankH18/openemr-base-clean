@@ -38,6 +38,12 @@ from copilot.graph.contracts import CriticVerdict
 ReviewableClaim = Claim | Mapping[str, object]
 
 _GATING_MAX_TOKENS = 1024
+#: The two reasons the safety pass may give. ``unsafe_action`` is the strict one:
+#: the claim's PROSE recommends something dangerous, so removing the claim is not
+#: enough — the sentence must not reach a physician at all.
+UNSAFE_ACTION = "unsafe_action"
+NARRATIVE_INCONSISTENCY = "narrative_inconsistency"
+
 _FLAG_TOOL_NAME = "flag_claims"
 
 _CRITIC_SYSTEM = (
@@ -193,9 +199,19 @@ class RealCritic:
             return base
         accepted = [text for index, text in enumerate(base.accepted) if index not in flagged]
         demoted = [text for index, text in enumerate(base.accepted) if index in flagged]
-        return CriticVerdict(accepted=accepted, rejected=[*base.rejected, *demoted])
+        # An unsafe_action flag condemns the PROSE, not just the citation, so the
+        # chat service withholds the whole answer rather than serving a dangerous
+        # sentence with its evidence quietly removed. Carry the subset that earned it.
+        unsafe = [
+            text
+            for index, text in enumerate(base.accepted)
+            if flagged.get(index) == UNSAFE_ACTION
+        ]
+        return CriticVerdict(
+            accepted=accepted, rejected=[*base.rejected, *demoted], unsafe=unsafe
+        )
 
-    def _flag(self, claims: Sequence[ReviewableClaim]) -> set[int]:
+    def _flag(self, claims: Sequence[ReviewableClaim]) -> dict[int, str]:
         """Indices into the accepted (cited) claims the LLM flagged for rejection.
 
         The cited-claim order is identical to ``_partition``'s accepted order
@@ -217,8 +233,8 @@ class RealCritic:
         )
         payload = _flag_tool_input(response)
         if payload is None:
-            return set()
-        return _flagged_indices(payload, len(cited))
+            return {}
+        return _flagged_reasons(payload, len(cited))
 
 
 def _render_cited(cited: list[tuple[str, str]]) -> str:
@@ -250,18 +266,34 @@ def _flag_tool_input(response: Any) -> dict[str, Any] | None:
 
 def _flagged_indices(payload: dict[str, Any], count: int) -> set[int]:
     """Valid in-range indices from the tool payload; anything else is ignored."""
-    flagged: set[int] = set()
+    return set(_flagged_reasons(payload, count))
+
+
+def _flagged_reasons(payload: dict[str, Any], count: int) -> dict[int, str]:
+    """Valid in-range indices mapped to the reason the model gave, if any.
+
+    The reason is load-bearing, not commentary: ``unsafe_action`` means the claim's
+    *prose* recommends something dangerous, so dropping the claim is not enough —
+    the sentence itself must not reach a physician (see
+    ``copilot.chat.service``'s unsafe-withhold). ``narrative_inconsistency`` is
+    contained by dropping the claim. An unrecognised or missing reason degrades to
+    the stricter reading (treated as unsafe): a flag we cannot classify is not a
+    flag we may serve.
+    """
+    reasons: dict[int, str] = {}
     raw = payload.get("flagged")
     if not isinstance(raw, list):
-        return flagged
+        return reasons
     for item in raw:
         index: object = item.get("index") if isinstance(item, Mapping) else item
         # bool is an int subclass — exclude it so True/False are never indices.
         if isinstance(index, bool) or not isinstance(index, int):
             continue
-        if 0 <= index < count:
-            flagged.add(index)
-    return flagged
+        if not (0 <= index < count):
+            continue
+        reason = item.get("reason") if isinstance(item, Mapping) else None
+        reasons[index] = reason if isinstance(reason, str) else UNSAFE_ACTION
+    return reasons
 
 
 def build_critic(settings: Settings) -> Critic:

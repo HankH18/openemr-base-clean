@@ -78,6 +78,22 @@ class CriticVerdict(BaseModel):
 
     accepted: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
+    #: The subset of ``rejected`` the keyed safety pass flagged as ``unsafe_action``
+    #: — i.e. the claim's PROSE recommends something clinically unsafe.
+    #:
+    #: This is separated from ``rejected`` because the two need different remedies.
+    #: A ``narrative_inconsistency`` is contained by dropping the claim: the answer
+    #: loses an unsupported assertion and the rest stands. An ``unsafe_action`` is
+    #: not — the danger lives in the sentence the model wrote, so removing the
+    #: claim only strips the evidence while the unsafe suggestion still reaches the
+    #: physician, now unfootnoted. The chat service therefore WITHHOLDS the whole
+    #: answer when this is non-empty (see ``copilot.chat.service``), which is the
+    #: same fail-closed reflex the rest of the system uses: if we cannot serve it
+    #: safely, we do not serve it.
+    #:
+    #: Empty for ``StubCritic`` and for every deterministic partition, so the
+    #: keyless path is unaffected.
+    unsafe: list[str] = Field(default_factory=list)
 
 
 class GraphMetrics(BaseModel):
