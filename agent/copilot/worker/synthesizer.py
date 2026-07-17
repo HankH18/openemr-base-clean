@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from copilot.domain.contracts import Claim, MemoryFileSummary
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
 from copilot.observability.pricing import cost_usd
+from copilot.resilience import SYNTHESIS_MAX_RETRIES, SYNTHESIS_TIMEOUT
 
 _logger = logging.getLogger(__name__)
 
@@ -170,7 +171,14 @@ class ClaudeSynthesizer:
         else:
             from anthropic import AsyncAnthropic  # local import: keeps test path lightweight
 
-            self._client = AsyncAnthropic(api_key=anthropic_api_key)
+            # Explicit, not inherited — the SDK default read timeout is 600s.
+            # Background synthesis blocks no clinician, so this is the loosest
+            # non-vision budget; see copilot.resilience.
+            self._client = AsyncAnthropic(
+                api_key=anthropic_api_key,
+                timeout=SYNTHESIS_TIMEOUT,
+                max_retries=SYNTHESIS_MAX_RETRIES,
+            )
 
     async def synthesize(self, inputs: SynthesisInput) -> MemoryFileSummary:
         user_content = json.dumps(

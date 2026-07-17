@@ -32,6 +32,7 @@ from typing import Any, Protocol
 from copilot.config import Settings
 from copilot.domain.contracts import Claim
 from copilot.graph.contracts import CriticVerdict
+from copilot.resilience import GATING_MAX_RETRIES, GATING_TIMEOUT
 
 # A reviewable claim is either a domain Claim (its ``source_ref`` is the
 # machine-readable citation) or a raw mapping with ``text`` + ``citation`` keys.
@@ -171,6 +172,18 @@ class RealCritic:
     deterministic with a fake; when omitted, the synchronous Anthropic client is
     built from settings. The synchronous client mirrors the synchronous
     :meth:`review` contract the supervisor calls without awaiting.
+
+    **:meth:`review` blocks — that is intentional, and the caller's job.** This
+    is a sync method making a sync network call, so invoking it directly from a
+    coroutine would block the event loop for the whole call and stall every
+    concurrent request. The one call site
+    (:meth:`copilot.graph.supervisor.AgentGraph._finalize`) therefore hands it to
+    a worker thread. Keeping the blocking here rather than making the Protocol
+    async is deliberate: ``review`` is a *synchronous* Protocol method with
+    multiple implementors (:class:`StubCritic`, test fakes, the acceptance
+    harness), and the pure-Python :class:`StubCritic` has no business being a
+    coroutine just because its keyed sibling talks to a network. See the
+    supervisor call site for the full argument.
     """
 
     def __init__(self, settings: Settings, client: Any | None = None) -> None:
@@ -181,7 +194,16 @@ class RealCritic:
         else:
             from anthropic import Anthropic  # local import keeps the stub path light
 
-            self._client = Anthropic(api_key=settings.anthropic_api_key)
+            # Explicit, not inherited — the SDK default read timeout is 600s.
+            # GATING_TIMEOUT is the tightest budget in the service: this call
+            # runs inside a clinician's turn and fails safe to the deterministic
+            # partition, so it is the cheapest one to give up on. See
+            # copilot.resilience for the SLO it is anchored to.
+            self._client = Anthropic(
+                api_key=settings.anthropic_api_key,
+                timeout=GATING_TIMEOUT,
+                max_retries=GATING_MAX_RETRIES,
+            )
 
     def review(self, claims: Sequence[ReviewableClaim]) -> CriticVerdict:
         # 1. Deterministic citation gate — authoritative, never loosened.

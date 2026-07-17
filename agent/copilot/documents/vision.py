@@ -32,6 +32,7 @@ from copilot.domain.documents import (
     LabReport,
     MedicationListDocument,
 )
+from copilot.resilience import VISION_MAX_RETRIES, VISION_TIMEOUT
 
 # The schema version stamped on every extraction row this extractor produces.
 SCHEMA_VERSION = "w2-v1"
@@ -160,7 +161,15 @@ class ClaudeVision:
         else:
             from anthropic import AsyncAnthropic  # local import keeps the stub path light
 
-            self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+            # Explicit, not inherited — the SDK default read timeout is 600s.
+            # VISION_TIMEOUT is the loosest budget in the service (page images
+            # are a large upload and extraction genuinely takes seconds); see
+            # copilot.resilience for the ingestion SLO it is anchored to.
+            self._client = AsyncAnthropic(
+                api_key=settings.anthropic_api_key,
+                timeout=VISION_TIMEOUT,
+                max_retries=VISION_MAX_RETRIES,
+            )
 
     async def extract(
         self, pages: Sequence[RasterizedPage], doc_type: DocumentType

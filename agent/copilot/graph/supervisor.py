@@ -32,14 +32,16 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol
 
+from anyio import to_thread
+
 from copilot.agent.factory import build_agent
 from copilot.config import Settings
-from copilot.domain.contracts import VerificationAction, VerificationResult
+from copilot.domain.contracts import Claim, VerificationAction, VerificationResult
 from copilot.domain.primitives import PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
@@ -421,7 +423,7 @@ class AgentGraph:
                 )
                 verification = await verify_answer(agent_answer.claims, patient_id, fhir)
 
-            verdict = self._critic.review(list(agent_answer.claims))
+            verdict = await self._review(agent_answer.claims)
             input_tokens = agent_answer.input_tokens or 0
             output_tokens = agent_answer.output_tokens or 0
             if agent_answer.input_tokens is None or agent_answer.output_tokens is None:
@@ -449,6 +451,41 @@ class AgentGraph:
             total_tokens=input_tokens + output_tokens,
             cost_usd=cost,
         )
+
+    async def _review(self, claims: Sequence[Claim]) -> CriticVerdict:
+        """Run the critic's gate WITHOUT blocking the event loop.
+
+        ``Critic.review`` is a **synchronous** Protocol method, and the keyed
+        :class:`~copilot.graph.critic.RealCritic` implements it with a
+        synchronous Anthropic call. Invoking it inline from this coroutine (as
+        this line used to) blocked the whole event loop for the duration of that
+        network call — stalling *every* concurrent clinician's request behind one
+        turn's safety pass. Offloading to a worker thread is what makes the
+        blocking call cooperate with the loop again.
+
+        **Why a thread rather than making the Protocol async.** Both fix the
+        stall; the thread is the one that fixes it without collateral damage:
+
+        - ``review`` is a Protocol with several implementors — ``StubCritic``,
+          the fakes in ``tests/``, and the frozen acceptance harness. Making it
+          ``async`` is a breaking contract change for all of them, and it would
+          force the pure-Python, I/O-free ``StubCritic`` to become a coroutine
+          purely because its keyed sibling happens to make a network call. That
+          is the network detail leaking upward into the abstraction.
+        - The fail-safe and demote-only invariants live *inside* ``review``
+          (``RealCritic`` catches every exception and falls back to the
+          deterministic partition). Running the identical method body on a
+          different thread cannot perturb either one — whereas rewriting it
+          around an async client would put both back in play for no gain here.
+
+        ``to_thread.run_sync`` is cancellation-correct for our purposes: the
+        thread is not abandoned mid-flight, and the underlying call is already
+        bounded by ``GATING_TIMEOUT``, so a wedged critic releases its thread in
+        seconds rather than never. ``StubCritic`` pays one thread hop (~tens of
+        microseconds, once per turn) — an irrelevant cost next to the FHIR and
+        model round-trips this method already awaits.
+        """
+        return await to_thread.run_sync(self._critic.review, list(claims))
 
     # --- collaborators ----------------------------------------------------
 

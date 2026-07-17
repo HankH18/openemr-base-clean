@@ -28,9 +28,18 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+import httpx
+
 from copilot.config import Settings
 from copilot.memory.db import EMBEDDING_DIM
 from copilot.rag._lexical import tokenize
+from copilot.resilience import (
+    DEFAULT_RETRY,
+    EMBEDDING_TIMEOUT,
+    RetryPolicy,
+    retry_sync,
+    retryable_response,
+)
 
 
 class EmbeddingError(RuntimeError):
@@ -153,27 +162,46 @@ class VoyageEmbedder:
     to Voyage's ``/v1/embeddings`` endpoint and returns one vector per input in
     request order. Any transport or shape error raises :class:`EmbeddingError`
     rather than silently degrading to stub vectors.
+
+    **Retried** (:data:`copilot.resilience.DEFAULT_RETRY`: 3 bounded, jittered
+    attempts) on timeouts, connection errors, 429 and 5xx — never on any other
+    4xx. An embedding request is a pure function of its inputs: it commits
+    nothing upstream, so re-sending it is trivially safe. Once the budget is
+    exhausted the final failure raises :class:`EmbeddingError` exactly as it did
+    before, so callers see no new error mode — only fewer of the old one.
+    ``timeout``/``retry`` are injectable for tests; the defaults are the
+    SLO-derived budgets.
     """
 
     _ENDPOINT = "https://api.voyageai.com/v1/embeddings"
 
-    def __init__(self, api_key: str, model: str, *, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout: httpx.Timeout | float = EMBEDDING_TIMEOUT,
+        retry: RetryPolicy = DEFAULT_RETRY,
+    ) -> None:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
+        self._retry = retry
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         items = list(texts)
         if not items:
             return []
-        import httpx
-
         try:
-            response = httpx.post(
-                self._ENDPOINT,
-                json={"input": items, "model": self._model},
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=self._timeout,
+            response = retry_sync(
+                lambda: httpx.post(
+                    self._ENDPOINT,
+                    json={"input": items, "model": self._model},
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    timeout=self._timeout,
+                ),
+                policy=self._retry,
+                should_retry_result=retryable_response,
             )
             response.raise_for_status()
             body = response.json()
