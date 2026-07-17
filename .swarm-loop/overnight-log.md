@@ -289,3 +289,34 @@ assigned|care_team|roster|panel -> zero authz hits), so POST /v1/rounds/start
 {"patient_ids":[B]} self-grants B. authorization.py:5-7 is honest that authorized ==
 self-established. So fixing #32 buys a SESSION SCOPE, not an authz boundary. That is a
 Phase-1 architecture decision for the user, not something to redesign at 06:00.
+
+## Both P0s CLOSED and verified live (8c9f616, 6996857)
+
+Deployed and verified by exploiting them, not by trusting the build:
+
+  GET /v1/conversations/1  ->  HTTP 401     (was 200 + another clinician's PHI)
+  GET /v1/conversations/2  ->  HTTP 401     (uniform — no enumeration oracle)
+  droplet HEAD: 6996857, container carries the guard (is_authorized x3)
+  deployed supervisor.py: "question=task.question" occurs 0 times
+
+Shipped these two AHEAD of the other three in-flight agents on purpose: PHI was
+actively egressing to a third-party SaaS on every graph turn, and an unauthenticated
+read was live. Waiting for a tidier tree would have meant more leaking.
+
+**Residuals the agents surfaced (NOT fixed — for a human):**
+- `routes/documents.py:189/196` has the same 404-vs-403 oracle shape the conversation
+  route just unified away. Lower severity (needs valid creds) but same class.
+- **`patient_id` rides on nearly every span/event** (it is in the Observability Protocol
+  signature) and still reaches Langfuse. A bare PID is a HIPAA identifier going to the
+  same no-BAA SaaS. Systemic — changing it means changing the Protocol. THIS IS THE NEXT
+  DECISION WORTH MAKING.
+- Two docstrings are now stale and will mislead: `graph/contracts.py:49-50` ("payload
+  carries ... the query") and `api/routes/chat.py:89-94` ("the raw question, document
+  ids"). Both were outside the agents' file boundaries.
+- Authorization is patient-level (rounding list), not conversation-ownership: a
+  colleague sharing the round CAN read the thread. Defensible as shared-care-team, but
+  it is a deliberate choice, not an accident.
+
+**Corrected my analysis (agent was right):** `chat/service.py:282` `question=message` is
+NOT a telemetry site — it is AgentTask construction, the graph's legitimate input
+contract. The egress was entirely the three supervisor sites consuming that field.
