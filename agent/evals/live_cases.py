@@ -18,6 +18,10 @@ the production code path, in-process, at gate time:
   PHI-bearing probe string; its OUTPUT is what ``no_phi_in_logs`` grades.
 - ``copilot.chat.service.ChatReply`` — the real strict reply model, which the
   real ``Claim``/``Citation`` discriminated union validates through.
+- ``copilot.rag.retriever.build_retriever(...).retrieve`` — the real guideline
+  RAG, run over the real ``agent/corpus/`` ingested by the real
+  ``copilot.rag.ingest.ingest_corpus`` into a throwaway SQLite DB. See the
+  "known-answer retrieval probe" section below.
 
 So a sabotage of any of those turns this gate RED. That is the whole point.
 
@@ -25,7 +29,11 @@ So a sabotage of any of those turns this gate RED. That is the whole point.
 keep. The FHIR reader is an in-memory fake (the same structural-protocol trick
 ``tests/test_verify_answer.py`` uses); the Anthropic key is explicitly cleared
 on the Settings copy, so the real ``build_agent`` factory resolves to the
-deterministic ``StubAgent`` even if the developer's shell exports a key.
+deterministic ``StubAgent`` even if the developer's shell exports a key. The
+retrieval probe clears ``voyage_api_key``/``cohere_api_key``/the Langfuse creds
+the same way, so ``build_embedder``/``build_reranker``/``build_observability``
+resolve to the deterministic ``StubEmbedder``/``StubReranker``/
+``NoopObservability`` — real factories, keyless outcome, no network.
 
 Fail-closed by construction: if real code raises while a case is being built,
 the case is recorded with an empty envelope, which fails its rubrics and blocks
@@ -39,13 +47,25 @@ the gate. A live probe that cannot run is never silently "passing".
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 
+import sqlalchemy as sa
+
+import copilot.memory.models  # noqa: F401  (registers the tables on Base.metadata)
 from copilot.chat.service import ChatReply, ChatService
-from copilot.config import get_settings
+from copilot.config import Settings, get_settings
 from copilot.domain.contracts import Claim, VerificationAction
 from copilot.domain.primitives import ClinicianId, PatientId, ResourceType
+from copilot.memory.db import Base, get_engine, get_session_factory, session_scope
+from copilot.memory.repository import MemoryRepository
 from copilot.rag.deidentify import deidentify
+from copilot.rag.embeddings import StubEmbedder
+from copilot.rag.ingest import ingest_corpus
+from copilot.rag.retriever import GuidelineRetriever, build_retriever
 from copilot.verification.core import extract_field_value
 
 # --- the PHI probe ----------------------------------------------------------
@@ -237,6 +257,254 @@ def _reply_record(
     return _record(reply.answer, list(reply.claims), reply.action, log=log)
 
 
+# --- the known-answer guideline-RAG retrieval probe -------------------------
+#
+# Why this exists. Before it, NOTHING in either eval tier imported
+# ``copilot.rag.retriever``: an auditor stubbed ``retrieve`` to ``[]``, inverted
+# ``rrf_fuse``, no-op'd ``_boost_section_matches`` and replaced ``chunk_body``
+# with one garbage chunk — and the gate still reported pass_rate=100.0, exit 0.
+# The Week-2 flagship feature was invisible to its own gate, which is exactly
+# the hole the LIVE tier was created to close for ``deidentify``/
+# ``_passed_claims``. A live guideline RAG defect duly survived: the keyless
+# reranker discards the fused sparse+dense ranking outright and serves the wrong
+# chunk first.
+#
+# What it does. Ingests the REAL ``agent/corpus/`` through the REAL
+# ``ingest_corpus`` into a throwaway SQLite file, then runs the REAL
+# ``GuidelineRetriever.retrieve`` for questions whose answer lives in exactly
+# one known section, and grades the SECTION of the top hit.
+#
+# How it is graded — and why it cannot pass vacuously. Each probe's record
+# carries the top hit's REAL ``GuidelineCitation`` (whose ``quote_or_value`` is
+# the chunk the retriever actually served) as the claim's citation, and the
+# content of the KNOWN-ANSWER section — re-read independently from the ingested
+# corpus — as ``source_value``. ``factually_consistent`` then compares "what the
+# RAG cited" against "what the correct source actually says", the same
+# read-the-truth-back-from-the-source shape ``_source_value`` uses for the FHIR
+# claims above. Because each probed section is pinned to exactly ONE chunk (a
+# hard setup guard), that comparison holds if and only if the top hit IS the
+# expected section's chunk. Retrieval returning nothing, or a corpus that failed
+# to ingest, RAISES rather than grading — a probe whose own setup collapsed must
+# never report a pass. The corpus itself is never hardcoded here: the expected
+# text is whatever the real ingest produced.
+#
+# Answer-consistency of the top-k below the top hit is deliberately NOT graded:
+# these are known-answer *ordering* assertions, and asserting a full ranking
+# would bind the gate to incidental ordering of chunks that are all plausibly
+# relevant, which is how a probe starts failing for reasons that are not defects.
+
+#: Retrieval depth for the probe — the production ``retrieve`` default.
+_RETRIEVAL_TOP_K = 4
+
+#: ``(case_id, question, expected_section)``. Each question has an answer that
+#: appears in exactly ONE corpus section, and serving a different section first
+#: is a real clinical failure, not a matter of taste:
+#:
+#: - MAP target in septic shock — "targeting a mean arterial pressure of at
+#:   least 65 mmHg" is stated in ``vasopressors-and-map-target`` and nowhere
+#:   else. (Sepsis's ``recognition-and-screening`` mentions 65 mmHg only inside
+#:   the *definition* of septic shock, never as a resuscitation target.) This is
+#:   the canonical probe.
+#: - Initial crystalloid volume in sepsis — "30 mL/kg ... within the first three
+#:   hours" is only in sepsis ``initial-resuscitation``. The corpus ALSO carries
+#:   a different fluid rate for a different condition (DKA ``fluid-therapy``:
+#:   "15-20 mL/kg over the first hour"), so a retriever that confuses the two
+#:   hands a clinician the wrong drug-free dose for the wrong disease. It is
+#:   also a second, independent document-discrimination assertion, so no single
+#:   lucky ordering can carry the probe.
+#: - Urgent RRT indications — the AEIOU indication list is only in AKI
+#:   ``indications-for-renal-replacement``; the ``definition-and-staging``
+#:   section name-drops renal replacement therapy but lists no indication.
+#:   A third corpus document, and (unlike the first two) one the CURRENT
+#:   retriever already ranks correctly — so the probe is demonstrably capable of
+#:   both verdicts and is not a case rigged to fail.
+_RETRIEVAL_PROBES: tuple[tuple[str, str, str], ...] = (
+    (
+        "live-guideline-retrieval-map-target",
+        "What MAP should I target in septic shock?",
+        "vasopressors-and-map-target",
+    ),
+    (
+        "live-guideline-retrieval-sepsis-fluids",
+        "How much crystalloid should I give for initial resuscitation in sepsis?",
+        "initial-resuscitation",
+    ),
+    (
+        "live-guideline-retrieval-rrt-indications",
+        "What are the urgent indications for renal replacement therapy?",
+        "indications-for-renal-replacement",
+    ),
+)
+
+
+def _clear_db_caches() -> None:
+    """Drop the cached Settings/engine/session factory so a new DB URL takes."""
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+
+def _rag_settings() -> Settings:
+    """Settings for the retrieval probe: real values, every remote key cleared.
+
+    Mirrors ``_service()``'s reasoning one layer over. The real
+    ``build_embedder``/``build_reranker``/``build_observability`` factories stay
+    in the path — clearing the keys only guarantees which branch they take — so
+    the probe exercises production selection logic while remaining keyless,
+    offline and byte-stable on a developer machine that exports live keys.
+    """
+    return get_settings().model_copy(
+        update={
+            "voyage_api_key": "",
+            "cohere_api_key": "",
+            "langfuse_host": "",
+            "langfuse_public_key": "",
+            "langfuse_secret_key": "",
+        }
+    )
+
+
+async def _ingest_guideline_corpus() -> dict[str, list[str]]:
+    """Ingest the real corpus with the real ingest; return content per section.
+
+    The returned map is the probe's independent read of ground truth: whatever
+    the real ``chunk_body`` actually produced, read back through the real
+    repository — never a hardcoded expectation.
+    """
+    async with session_scope() as session:
+        report = await ingest_corpus(session, StubEmbedder())
+    if report.chunks_ingested <= 0:
+        raise RuntimeError(
+            "live probe: the real ingest wrote 0 guideline chunks from "
+            f"agent/corpus/ ({report.documents_ingested} document(s) ingested, "
+            f"{report.documents_skipped} skipped). The retrieval probe cannot "
+            "grade a corpus that is not there."
+        )
+    async with session_scope() as session:
+        rows = await MemoryRepository(session).list_guideline_chunks()
+        by_section: dict[str, list[str]] = {}
+        for row in rows:
+            by_section.setdefault(row.section or "general", []).append(row.content)
+    if not by_section:
+        raise RuntimeError(
+            "live probe: the guideline corpus read back EMPTY straight after a "
+            "reportedly successful ingest — retrieval could only ever return []."
+        )
+    return by_section
+
+
+def _expected_chunk(by_section: dict[str, list[str]], section: str) -> str:
+    """The single corpus chunk that carries a probe's known answer.
+
+    Hard-fails when the expectation no longer matches the corpus: a missing
+    section means the probe is asserting against text that does not exist, and a
+    section split across several chunks makes "the top hit is the right chunk"
+    ambiguous. Both are the probe's own setup being wrong — raise, never grade.
+    """
+    contents = by_section.get(section)
+    if not contents:
+        raise RuntimeError(
+            f"live probe: corpus section {section!r} does not exist (sections: "
+            f"{sorted(by_section)}). The known-answer expectation and the corpus "
+            "have drifted apart; fix the probe or the corpus, do not delete the case."
+        )
+    if len(contents) != 1:
+        raise RuntimeError(
+            f"live probe: corpus section {section!r} chunked into {len(contents)} "
+            "pieces; a known-answer probe needs exactly one so the top hit is "
+            "unambiguous."
+        )
+    return contents[0]
+
+
+async def _retrieval_case(
+    retriever: GuidelineRetriever,
+    case_id: str,
+    query: str,
+    expected_section: str,
+    by_section: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Grade ONE known-answer retrieval: is the expected section served first?"""
+    expected_content = _expected_chunk(by_section, expected_section)
+    evidence = await retriever.retrieve(query, top_k=_RETRIEVAL_TOP_K)
+    if not evidence:
+        # Zero evidence is the vacuous-pass trap in retrieval form: a rubric
+        # cannot fail on a claim that was never made. The corpus provably holds
+        # this answer (``_expected_chunk`` just read it), so [] is never correct.
+        raise RuntimeError(
+            f"live probe: the real guideline retriever returned NO evidence for "
+            f"{query!r}, whose answer is in corpus section {expected_section!r}. "
+            "The retrieval path has regressed into returning nothing."
+        )
+    top = evidence[0]
+    case: dict[str, Any] = {
+        "id": case_id,
+        "rubric": "factually_consistent",
+        "live": True,
+        "record": {
+            "answer": (
+                f"Guideline evidence for {query!r} — served from section "
+                f"{top.section!r}: {top.content}"
+            ),
+            "refusal": False,
+            "expect_refusal": False,
+            "claims": [
+                {
+                    "text": f"Top guideline hit for {query!r}.",
+                    # The REAL citation the real retriever produced. Its
+                    # quote_or_value is the chunk it actually served.
+                    "citation": top.citation.model_dump(mode="json"),
+                    # Ground truth, re-read from the ingested corpus.
+                    "source_value": expected_content,
+                }
+            ],
+            "log": _scrubbed_log(f"live-rag-{case_id}"),
+        },
+    }
+    if top.section != expected_section:
+        # Name the defect on the blocked line; the record already fails.
+        case["error"] = (
+            f"retrieval served section {top.section!r} first for {query!r}; the "
+            f"answer is in {expected_section!r}. Top-{_RETRIEVAL_TOP_K}: "
+            f"{[hit.section for hit in evidence]}"
+        )
+    return case
+
+
+async def _retrieval_cases() -> list[dict[str, Any]]:
+    """Every known-answer retrieval probe, against a throwaway ingested corpus.
+
+    The temp DB, the ``COPILOT_DATABASE_URL`` override and the Settings/engine
+    caches are all restored on the way out, so the probe leaves the process
+    exactly as it found it (``evals/test_gate.py`` calls ``live_cases()``
+    in-process, and the gate itself may build the live tier twice).
+    """
+    tmpdir = tempfile.mkdtemp(prefix="live-gate-rag-")
+    previous_url = os.environ.get("COPILOT_DATABASE_URL")
+    try:
+        db_file = Path(tmpdir) / "guidelines.db"
+        os.environ["COPILOT_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file}"
+        _clear_db_caches()
+        sync_engine = sa.create_engine(f"sqlite:///{db_file}")
+        Base.metadata.create_all(sync_engine)
+        sync_engine.dispose()
+
+        by_section = await _ingest_guideline_corpus()
+        retriever = build_retriever(_rag_settings())
+        return [
+            await _retrieval_case(retriever, case_id, query, section, by_section)
+            for case_id, query, section in _RETRIEVAL_PROBES
+        ]
+    finally:
+        await get_engine().dispose()  # release the temp DB's pooled connections
+        if previous_url is None:
+            os.environ.pop("COPILOT_DATABASE_URL", None)
+        else:
+            os.environ["COPILOT_DATABASE_URL"] = previous_url
+        _clear_db_caches()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 async def _build() -> list[dict[str, Any]]:
     """Build every live case by exercising the real code paths."""
     # A question that matches the record → the real agent grounds it, the real
@@ -278,6 +546,12 @@ async def _build() -> list[dict[str, Any]]:
         )
 
     clean_log = _scrubbed_log("live-cite-0001")
+
+    # The guideline RAG — real ingest + real retrieve over the real corpus.
+    # Built last so its temp-DB / settings-cache juggling cannot perturb the
+    # chat probes above, and appended (never substituted) so a retrieval defect
+    # is reported alongside the rest of the live tier rather than instead of it.
+    retrieval = await _retrieval_cases()
 
     return [
         {
@@ -327,6 +601,7 @@ async def _build() -> list[dict[str, Any]]:
                 expect_refusal=True,
             ),
         },
+        *retrieval,
     ]
 
 

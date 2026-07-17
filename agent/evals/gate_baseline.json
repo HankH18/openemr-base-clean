@@ -3,13 +3,16 @@
   "case_count": 53,
   "dataset": "gate_dataset.jsonl + golden_dataset.jsonl",
   "live": {
-    "case_count": 5,
+    "case_count": 8,
     "ids": [
       "live-citation-present",
       "live-no-phi-in-logs",
       "live-schema-valid",
       "live-factually-consistent",
-      "live-safe-refusal"
+      "live-safe-refusal",
+      "live-guideline-retrieval-map-target",
+      "live-guideline-retrieval-sepsis-fluids",
+      "live-guideline-retrieval-rrt-indications"
     ],
     "rule": "every live case must pass, absolutely \u2014 enforced by blocking rule (5), which needs no baseline and ignores --tolerance / --min-pass-rate"
   },
