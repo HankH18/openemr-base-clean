@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from copilot import __version__
 from copilot.api import readiness, routes
 from copilot.api.middleware import CorrelationIdMiddleware
+from copilot.auth.service import ensure_smart_ready
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import HealthResponse, ReadinessDependency, ReadinessResponse
 from copilot.memory.db import get_engine
@@ -70,9 +71,21 @@ def _default_probe_factories() -> list[ProbeFactory]:
     is the same connection, named for what it backs. ``guideline_corpus`` grades
     the *content* of that store rather than its reachability: a deploy that skips
     the manual corpus ingest is degraded-but-serving, not ready.
+
+    ``migrations`` grades the store's SCHEMA, and is gating. Reachability is not
+    serveability: ``document_store``'s ``SELECT 1`` passes against a zero-table
+    database, which is exactly what the documented rollout produces between
+    ``up -d`` and the manual ``alembic upgrade head``. Without this probe that
+    window reports ready while every request 500s.
+
+    ``smart_config`` grades the login flow's reachability: in the deployed
+    ``auth_mode=smart``, an authorize URL the physician's browser cannot resolve
+    means the service serves nobody.
     """
     return [
         lambda s: partial(readiness.probe_document_store, get_engine()),
+        lambda s: partial(readiness.probe_migrations, get_engine()),
+        lambda s: partial(readiness.probe_smart_config, s),
         lambda s: partial(readiness.probe_pgvector, s, get_engine()),
         lambda s: partial(readiness.probe_guideline_corpus, get_engine()),
         lambda s: partial(readiness.probe_embedder, s),
@@ -87,11 +100,23 @@ def create_app(
     settings: Settings | None = None,
     probe_factories: list[ProbeFactory] | None = None,
 ) -> FastAPI:
-    """Build the app.  All I/O collaborators are injectable."""
+    """Build the app.  All I/O collaborators are injectable.
+
+    Raises ``AuthConfigError`` when ``auth_mode=smart`` is configured unsafely —
+    config.py and DEPLOY.md §16.3 both promise the app "refuses to boot" on such a
+    config, and until this call existed that promise was false: the guard ran only
+    on the first *login*, so a bad SMART config booted green, passed /health and
+    /ready, and failed at the one moment a physician tried to sign in. A documented
+    guard that does not exist is worse than no guard — it is what stops the next
+    person from checking.
+    """
     settings = settings or get_settings()
     # Structured JSON logging, correlation-id-tagged, on stdout. Idempotent, so
     # rebuilding the app (tests, workers) never stacks handlers.
     configure_logging()
+    # Fail LOUD and EARLY on an unsafe smart config, before a port is bound.
+    # No-op when auth_mode=disabled, so the default demo boots unchanged.
+    ensure_smart_ready(settings)
     # Distinguish "not supplied" (None -> wire real probes) from an explicit
     # empty list (caller wants no probes, e.g. tests). `or` would coerce [] to
     # the defaults; `is None` preserves the caller's empty list.

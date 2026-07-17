@@ -8,12 +8,16 @@ inject fakes without spinning up the full FastAPI app.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Protocol
 
 import httpx
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from copilot.auth.service import AuthConfigError, ensure_authorize_url_browser_reachable
 from copilot.config import Settings
 from copilot.domain.contracts import ReadinessDependency
 from copilot.memory.models import GuidelineChunkRow
@@ -23,6 +27,119 @@ class DependencyProbe(Protocol):
     """A callable that returns a ReadinessDependency, async."""
 
     async def __call__(self) -> ReadinessDependency: ...
+
+
+def _project_root() -> Path:
+    """Repo/image root — the dir holding ``alembic.ini`` and ``migrations/``.
+
+    Resolved from this file (``<root>/copilot/api/readiness.py``) rather than the
+    process CWD: uvicorn's working directory is not guaranteed, and a CWD-relative
+    ``Config("alembic.ini")`` would silently fail to find the scripts and report a
+    false "cannot read migrations" instead of the real schema state.
+    """
+    return Path(__file__).resolve().parents[2]
+
+
+def script_directory() -> ScriptDirectory:
+    """The alembic ScriptDirectory for this deployment's migration scripts."""
+    cfg = Config(str(_project_root() / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_project_root() / "migrations"))
+    return ScriptDirectory.from_config(cfg)
+
+
+async def probe_migrations(engine: AsyncEngine) -> ReadinessDependency:
+    """Schema version — the DB must be migrated to the head this code expects.
+
+    GATING, and deliberately so. Every other DB probe is satisfied by a
+    reachable-but-EMPTY database: ``probe_document_store``'s ``SELECT 1`` needs no
+    table, so a container pointed at a zero-table Postgres reported ``ready`` while
+    every chat/rounds/document request 500'd on the first query. DEPLOY.md §15/§18
+    make ``alembic upgrade head`` an explicit MANUAL step *after* ``up -d``, so the
+    unmigrated window is a documented, routine part of the rollout — not an exotic
+    failure. Readiness must describe it honestly.
+
+    Not-ready on any of: no ``alembic_version`` table (never migrated), an empty
+    ``alembic_version``, or an applied revision set that differs from the code's
+    head(s) (a migration was added and not applied — or the image was rolled back
+    behind the DB). The detail always names the concrete revisions so an operator
+    reads "run alembic upgrade head", not a bare exception class.
+    """
+    try:
+        heads = set(script_directory().get_heads())
+    except Exception as exc:
+        # Scripts unreadable ⇒ we cannot prove the schema is current, so we must
+        # not claim ready. Name the real error, not its class.
+        return ReadinessDependency(
+            name="migrations", ok=False, detail=f"cannot read migration scripts: {exc}"
+        )
+
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+            applied = {str(row[0]) for row in result}
+    except Exception as exc:
+        return ReadinessDependency(
+            name="migrations",
+            ok=False,
+            detail=(
+                f"alembic_version unreadable — database is not migrated; "
+                f"run 'alembic upgrade head' (DEPLOY.md §18 step 3): {exc}"
+            ),
+        )
+
+    if not applied:
+        return ReadinessDependency(
+            name="migrations",
+            ok=False,
+            detail=(
+                f"no migration applied (alembic_version is empty); code head "
+                f"{sorted(heads)} — run 'alembic upgrade head'"
+            ),
+        )
+    if applied != heads:
+        return ReadinessDependency(
+            name="migrations",
+            ok=False,
+            detail=(
+                f"schema at {sorted(applied)} but code expects head {sorted(heads)} — "
+                f"run 'alembic upgrade head'"
+            ),
+        )
+    return ReadinessDependency(name="migrations", ok=True, detail=f"at head {sorted(heads)}")
+
+
+async def probe_smart_config(settings: Settings) -> ReadinessDependency:
+    """SMART login config — in smart mode, login must actually be reachable.
+
+    GATING. ``auth_mode=smart`` is the DEPLOYED mode, and in it login is the only
+    way to obtain a session: an authorize URL the physician's browser cannot
+    resolve means the service serves nobody, however green its other deps look.
+    The shipped default (``http://openemr/oauth2/default/authorize``) is exactly
+    that — an internal Docker alias — and an operator who enables SMART without
+    overriding it gets /health 200, /ready 200, and a dead sign-in.
+
+    Why here and not in ``create_app``: the boot gate (``ensure_smart_ready``)
+    covers what is fatal to the whole process. The authorize URL is fatal only to
+    the login flow, and the app is legitimately constructible in smart mode
+    without it (delegated-token tests drive a seeded session and never redirect a
+    browser). ``/ready`` is the operator's dashboard and DEPLOY.md's documented
+    verification step, so a broken login config belongs there — visible and
+    gating, without making an in-process app un-buildable.
+
+    A no-op ``ok`` outside smart mode: nothing redirects a browser when auth is
+    disabled, so the authorize URL is unused and its value irrelevant.
+    """
+    if settings.auth_mode != "smart":
+        return ReadinessDependency(
+            name="smart_config", ok=True, detail=f"auth_mode={settings.auth_mode} (login off)"
+        )
+    try:
+        ensure_authorize_url_browser_reachable(settings)
+    except AuthConfigError as exc:
+        return ReadinessDependency(name="smart_config", ok=False, detail=str(exc))
+    return ReadinessDependency(
+        name="smart_config", ok=True, detail="smart login config valid (authorize URL public https)"
+    )
 
 
 async def probe_postgres(engine: AsyncEngine) -> ReadinessDependency:
@@ -67,9 +184,7 @@ async def probe_pgvector(settings: Settings, engine: AsyncEngine) -> ReadinessDe
         )
     try:
         async with engine.connect() as conn:
-            result = await conn.execute(
-                text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-            )
+            result = await conn.execute(text("SELECT 1 FROM pg_extension WHERE extname = 'vector'"))
             installed = result.first() is not None
         if installed:
             return ReadinessDependency(name="pgvector", ok=True, detail="extension installed")
@@ -101,8 +216,12 @@ async def probe_guideline_corpus(engine: AsyncEngine) -> ReadinessDependency:
             result = await conn.execute(select(func.count()).select_from(GuidelineChunkRow))
             count = int(result.scalar_one() or 0)
     except Exception as exc:
+        # The MESSAGE, not the class. This probe is the only one that touches a
+        # table, so on an unmigrated DB it is the first line to break — and
+        # "OperationalError" is indistinguishable from a transient blip, while
+        # "no such table: guideline_chunk" names the actual rollout mistake.
         return ReadinessDependency(
-            name="guideline_corpus", ok=False, detail=type(exc).__name__, advisory=True
+            name="guideline_corpus", ok=False, detail=f"{type(exc).__name__}: {exc}", advisory=True
         )
     if count == 0:
         return ReadinessDependency(
