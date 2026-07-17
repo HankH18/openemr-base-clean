@@ -154,6 +154,22 @@ services:
       dockerfile: Dockerfile
     platform: linux/amd64
     restart: always
+    # Blast radius, not a tuning knob. Rasterization allocates width*height*4 bytes
+    # per page, and a 546-BYTE pdf declaring a 200x200in page renders 40000x40000 at
+    # the default 200 DPI -- 1.6 gigapixel, 6.4 GB requested, measured 3.62 GB peak
+    # RSS against the shipped function. Unbounded, that OOM-kills this container AND
+    # takes the droplet's other services (openemr, mariadb, caddy, langfuse) with it,
+    # because the kernel picks the victim, not us.
+    #
+    # raster.py now rejects oversized geometry before allocating, so this limit
+    # should never be reached. It is here for the case where that guard is wrong:
+    # with it, the kernel kills only this container and `restart: always` brings it
+    # back; without it, one bad upload is a whole-host outage.
+    #
+    # 1g against a measured 86 MiB idle and tens of MB for a normal letter page at
+    # 200 DPI -- ~12x headroom. Raise it if a real deployment legitimately needs
+    # bigger scans (and raise the raster caps to match; they are the real gate).
+    mem_limit: 1g
     depends_on:
       agent-postgres:
         condition: service_healthy

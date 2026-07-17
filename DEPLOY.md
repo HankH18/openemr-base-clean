@@ -327,7 +327,12 @@ are not rejected by Caddy's small default:
 ```
 copilot.example.com {
     encode gzip
-    request_body { max_size 25MB }   # scanned-PDF uploads (>= the 10MB ceiling)
+    request_body { max_size 25MB }   # scanned-PDF uploads. NOTE: a byte cap does not
+                                 # bound rasterization -- a 544-BYTE pdf can declare a
+                                 # 60x60in page and render to 1.1 GB. The real guards
+                                 # are the pixel-area and page-count caps in
+                                 # agent/copilot/documents/raster.py, plus the agent
+                                 # container's mem_limit.
     handle /v1/*   { reverse_proxy agent:8000 }
     handle /health { reverse_proxy agent:8000 }
     handle /ready  { reverse_proxy agent:8000 }
