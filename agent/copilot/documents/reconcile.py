@@ -7,6 +7,13 @@ of OCR tokens gets that span's bounding box and a positive match confidence
 ``supported=False`` with no bbox — surfaced as unverified rather than silently
 trusted. This is the pixel-level evidence a later grounding pass re-checks.
 
+"Matches" is deliberately two-sided, because ``supported=True`` is read as *this
+value is on the page, here is where*. A span must both resemble the value
+(:data:`_MATCH_MIN`, symmetric) and account for essentially all of it
+(:data:`_COVERAGE_MIN`, asymmetric). Similarity alone would bless a span that is
+merely a long enough *prefix* — handing back a box that omits the value's tail,
+which is the invention the gate exists to catch, wearing the costume of evidence.
+
 Matching is span-based because OCR emits one token per *word*: a value like
 "Metformin 500 mg PO BID" is never a single token, only a run of adjacent ones.
 Scoring against single tokens would report every honest multi-word extraction —
@@ -40,6 +47,55 @@ from typing import Any
 # so "999.9" — absent from the page — matches nothing.
 _MATCH_MIN = 0.8
 
+# Minimum fraction of the *value's* characters the winning span must account for.
+#
+# Similarity alone cannot carry the gate's claim. ratio() is 2*matched/(len_a+len_b)
+# — symmetric — so it asks "do these two strings resemble each other", never "is all
+# of the value here". A span that is a two-thirds-length *prefix* of the value scores
+# 0.8 and passes, and the gate then reports supported=True with a bbox that does not
+# cover the missing tail: the page prints "Metformin 500 mg PO", the model says
+# "Metformin 500 mg PO BID", and a clinician clicking the highlight to check the
+# schedule sees a box that never says BID. Coverage is the asymmetric half — matched
+# characters over the *value's* length — so support means the value was located, not
+# merely resembled. Both must hold: similarity rejects a noisy match, coverage
+# rejects a partial one.
+#
+# 0.95 is measured, not chosen: real Tesseract output for the three demo documents
+# (200dpi, ~1180 word boxes) reconciled against their pages' own printed field values
+# separates almost perfectly, because a value OCR reads at all it usually reads
+# exactly:
+#   * 93% of real values OCR located scored coverage 1.0; every remaining one scored
+#     <= 0.93 — and those were not honest matches but spans of a *different* string
+#     (value "(512) 555-0177" won a box over the printed "(512) 555-0110").
+#   * The same values with one absent word appended — the failure being fixed —
+#     scored 0.81 to 0.929 ("Once daily BID" -> "once daily (blood", 0.929 the worst).
+# 0.95 clears that 0.929 ceiling with margin while admitting every value OCR read
+# correctly. What it admits: ~1 mangled character per 20 of the value (2 in a 40-char
+# medication line), which is the punctuation/glyph damage real OCR inflicts. What it
+# rejects: any absent word — the shortest clinical ones ("PO", "BID", "PRN") cost 3-4
+# characters, more than the budget for any value under ~60 characters — and, by the
+# same measure, a short value whose few characters OCR did not reproduce (a member ID
+# read one digit off is not a located member ID). 1.0 would be stricter than OCR is
+# accurate; anything at or below 0.93 readmits the invented tails measured above.
+#
+# The band between 0.93 and 0.95 is where the measurement is loudest: of the honest
+# values that land there, all but a handful are ones OCR *lost a whole word* of ("PO
+# BID (twice daily) Type" came back without the "PO"; "H 0.70-1.30 mg/dL" without the
+# abnormal-flag "H"), and those must be rejected — they are the same event as an
+# invented word, seen from the other side. Loosening to 0.90 to keep them would
+# readmit a fabricated route.
+#
+# Known limit, measured and left standing: coverage counts *characters*, so an
+# invented word whose letters happen to sit in order in the adjacent text is still
+# blessed — on the real medication page "…06:05 CDT PRN" covers 1.0 because "prn" is
+# a subsequence of the "Printed" that follows, and "…PO BID" covers 0.96 when "bi"
+# hides inside a following "Hemoglobin". Requiring longer matched runs does not close
+# it (that "bi" is itself a run of two). Rejecting these needs word-level alignment,
+# not a stricter number here. They are a narrow residue — the invented word must
+# appear, in order, in the neighbouring text — of what was previously an open door to
+# *any* sufficiently long prefix.
+_COVERAGE_MIN = 0.95
+
 # Widest run of adjacent tokens ever joined into one candidate. Extracted values
 # are short (a drug + dose + frequency, a patient name), so this bounds the search
 # on a dense page. A value with more words than this reconciles to nothing and is
@@ -53,8 +109,17 @@ _MAX_WINDOW_TOKENS = 12
 # difflib's own real_quick_ratio. Solving that bound for _MATCH_MIN gives the two
 # multiples below. These skip only spans that provably fail, so the winner is
 # identical to scoring every span; they are an exact shortcut, not a heuristic.
+#
+# Coverage tightens the lower bound and leaves the upper one alone. Matched characters
+# are a common subsequence, so matched <= len_span; a span shorter than
+# _COVERAGE_MIN * len_value therefore cannot reach _COVERAGE_MIN and provably fails —
+# the same *kind* of exact shortcut, now the binding one, since _COVERAGE_MIN (0.95)
+# exceeds similarity's own floor (0.8/1.2 = 0.667). max() keeps whichever bound is
+# tighter true if either constant is ever retuned. There is no matching upper bound:
+# coverage counts only the value's characters, so it stays 1.0 however long the span
+# grows — past 1.5x it is similarity, unchanged, that rules the span out.
 _MAX_LEN_RATIO = 2.0 / _MATCH_MIN - 1.0
-_MIN_LEN_RATIO = _MATCH_MIN / (2.0 - _MATCH_MIN)
+_MIN_LEN_RATIO = max(_MATCH_MIN / (2.0 - _MATCH_MIN), _COVERAGE_MIN)
 
 # Every geometric tolerance below is a multiple of the page's *own* median token
 # height — the one length scale OCR always reports, and a direct proxy for type
@@ -121,6 +186,22 @@ def _token_field(token: Mapping[str, Any], *names: str) -> Any:
 
 def _normalize(text: str) -> str:
     return text.strip().lower()
+
+
+def _coverage(target: str, text: str) -> float:
+    """Fraction of ``target``'s characters located in ``text``.
+
+    The asymmetric counterpart to ``ratio()``: it divides by the *value's* length
+    alone, so extra text in the span costs nothing and a missing piece of the value
+    always does. That asymmetry is the whole point — the gate claims the value is on
+    the page, not that the page resembles the value.
+
+    ``get_matching_blocks`` returns disjoint blocks in order, so summing their sizes
+    counts each matched character once — the length of the common subsequence
+    difflib actually aligned, which is what "located" means here.
+    """
+    matcher = SequenceMatcher(None, target, text)
+    return sum(block.size for block in matcher.get_matching_blocks()) / len(target)
 
 
 def _union_bbox(boxes: Sequence[Sequence[float]]) -> list[float]:
@@ -253,7 +334,16 @@ def _best_contiguous_from(
             break  # every wider span is longer still — see _MAX_LEN_RATIO
         if len(text) >= scan.min_span_len:  # else too short, but widening may fix it
             similarity = SequenceMatcher(None, scan.target, text).ratio()
-            if similarity >= _MATCH_MIN and similarity * conf > best_score:
+            # Coverage is checked last: it costs a second pass of the matcher, and
+            # only a span that already resembles the value and would win is worth
+            # asking about. A span that fails it never touches best_score, so a
+            # weaker span that does cover the value can still win — the winner is
+            # the best-scoring span among those clearing *both* gates.
+            if (
+                similarity >= _MATCH_MIN
+                and similarity * conf > best_score
+                and _coverage(scan.target, text) >= _COVERAGE_MIN
+            ):
                 best_score = similarity * conf
                 best_chain = list(span)
         following = span[-1] + 1

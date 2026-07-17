@@ -475,3 +475,195 @@ class TestTableRowContiguousBehaviorUnchanged:
             result = reconcile_value(value, TABLE_TOKENS)
 
             assert result.supported is (result.bbox is not None)
+
+
+# The wrapped medication row with its tail deleted: the page now prints
+#
+#     40 mg   PO   QHS (once daily,     Type 2 diabetes   06/28/2026
+#                                       mellitus
+#
+# — "bedtime)" appears nowhere on it. This is the page a vision model has
+# hallucinated a schedule onto, and every honest span of it is a *prefix* of the
+# value the model proposes.
+TAIL_ABSENT_TOKENS: list[dict[str, object]] = [
+    token for token in TABLE_TOKENS if token["text"] != "bedtime)"
+]
+
+# The same page with a word deleted from the *middle* of a cell: "mg" is gone, so
+# "Metformin 500 mg PO BID" is nowhere on it though all four other words are, in
+# order, adjacent.
+MIDDLE_WORD_ABSENT_TOKENS: list[dict[str, object]] = [
+    token for token in PAGE_TOKENS if token["text"] != "mg"
+]
+
+# Real Tesseract 5.5.2 output, traced from demo/sample_docs/sample_medication_list.pdf
+# rasterized at the pipeline's own 200 dpi. The page prints
+#
+#     318 Lake Shore Blvd, Suite 100 · Austin, TX 78701 · (512) 555-0130
+#
+# and the engine misread the "·" separator as "-" — and says so, scoring that token
+# 0.55 against 0.92-0.96 for the words around it. Nothing here is invented: this is
+# what the OCR of a crisp, digitally rendered page actually looks like. The value is
+# *entirely* present; one character of it came back wrong.
+REAL_OCR_NOISE_TOKENS: list[dict[str, object]] = [
+    {"text": "Austin,", "bbox": [0.2529, 0.0832, 0.0312, 0.0068], "conf": 0.96},
+    {"text": "TX", "bbox": [0.2882, 0.0832, 0.0129, 0.0059], "conf": 0.96},
+    {"text": "78701", "bbox": [0.3047, 0.0832, 0.0271, 0.0059], "conf": 0.93},
+    {"text": "-", "bbox": [0.3347, 0.0814, 0.0059, 0.0118], "conf": 0.55},
+    {"text": "(512)", "bbox": [0.3435, 0.0832, 0.0241, 0.0077], "conf": 0.92},
+    {"text": "555-0130", "bbox": [0.3712, 0.0832, 0.0435, 0.0059], "conf": 0.96},
+]
+
+
+class TestSupportRequiresCoveringTheWholeValue:
+    """``supported=True`` claims the value was *located*, not merely resembled.
+
+    ``SequenceMatcher.ratio()`` is ``2*matched/(len_a + len_b)`` — symmetric. It
+    answers "do these two strings resemble each other", never "is all of the value
+    here", so a span that is a long enough *prefix* of the value clears it: two
+    thirds of the value's length scores 0.8. Nothing in a similarity score requires
+    the span to account for the value's tail, which is exactly what a no-invention
+    gate has to require before it hands a clinician a citation box.
+    """
+
+    def test_value_whose_tail_is_absent_from_the_page_is_unsupported(self) -> None:
+        """The reported defect, verbatim: "bedtime)" is on no token of this page.
+
+        The gate blessed "40 mg PO QHS (once daily, bedtime)" against six tokens that
+        stop at "daily,", returning a box that could not possibly contain the tail —
+        asserting "this value is on the page, here is where" about a value whose last
+        word is nowhere on it.
+        """
+        tokens: list[dict[str, object]] = [
+            {"text": text, "bbox": [0.10 + 0.05 * i, 0.50, 0.04, 0.01], "conf": 0.90}
+            for i, text in enumerate(["40", "mg", "PO", "QHS", "(once", "daily,"])
+        ]
+
+        result = reconcile_value("40 mg PO QHS (once daily, bedtime)", tokens)
+
+        assert result.supported is False
+        assert result.bbox is None
+        assert result.match_confidence == 0.0
+
+    def test_wrapped_cell_whose_tail_is_absent_is_unsupported(self) -> None:
+        """The same value, the same real table geometry — minus the wrapped tail.
+
+        The companion to :meth:`TestWrappedCellValues.test_wrapped_cell_value_is_supported`:
+        that page prints "bedtime)" and must match; this one does not print it and
+        must not. Only a gate that checks the value's tail can tell the two pages
+        apart — a prefix of "QHS (once daily," scores identically on both.
+        """
+        result = reconcile_value("QHS (once daily, bedtime)", TAIL_ABSENT_TOKENS)
+
+        assert result.supported is False
+        assert result.bbox is None
+
+    def test_value_with_an_absent_middle_word_is_unsupported(self) -> None:
+        """"Metformin 500 mg PO BID" where the page never printed the "mg".
+
+        The surrounding words are all present, adjacent, and in order, so the span
+        "Metformin 500 PO BID" resembles the value closely (similarity ~0.93, well
+        past 0.8) — and covers only 20 of its 23 characters.
+        """
+        result = reconcile_value("Metformin 500 mg PO BID", MIDDLE_WORD_ABSENT_TOKENS)
+
+        assert result.supported is False
+        assert result.bbox is None
+
+    def test_hallucinated_schedule_on_a_real_page_is_unsupported(self) -> None:
+        """The concrete harm: the page prints the drug, the model adds the schedule.
+
+        "Metformin 500 mg PO" is printed here; "BID" is not. Supporting this hands
+        back a highlight that does not contain the frequency a clinician clicked it
+        to verify. The span covers 19 of the value's 23 characters (0.826).
+        """
+        tokens: list[dict[str, object]] = [
+            {"text": "Metformin", "bbox": [0.10, 0.25, 0.16, 0.03], "conf": 0.97},
+            {"text": "500", "bbox": [0.28, 0.25, 0.05, 0.03], "conf": 0.96},
+            {"text": "mg", "bbox": [0.35, 0.25, 0.04, 0.03], "conf": 0.95},
+            {"text": "PO", "bbox": [0.41, 0.25, 0.04, 0.03], "conf": 0.95},
+        ]
+
+        result = reconcile_value("Metformin 500 mg PO BID", tokens)
+
+        assert result.supported is False
+        assert result.bbox is None
+
+
+class TestCoverageDoesNotDemandExactness:
+    """Rejecting partial matches must not turn into rejecting *imperfect* ones.
+
+    A gate that only accepted byte-exact OCR would report every real page as
+    unverified — OCR mangles glyphs and punctuation on even a crisp render. The
+    threshold has to sit above what an absent word costs and below what real
+    character noise costs.
+    """
+
+    def test_real_ocr_noise_still_locates_a_fully_present_value(self) -> None:
+        """Real Tesseract, real page, one real misread character — still supported.
+
+        The printed "·" came back as "-". Every other character of the value is on
+        the page, so the value *is* located and the box is right; only one glyph is
+        wrong. Coverage 32/33 = 0.970.
+        """
+        result = reconcile_value("Austin, TX 78701 · (512) 555-0130", REAL_OCR_NOISE_TOKENS)
+
+        assert result.supported is True
+        assert result.bbox is not None
+        # Scored by its weakest token — the "-" Tesseract itself only rated 0.55.
+        assert result.match_confidence == pytest.approx(0.9697 * 0.55, abs=1e-3)
+
+    def test_noisy_bbox_still_covers_every_token_of_the_value(self) -> None:
+        """The citation for a noisily-read value still sits over the whole value."""
+        result = reconcile_value("Austin, TX 78701 · (512) 555-0130", REAL_OCR_NOISE_TOKENS)
+
+        assert result.bbox is not None
+        for token in REAL_OCR_NOISE_TOKENS:
+            inner = [float(v) for v in token["bbox"]]  # type: ignore[union-attr]
+            assert _covers(result.bbox, inner), f"union bbox misses {token['text']!r}"
+
+    def test_the_tightest_real_noise_measured_still_matches(self) -> None:
+        """The worst real damage seen on the demo pages, at 0.955 coverage.
+
+        The shortest phrase around the same misread "·": one wrong character out of
+        22. This is the closest real OCR noise came to the threshold across ~1180
+        measured word boxes, so it is the case that proves the threshold leaves real
+        pages room.
+        """
+        result = reconcile_value("78701 · (512) 555-0130", REAL_OCR_NOISE_TOKENS[2:])
+
+        assert result.supported is True
+        assert result.bbox is not None
+
+
+class TestVerbatimValuesAreUnaffected:
+    """The whole point is to reject partial matches — never to lose real ones."""
+
+    @pytest.mark.parametrize(
+        ("value", "tokens_name"),
+        [
+            ("Metformin", "page"),  # single token
+            ("13.5", "page"),  # single token, the frozen-goal value
+            ("Marisol Quintanilla", "page"),  # multi-word
+            ("Metformin 500 mg PO BID", "page"),  # multi-word, drug + dose + frequency
+            ("500 mg PO", "page"),  # a span starting mid-line
+            ("QHS (once daily, bedtime)", "table"),  # the wrapped cell
+            ("Type 2 diabetes mellitus", "table"),  # a second, independent wrap
+            ("40 mg PO", "table"),  # contiguous on a table row
+        ],
+    )
+    def test_value_printed_verbatim_is_still_supported(self, value: str, tokens_name: str) -> None:
+        tokens = PAGE_TOKENS if tokens_name == "page" else TABLE_TOKENS
+
+        result = reconcile_value(value, tokens)
+
+        assert result.supported is True
+        assert result.bbox is not None
+        assert result.match_confidence > 0.0
+
+    def test_an_exact_match_still_scores_a_perfect_similarity(self) -> None:
+        """Coverage gates the match; it must not perturb the score of a real one."""
+        result = reconcile_value("Metformin 500 mg PO BID", PAGE_TOKENS)
+
+        # similarity 1.0 x the span's weakest token ("BID", 0.94) — as before.
+        assert result.match_confidence == pytest.approx(0.94)
