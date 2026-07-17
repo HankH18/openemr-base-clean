@@ -317,10 +317,16 @@ class OpenEmrWriteClient:
         and honestly cannot carry it.
         """
         payload: dict[str, str] = {"title": allergy.title, "begdate": allergy.begdate}
-        if allergy.reaction:
-            payload["reaction"] = allergy.reaction
-        if source is not None:
-            payload["comments"] = source.provenance_note()
+        # `reaction` is NOT accepted by OpenEMR: AllergyIntoleranceRestController's
+        # WHITELISTED_FIELDS is {title, begdate, enddate, diagnosis, comments} and
+        # filterData() SILENTLY drops everything else — so sending it returned 201
+        # while the reaction never reached the chart. A physician confirming
+        # "Penicillin — rash and hives" lost the clinically important half with no
+        # error anywhere. Both the reaction and the provenance therefore ride
+        # `comments`, the only field OpenEMR actually persists for them.
+        comment = _allergy_comment(allergy.reaction, source)
+        if comment:
+            payload["comments"] = comment
         resp = await self._send(
             "POST",
             f"/patient/{pid}/allergy",
@@ -443,6 +449,21 @@ class OpenEmrWriteClient:
 
 
 # --- module helpers ---------------------------------------------------------
+
+
+def _allergy_comment(reaction: str | None, source: WriteSource | None) -> str:
+    """Fold the reaction and the source provenance into OpenEMR's one usable field.
+
+    OpenEMR accepts only ``{title, begdate, enddate, diagnosis, comments}`` on an
+    allergy (``AllergyIntoleranceRestController::WHITELISTED_FIELDS``); anything
+    else is silently dropped by ``filterData``. ``comments`` is therefore the only
+    place either value can land, so both share it — reaction first, because that is
+    the clinical content a physician reads; provenance second, because that is
+    audit context. Either may be absent; an empty result means send no field at all
+    rather than an empty one.
+    """
+    parts = [f"Reaction: {reaction}" if reaction else "", source.provenance_note() if source else ""]
+    return " | ".join(part for part in parts if part)
 
 
 def _try_json(resp: httpx.Response) -> Any:

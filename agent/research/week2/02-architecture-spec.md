@@ -63,7 +63,9 @@ rasterization → OCR → Claude-vision structured extraction → schema validat
 answer.
 
 **Evidence-retriever worker** (`copilot/graph/evidence_retriever.py`) — owns hybrid retrieval over
-the guideline corpus: de-identify query → sparse (Postgres FTS) + dense (pgvector) → RRF fusion →
+the guideline corpus: de-identify query → sparse (Postgres FTS) + dense (pgvector *storage*;
+ranking is a Python-side cosine over the loaded chunk set — no vector operator, no ANN index; see
+`W2_ARCHITECTURE.md` §RAG index) → RRF fusion →
 Cohere rerank → top-K grounded snippets with `chunk_id + section`. Returns evidence, explicitly
 typed as guideline (not patient) facts.
 
@@ -88,7 +90,8 @@ Standard API `POST /api/patient/:pid/document`, multipart) and extend the writab
 intake write-back via the existing propose→confirm gate.
 
 **RAG index** (`copilot/rag/`) — corpus ingest script (repo-reproducible), chunking, Voyage
-embeddings (precomputed at ingest + cached), pgvector + FTS storage, hybrid retrieve + Cohere
+embeddings (precomputed at ingest + cached), pgvector + FTS storage (pgvector is the column type;
+dense ranking happens in Python — see above), hybrid retrieve + Cohere
 rerank. All behind swappable/stubbable `Protocol`s.
 
 **Observability (extended)** (`copilot/observability/`) — nested spans; wired JSON logging;
