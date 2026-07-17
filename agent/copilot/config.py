@@ -303,6 +303,48 @@ class Settings(BaseSettings):
             "images (stored + sent to the vision model)."
         ),
     )
+    raster_max_page_pixels: int = Field(
+        default=50_000_000,
+        description=(
+            "Per-page ceiling on RENDERED pixel area (width*height at ocr_dpi) "
+            "when rasterizing a PDF. A page's MediaBox is uploader-controlled "
+            "and costs bytes nothing while the render is quadratic in it: a "
+            "544-byte PDF declaring a 60x60in page renders to 144 MP (~1.1 GB) "
+            "at ocr_dpi=200, which OOM-kills a 2 GB box. The default (50 MP) "
+            "clears every page a clinic plausibly scans — tabloid 11x17in at "
+            "200 DPI is 7.5 MP, large-format ANSI D film is 29.9 MP — and "
+            "costs ~200 MB of BGRA at the cap. Raise it on a larger box."
+        ),
+    )
+    raster_max_pages: int = Field(
+        default=1000,
+        description=(
+            "Ceiling on a document's page count when rasterizing. Page count is "
+            "otherwise unbounded and a 2000-page bomb is a 244 KB upload. The "
+            "default (1000) leaves 3.3x headroom over an ordinary 300-page "
+            "discharge summary and 10x over a typical long one, so it rejects "
+            "no real clinical document. Raise it on a larger box."
+        ),
+    )
+    vision_max_pages_per_call: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Maximum page images carried by a SINGLE vision model call. A "
+            "document longer than this is extracted in batches of this size "
+            "and the facts merged — the document is not refused (see "
+            "documents/vision.py for why, and for how page_no stays true "
+            "across batches). This bounds ONE CALL, not the document: it is "
+            "not a spend cap, because every page is still sent exactly once. "
+            "20 is measured against the API's real limits at the default "
+            "ocr_dpi=200, where a US-Letter page renders to 1700x2200px: a "
+            "request carrying MORE than 20 images is held to a stricter "
+            "2000px per-image dimension limit, which a 2200px-tall page "
+            "exceeds — so a 21-image call is rejected outright. It also keeps "
+            "a call near ~13MB (limit 32MB) and ~96k visual tokens. RAISE "
+            "ONLY WITH ocr_dpi <= 181, below which pages fall under 2000px."
+        ),
+    )
     doc_extraction_confidence_threshold: float = Field(
         default=0.7,
         description=(
@@ -346,6 +388,19 @@ class Settings(BaseSettings):
     )
     langfuse_public_key: str = Field(default="")
     langfuse_secret_key: str = Field(default="")
+    observability_pseudonym_key: str = Field(
+        default="",
+        description=(
+            "HMAC key that pseudonymizes patient_id before it egresses to the "
+            "trace backend (Langfuse is a third-party SaaS; a bare PID is a "
+            "HIPAA identifier). Any high-entropy string; keep it STABLE across "
+            "deploys or traces stop correlating to a patient, and keep it out of "
+            "Langfuse's reach. Empty (default) ⇒ patient_id is OMITTED from trace "
+            "metadata rather than sent raw — safe, but traces can then only be "
+            "grouped by correlation_id, not by patient. Secrets-manager only; "
+            "never logged. See copilot/observability/pseudonymize.py."
+        ),
+    )
 
     # --- Poller -----------------------------------------------------------
 
