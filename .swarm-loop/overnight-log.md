@@ -180,3 +180,41 @@ decision instead. This is the justify-test-edit rule doing exactly its job.
   for "dose and frequency exactly as printed" — the fixture and the prompt disagree
   about what a medication value IS. Deeper stub-blindness; touching it moves frozen
   metrics, so it needs its own measured cycle.
+
+## Cycle 4 — measured proof of the reconcile fix, + one residual (issue 31)
+
+**The n-gram fix works on REALITY** (real Claude vision + real Tesseract + the new
+reconciler, run inside the deployed container):
+
+  sample_intake_form.pdf:     47 facts, 40 supported (85.1%)
+                              multi-word 28/30 (93%)   <- was structurally 0
+  sample_medication_list.pdf: 12 facts, 10 supported (83.3%)
+                              multi-word 10/12 (83%)   <- was structurally 0
+
+Live extraction_field_pass_rate is still 0.606 because it reflects the ONE document
+row already in the DB, ingested with the old single-token reconciler. It should rise
+on re-ingest; the metric lags the fix, it does not contradict it.
+
+**#31 — RESIDUAL, NOT FIXED (deliberate): values that wrap inside a table cell.**
+`'QHS (once daily, bedtime)'` is verbatim on the med-list page but wraps a line:
+
+    40 mg PO QHS (once daily,
+    bedtime)
+
+Tesseract reads the table ROW-WISE, so the OCR stream is:
+
+    idx 212: ['mg','PO','QHS','(once','daily,','Hyperlipidemia','06/28/2026',...]
+
+— after "daily," it jumps to the NEXT COLUMN; the wrapped "bedtime)" is far away in
+the stream. So the tokens are NOT contiguous and contiguous windowing cannot match.
+2 of 12 med-list facts (17%) are falsely reported unverified.
+
+NOT fixed, on purpose: it fails in the SAFE direction (unsupported, never invented),
+and a real fix needs layout-aware grouping (same-cell / same-line-block), which means
+OcrToken must carry Tesseract's block/par/line ids — an OCR-schema change. That is a
+feature with its own blast radius, not a bug fix to land unreviewed at 05:00. The
+tempting cheap fix -- match the longest PREFIX and call it supported -- is WRONG: it
+would claim support for a value whose tail was never verified, which is precisely the
+invention the gate exists to prevent.
+
+Backlogged for a human call, with this evidence.
