@@ -283,17 +283,31 @@ function acceptedFrom(payload: unknown): DocumentAccepted {
  * Upload one source document for async extraction. The service replies
  * `202 {document_id, status, correlation_id}`; anything else is a typed
  * `ApiError` (status null when the service is unreachable).
+ *
+ * Identity follows the same auth-mode contract as `getDocument` above: the
+ * session cookie rides along via `credentials: 'include'` (smart mode), and
+ * `clinicianId`, when provided, is asserted explicitly — required in disabled
+ * mode, checked-for-match in smart mode. The one difference is the carrier:
+ * `getDocument` is a GET so it asserts on the query string, whereas
+ * `POST /v1/documents` declares `clinician_id` as an optional *form* field
+ * (copilot/api/routes/documents.py), so it belongs in the multipart body.
+ * Omitting it entirely is what made a disabled-mode browser upload 400
+ * ("clinician_id is required") while the query-string GET beside it worked.
  */
 export async function uploadDocument(
   file: File,
   patientId: number,
   docType: DocType = DEFAULT_DOC_TYPE,
+  clinicianId?: number,
   base: string = resolveApiBase(),
 ): Promise<DocumentAccepted> {
   const body = new FormData();
   body.append('file', file, file.name);
   body.append('patient_id', String(patientId));
   body.append('doc_type', docType);
+  if (clinicianId !== undefined) {
+    body.append('clinician_id', String(clinicianId));
+  }
 
   const headers: Record<string, string> = { Accept: 'application/json' };
   const token = getCsrfToken();

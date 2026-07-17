@@ -38,14 +38,24 @@ function failureMessage(error: unknown): string {
  *
  * `upload` is injectable (the App seam passes the API adapter's uploader, so
  * mock mode simulates ingestion); it defaults to the real multipart poster.
+ * That default poster needs `clinicianId` for the same reason the seam does —
+ * in disabled mode the service demands an asserted `clinician_id` and 400s
+ * without one.
  */
 export function DocumentUpload({
   patientId,
+  clinicianId,
   initialDocType = DEFAULT_DOC_TYPE,
   upload,
   onAccepted,
 }: {
   patientId: number;
+  /**
+   * Acting clinician, asserted as `clinician_id` on the upload. Only consulted
+   * by the built-in poster below — when `upload` is injected (as the App seam
+   * always does) identity is already bound into that callback.
+   */
+  clinicianId?: number;
   /** Pre-selected document kind; the physician can change it before uploading. */
   initialDocType?: DocType;
   upload?: UploadFn;
@@ -55,7 +65,8 @@ export function DocumentUpload({
   const [message, setMessage] = useState('');
   const [docType, setDocType] = useState<DocType>(initialDocType);
 
-  const doUpload: UploadFn = upload ?? ((file, type) => uploadDocument(file, patientId, type));
+  const doUpload: UploadFn =
+    upload ?? ((file, type) => uploadDocument(file, patientId, type, clinicianId));
 
   const handleSelect = (files: FileList | null): void => {
     const file = files?.[0];

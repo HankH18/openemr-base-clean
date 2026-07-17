@@ -489,7 +489,7 @@ export function createMockApi(): CopilotApi {
       return committed;
     },
 
-    async uploadDocument(patientId, _file, docType) {
+    async uploadDocument(_clinicianId, patientId, _file, docType) {
       // Simulated ingestion: the 202 acknowledgement, offline. Extraction is
       // async, like live — getDocument reports "processing" until the canned
       // facts land a few seconds later.

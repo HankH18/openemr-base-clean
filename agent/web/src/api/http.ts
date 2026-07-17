@@ -214,10 +214,12 @@ export function createHttpApi(base: string): CopilotApi {
       return normalizeCommittedWrite(raw);
     },
 
-    async uploadDocument(patientId, file, docType) {
+    async uploadDocument(clinicianId, patientId, file, docType) {
       // Multipart lives in documents.ts (no JSON Content-Type — the browser
       // writes the boundary). Same base, credentials, and CSRF discipline.
-      return uploadDocument(file, patientId, docType, base);
+      // clinician_id is asserted as a form field (the POST declares it as one),
+      // mirroring the getDocument query-string assertion just below.
+      return uploadDocument(file, patientId, docType, clinicianId, base);
     },
 
     async getDocument(clinicianId, documentId) {

@@ -84,8 +84,18 @@ export interface CopilotApi {
    * Upload one source document (multipart `POST /v1/documents`) for async
    * extraction. Resolves with the 202 acknowledgement; extraction status is
    * polled separately. The mock adapter simulates acceptance offline.
+   *
+   * `clinicianId` is asserted as a `clinician_id` form field — the same
+   * identity contract as `getDocument` below (required in disabled mode,
+   * match-checked in smart mode), hence the clinician-first argument order
+   * shared by every method on this interface.
    */
-  uploadDocument(patientId: number, file: File, docType?: DocType): Promise<DocumentAccepted>;
+  uploadDocument(
+    clinicianId: number,
+    patientId: number,
+    file: File,
+    docType?: DocType,
+  ): Promise<DocumentAccepted>;
   /**
    * Read one uploaded document's ingestion status plus the latest
    * extraction's facts and their document citations

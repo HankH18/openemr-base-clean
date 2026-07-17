@@ -285,7 +285,7 @@ function RoundsApp({
                 onDone={handleDone}
                 fetchTrend={(metric) => api.observations(clinicianId, card.patient_id, metric)}
                 uploadDocument={(file, docType) =>
-                  api.uploadDocument(card.patient_id, file, docType)
+                  api.uploadDocument(clinicianId, card.patient_id, file, docType)
                 }
                 fetchDocument={(documentId) => api.getDocument(clinicianId, documentId)}
               />
