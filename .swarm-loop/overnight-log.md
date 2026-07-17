@@ -154,6 +154,30 @@ Run audit->fix cycles until a cycle finds NOTHING worth fixing, or tokens run ou
 NOT a fixed cycle count — the earlier "stop after cycle 5" is superseded. A clean
 audit is evidence; a cycle number is not.
 
+
+## RESUME STATE (live, updated each cycle)
+
+- **Where we are:** cycle 9 in flight. HEAD is pushed to both remotes + docs; verify with
+  `git ls-tree -r HEAD --name-only | wc -l` (expect ~9165) BEFORE any push — the index was
+  emptied once tonight and wiped the repo to 1 file.
+- **Halt condition (user):** run audit->fix cycles until a cycle finds NOTHING worth fixing,
+  OR the Anthropic API stops responding. NOT a fixed cycle count. Context pressure is a
+  compaction event, NOT a stop signal. Base rate of "audit finds a real defect" is still 100%
+  after 8 cycles (2,9,3,4 live defects in cycles 5-8).
+- **User's gated backlog (only after a CLEAN cycle):** (1) non-standard document variants,
+  (2) handwriting recognition, (3) the reverse/prune bloat loop (Phase 9 of swarm-loop skill —
+  propose, a DIFFERENT agent refutes, then approve personally; uncertain => keep).
+- **Key open items for a human:** Langfuse pseudonym != de-identification (needs a BAA);
+  is_authorized gates a caller-supplied list (no roster concept — architectural); health_uri
+  /ready belongs in the Caddyfile; _distance_to_range inclusive bound; coverage counts chars.
+- **Deploy:** droplet root@198.199.68.21, /root/openemr-base-clean, `origin`=GitHub(HankH18)
+  `gitlab`=GitLab(GRADED). Droplet fetches from a `ghmirror` remote (public GitHub) because it
+  has no GitLab creds. Public host is agentforge.hankholcomb.com. Migrations are a MANUAL step
+  after deploy (`alembic upgrade head`); /ready now GATES on it.
+- **The junk-sync gotcha:** a file sync keeps scattering " N.py" duplicates; now .gitignore'd,
+  but check `find agent -regex '.*/tests/.* [0-9].py'` if pytest collection count looks wrong.
+
+
 ## Cycle 3 close — all six findings fixed, deployed, verified live
 
 Commits: 67f9801, dfb1b8e, f8811b2 (self-correction), 2108b2f, 1406442, d2b09c8,
