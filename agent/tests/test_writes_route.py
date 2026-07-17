@@ -384,3 +384,259 @@ class TestDisabledFlag:
         assert r.status_code == 503
         # The write client was never built, so nothing was attempted.
         assert writer.vitals == []
+
+
+# --- concurrent confirm (the double-click race) -----------------------------
+#
+# ``TestIdempotency`` above drives confirms *sequentially* — the first fully
+# completes, recording its key, before the second starts. A double-click is not
+# sequential: both confirms are in flight at once, interleaved on one event loop.
+# These drive ``WriteService.commit`` directly through ``asyncio.gather`` because
+# that is the real concurrency surface (``TestClient`` is synchronous and runs
+# each request to completion, so it cannot express two overlapping confirms).
+
+
+class _RacingWriter:
+    """Write double whose POST yields to the loop, like a real HTTP hop.
+
+    ``attempts`` counts requests *sent to OpenEMR* — incremented on entry, before
+    any simulated failure — because the thing under test is how many appends
+    reach the server, not how many succeeded. Each success hands back a distinct
+    ``new_id`` so a duplicate is visible in the returned proof, not merely in a
+    counter.
+    """
+
+    def __init__(self, *, fail_times: int = 0, gate: asyncio.Barrier | None = None) -> None:
+        self.attempts = 0
+        self.keys_seen: list[str | None] = []
+        self._fail_times = fail_times
+        self._gate = gate
+        self._next_id = 0
+
+    async def __aenter__(self) -> _RacingWriter:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def resolve_or_create_encounter(self, pid: PatientId) -> str:
+        await asyncio.sleep(0)
+        return "42"
+
+    async def create_vital(
+        self, pid: PatientId, eid: str, vital: VitalWrite, *, idempotency_key: str | None = None
+    ) -> CommittedWrite:
+        from copilot.fhir.write_client import OpenEmrWriteError
+
+        self.attempts += 1
+        self.keys_seen.append(idempotency_key)
+        if self._gate is not None:
+            # Passes only if every racing key is inside its POST simultaneously.
+            await self._gate.wait()
+        # The in-flight window a double-clicked second confirm lands in.
+        await asyncio.sleep(0.02)
+        if self.attempts <= self._fail_times:
+            raise OpenEmrWriteError("simulated transient failure", status_code=500)
+        self._next_id += 1
+        return CommittedWrite(
+            resource_kind=WriteKind.vital,
+            new_id=f"vid-{self._next_id}",
+            encounter_id=str(eid),
+            committed_at=utcnow(),
+        )
+
+
+def _service() -> WriteService:
+    """A real ``WriteService`` on a fresh store — no route, no TestClient."""
+    from copilot.config import get_settings
+    from copilot.writeback.service import IdempotencyStore
+
+    return WriteService(get_settings(), idempotency=IdempotencyStore())
+
+
+def _candidate(key: str, *, value: float = 72) -> WriteCandidate:
+    return WriteCandidate(
+        kind=WriteKind.vital,
+        patient_id=PatientId(value=PID),
+        clinician_id=ClinicianId(value=CLIN),
+        idempotency_key=key,
+        vital=VitalWrite(metric=WritableMetric.heart_rate, value=value, unit="bpm"),
+    )
+
+
+async def _commit(svc: WriteService, candidate: WriteCandidate) -> CommittedWrite:
+    return await svc.commit(
+        clinician_id=ClinicianId(value=CLIN),
+        patient_id=PatientId(value=PID),
+        candidate=candidate,
+        idempotency_key=candidate.idempotency_key,
+    )
+
+
+def _use(monkeypatch: pytest.MonkeyPatch, racer: _RacingWriter) -> None:
+    """Point the service at ``racer`` (overrides the autouse ``writer`` double)."""
+    monkeypatch.setattr(WriteService, "_write_client", lambda self: racer)
+    monkeypatch.setattr(WriteService, "_read_client", lambda self: _FakeReader())
+
+
+class TestConcurrentConfirm:
+    async def test_concurrent_double_confirm_sends_exactly_one_write(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two overlapping confirms of one key ⇒ ONE append, one shared proof.
+
+        The append-only chart cannot un-write a duplicate (only end-date it), so
+        the second confirm must observe the first, never race it.
+        """
+        racer = _RacingWriter()
+        _use(monkeypatch, racer)
+        svc, candidate = _service(), _candidate("k-race-1")
+
+        both = await asyncio.gather(_commit(svc, candidate), _commit(svc, candidate))
+
+        assert racer.attempts == 1, (
+            f"a double-clicked confirm must reach OpenEMR exactly once, sent {racer.attempts}"
+        )
+        # Consistent: the waiter replays the owner's proof, not a second record.
+        assert both[0].new_id == both[1].new_id == "vid-1"
+        assert both[0] == both[1]
+        assert racer.keys_seen == ["k-race-1"]
+
+    async def test_failed_first_attempt_does_not_brick_the_key(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A transient 500 must not make the key permanently unusable.
+
+        The claim is a reservation, not a tombstone: releasing it on failure is
+        what lets the physician's retry actually retry.
+        """
+        from copilot.fhir.write_client import OpenEmrWriteError
+
+        racer = _RacingWriter(fail_times=1)
+        _use(monkeypatch, racer)
+        svc, candidate = _service(), _candidate("k-retry-1")
+
+        with pytest.raises(OpenEmrWriteError):
+            await _commit(svc, candidate)
+
+        # Same key, fresh attempt — admitted, and it genuinely writes.
+        committed = await _commit(svc, candidate)
+        assert committed.new_id == "vid-1"
+        assert racer.attempts == 2, "the retry must reach OpenEMR, not replay a poisoned key"
+
+        # ...and the now-successful key is recorded: a third confirm replays it.
+        replayed = await _commit(svc, candidate)
+        assert replayed == committed
+        assert racer.attempts == 2
+
+    async def test_concurrent_waiter_shares_the_owners_failure(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A waiter on a failing write reports that failure — and only one POST.
+
+        The alternative (the waiter retrying on its own) would turn one
+        double-click into two appends against a server that may well have
+        applied the first despite the 500.
+        """
+        from copilot.fhir.write_client import OpenEmrWriteError
+
+        # Exactly one simulated failure: the pair share a single attempt, so if
+        # the waiter ever wrote on its own, that second POST would *succeed* and
+        # the ``attempts == 1`` assertion below would catch it.
+        racer = _RacingWriter(fail_times=1)
+        _use(monkeypatch, racer)
+        svc, candidate = _service(), _candidate("k-race-fail")
+
+        outcomes = await asyncio.gather(
+            _commit(svc, candidate), _commit(svc, candidate), return_exceptions=True
+        )
+
+        assert racer.attempts == 1, "a failing write must still be attempted only once"
+        assert all(isinstance(o, OpenEmrWriteError) for o in outcomes)
+        # The key survived the failure: the next confirm still writes.
+        committed = await _commit(svc, candidate)
+        assert committed.new_id == "vid-1"
+        assert racer.attempts == 2
+
+    async def test_different_keys_are_not_serialized_against_each_other(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Distinct keys write concurrently — the guard is per-key, not global.
+
+        A barrier, not a stopwatch: both POSTs must be in flight *at the same
+        time* to pass it. One global lock (or a lock held across the await) makes
+        the second POST wait for the first to finish, the barrier never fills,
+        and this times out instead of flaking.
+        """
+        gate = asyncio.Barrier(2)
+        racer = _RacingWriter(gate=gate)
+        _use(monkeypatch, racer)
+        svc = _service()
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                _commit(svc, _candidate("k-alpha", value=72)),
+                _commit(svc, _candidate("k-beta", value=81)),
+            ),
+            timeout=5,
+        )
+
+        assert racer.attempts == 2, "two distinct keys are two distinct writes"
+        assert sorted(r.new_id for r in results) == ["vid-1", "vid-2"]
+        assert sorted(k or "" for k in racer.keys_seen) == ["k-alpha", "k-beta"]
+
+    async def test_sequential_double_confirm_still_replays(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pre-existing sequential contract is unchanged by the single-flight."""
+        racer = _RacingWriter()
+        _use(monkeypatch, racer)
+        svc, candidate = _service(), _candidate("k-seq-1")
+
+        first = await _commit(svc, candidate)
+        second = await _commit(svc, candidate)
+
+        assert racer.attempts == 1
+        assert first == second
+        assert first.new_id == "vid-1"
+
+    async def test_a_hung_write_blocks_only_its_own_key(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wedged POST must not deadlock every other key.
+
+        The failure this guards against is a global mutex held across an
+        unbounded await: one hung upstream call and no physician can confirm
+        anything, for any patient.
+        """
+        hung = asyncio.Event()  # never set — this write never returns
+
+        class _HungWriter(_RacingWriter):
+            async def create_vital(
+                self,
+                pid: PatientId,
+                eid: str,
+                vital: VitalWrite,
+                *,
+                idempotency_key: str | None = None,
+            ) -> CommittedWrite:
+                self.attempts += 1
+                if idempotency_key == "k-hung":
+                    await hung.wait()
+                return await super().create_vital(pid, eid, vital, idempotency_key=idempotency_key)
+
+        racer = _HungWriter()
+        _use(monkeypatch, racer)
+        svc = _service()
+
+        stuck = asyncio.create_task(_commit(svc, _candidate("k-hung")))
+        await asyncio.sleep(0.01)  # let it reach the wedged POST and hold its claim
+
+        # A different key sails past the hung one.
+        healthy = await asyncio.wait_for(_commit(svc, _candidate("k-healthy")), timeout=5)
+        assert healthy.new_id == "vid-1"
+
+        assert not stuck.done()
+        stuck.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stuck

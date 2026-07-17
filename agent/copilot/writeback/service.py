@@ -27,10 +27,11 @@ Fail-closed on the value, fail-open on the trail:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from functools import lru_cache
 from typing import Any
 
@@ -80,25 +81,119 @@ class WriteInputError(Exception):
 
 
 class IdempotencyStore:
-    """Process-local registry of committed idempotency keys → ``CommittedWrite``.
+    """Single-flight registry of idempotency keys → ``CommittedWrite``, per process.
 
-    Guards against a double-clicked / retried confirm creating a duplicate
-    append: the second commit of a key replays the first ``CommittedWrite``
-    instead of writing again. Phase 1 keeps this in-process (a bedside demo runs
-    one worker); a restart forgets keys, which is safe because the underlying
-    OpenEMR write is append-only — a re-confirm after a restart would at worst
-    create one more record dated now, never overwrite a prior value. A durable
-    store is a Phase-2+ concern.
+    Deduplicates a double-clicked / retried confirm: the first caller to claim a
+    key owns the write, a *concurrent* second caller awaits that same outcome
+    rather than issuing its own append, and a later caller replays the recorded
+    result. The claim happens **before** the write, not after it — see
+    ``run_once``, which is the only correct way in.
+
+    **In-process only — this is not a distributed guard, and cannot become one
+    by wishing.** It holds no lease that anything outside this interpreter can
+    see, so it does *not* survive multiple uvicorn workers, multiple replicas,
+    or a restart: two processes will each admit one write for the same key and
+    the chart gets two identical rows. Nothing downstream saves us — OpenEMR
+    does not implement idempotency keys (the ``Idempotency-Key`` header
+    ``write_client`` sends is advisory; no OpenEMR route reads it), so this
+    store is the *only* dedupe in the system.
+
+    That is sufficient today **only** because the container serves on one
+    uvicorn worker — and note it is one by *default*, not by explicit pin: the
+    ``Dockerfile`` ``CMD`` simply passes no ``--workers`` flag. Adding
+    ``--workers``/``--reload``, a second replica, or any external process that
+    can confirm a write silently invalidates the guarantee below with no test
+    turning red. Scaling past one worker requires a shared claim (a Redis key or
+    a uniquely-indexed DB row on ``idempotency_key``) *first*.
+
+    A restart forgetting keys is the mild case: the underlying OpenEMR write is
+    append-only, so a re-confirm after a restart would at worst create one more
+    record dated now, never overwrite a prior value. Since writes cannot be
+    deleted (only end-dated), a duplicate is a chart-correctness problem, not a
+    data-loss one.
     """
 
     def __init__(self) -> None:
         self._committed: dict[str, CommittedWrite] = {}
+        self._in_flight: dict[str, asyncio.Future[CommittedWrite]] = {}
 
     def get(self, key: str) -> CommittedWrite | None:
+        """Peek at a *settled* result — ``None`` while in flight or unknown.
+
+        A read-only accessor. It is deliberately not a gate: checking this and
+        then writing is the TOCTOU this class exists to prevent. Use
+        ``run_once``.
+        """
         return self._committed.get(key)
 
     def put(self, key: str, value: CommittedWrite) -> None:
+        """Record a confirmed result for later replay."""
         self._committed[key] = value
+
+    async def run_once(
+        self, key: str, commit: Callable[[], Awaitable[CommittedWrite]]
+    ) -> CommittedWrite:
+        """Run ``commit`` at most once per key; concurrent callers share one outcome.
+
+        The claim is atomic *across the awaits inside* ``commit``: the lookup and
+        the in-flight reservation happen in one synchronous step with no
+        ``await`` between them, so on asyncio's single thread no other confirm
+        can interleave and claim the same key. The reservation is therefore in
+        place **before** the HTTP POST begins rather than after it returns —
+        which is precisely what a read-then-write-then-record cannot promise.
+
+        Per key, in order:
+
+        - **settled** → replay the recorded ``CommittedWrite``; ``commit`` is
+          never called.
+        - **in flight** → ``await`` the owner's outcome and return *that same*
+          ``CommittedWrite``. A waiter never reports failure for a write that
+          landed, and never issues a second append.
+        - **free** → this caller owns the write.
+
+        A **failure does not poison the key.** The reservation is dropped and the
+        error is raised to the owner *and* to any concurrent waiter, so a later
+        retry with the same key is admitted and genuinely re-attempts: one
+        transient 500 must never brick a physician's confirm permanently. The
+        trade-off is deliberate and worth naming — only a *confirmed* write is
+        recorded, so an append OpenEMR performed but failed to acknowledge stays
+        retryable, and retrying it can duplicate. We accept a duplicate risk on
+        an already-ambiguous write over a key that can never be used again.
+
+        Granularity is per key: a hung POST parks only its own key's waiters, and
+        every other key proceeds concurrently. No lock is held across the await —
+        waiters park on that key's future, not on a shared mutex — so a wedged
+        write cannot deadlock the store.
+        """
+        recorded = self._committed.get(key)
+        if recorded is not None:
+            return recorded
+
+        in_flight = self._in_flight.get(key)
+        if in_flight is not None:
+            # ``shield`` so a waiter that is itself cancelled (client hung up)
+            # cancels only its own wait — never the shared future the owner is
+            # still on its way to settling for everyone else.
+            return await asyncio.shield(in_flight)
+
+        # --- the claim. Synchronous from the lookups above to the insert below:
+        # no await, so this whole sequence is one uninterruptible event-loop step.
+        future: asyncio.Future[CommittedWrite] = asyncio.get_running_loop().create_future()
+        future.add_done_callback(_consume_future_exception)
+        self._in_flight[key] = future
+        try:
+            committed = await commit()
+        except BaseException as exc:
+            # Release the key first: a failed attempt must leave it retryable.
+            self._in_flight.pop(key, None)
+            if not future.done():  # a cancelled waiter may already have settled it
+                future.set_exception(exc)
+            raise
+        self._in_flight.pop(key, None)
+        self.put(key, committed)
+        if not future.done():
+            future.set_result(committed)
+        return committed
 
 
 @lru_cache(maxsize=1)
@@ -221,13 +316,22 @@ class WriteService:
         This is the explicit physician confirm — the only path that writes.
         Re-runs the same deterministic verification and refuses (``WriteInputError``
         → 400) if the candidate would now be blocked or its key does not match the
-        confirm URL. A key already committed replays its ``CommittedWrite`` with no
-        second write (idempotent). Otherwise builds the guarded write client
+        confirm URL. Otherwise builds the guarded write client
         (``build_write_client`` raises ``WritebackDisabledError`` → route 503 when
         disabled), commits, audits ``write_committed`` (carrying the candidate's
         ``entry_mode`` — ``agent_proposed_physician_confirmed`` for the agent
         path), and read-backs (fail-open); any ``OpenEmrWriteError`` is audited
         ``write_failed`` and re-raised (→ 502).
+
+        The whole append runs under ``IdempotencyStore.run_once``, so the key is
+        claimed *before* the POST rather than recorded after it: a re-confirm
+        replays the first ``CommittedWrite`` and a **concurrent** second confirm
+        (a double-click — the two arrive interleaved, not one after the other)
+        awaits the first's outcome instead of racing it into a duplicate append.
+        Verification stays outside the claim: a blocked or mismatched candidate
+        is rejected on its own merits and must never reserve a key. See
+        ``run_once`` for the failure semantics — a failed write leaves the key
+        retryable — and for why this guard is in-process only.
         """
         if candidate.idempotency_key != idempotency_key:
             raise WriteInputError("idempotency key does not match the confirmed candidate")
@@ -238,39 +342,36 @@ class WriteService:
         if verdict.blocked:
             raise WriteInputError("write candidate failed re-verification", details=verdict.errors)
 
-        existing = self._idempotency.get(idempotency_key)
-        if existing is not None:
-            return existing  # idempotent replay — no second write
+        async def _commit_once() -> CommittedWrite:
+            async with self._obs.span(
+                "writeback.commit", patient_id=patient_id.value, clinician_id=clinician_id.value
+            ):
+                try:
+                    async with self._write_client() as writer:
+                        committed = await self._perform_write(writer, patient_id, candidate)
+                except OpenEmrWriteError:
+                    await self._record_write_audit(
+                        "write_failed",
+                        clinician_id,
+                        patient_id,
+                        resource_id=None,
+                        mode=candidate.entry_mode,
+                        source=candidate.source,
+                    )
+                    raise
 
-        async with self._obs.span(
-            "writeback.commit", patient_id=patient_id.value, clinician_id=clinician_id.value
-        ):
-            try:
-                async with self._write_client() as writer:
-                    committed = await self._perform_write(writer, patient_id, candidate)
-            except OpenEmrWriteError:
                 await self._record_write_audit(
-                    "write_failed",
+                    "write_committed",
                     clinician_id,
                     patient_id,
-                    resource_id=None,
+                    resource_id=committed.new_id,
                     mode=candidate.entry_mode,
                     source=candidate.source,
                 )
-                raise
+                await self._read_back(patient_id, candidate, committed)
+                return committed
 
-            await self._record_write_audit(
-                "write_committed",
-                clinician_id,
-                patient_id,
-                resource_id=committed.new_id,
-                mode=candidate.entry_mode,
-                source=candidate.source,
-            )
-            await self._read_back(patient_id, candidate, committed)
-
-        self._idempotency.put(idempotency_key, committed)
-        return committed
+        return await self._idempotency.run_once(idempotency_key, _commit_once)
 
     # --- parsing ----------------------------------------------------------
 
@@ -596,6 +697,20 @@ class WriteService:
 def _new_idempotency_key() -> str:
     """A fresh client-facing idempotency key (URL-safe, well under 128 chars)."""
     return secrets.token_urlsafe(24)
+
+
+def _consume_future_exception(future: asyncio.Future[CommittedWrite]) -> None:
+    """Mark a settled claim-future's exception retrieved, silencing asyncio noise.
+
+    The shared future is only a hand-off to concurrent waiters: the owner always
+    raises the failure itself, and each waiter re-raises it. When a claim fails
+    with nobody waiting — the common case — nothing would ever call
+    ``.exception()``, and asyncio would log a spurious "exception was never
+    retrieved" at GC. Retrieving it here marks it consumed. It is never
+    swallowed: the owner is raising this very exception up its own stack.
+    """
+    if not future.cancelled():
+        future.exception()
 
 
 def _verify_candidate(candidate: AnyWriteCandidate) -> WriteVerdict:
