@@ -38,7 +38,7 @@ if str(_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(_AGENT_DIR))
 
 
-async def _run(corpus_dir: Path | None) -> None:
+async def _run(corpus_dir: Path | None, force: bool) -> None:
     import copilot.memory.models  # noqa: F401  (registers every table on Base.metadata)
     from copilot.config import get_settings
     from copilot.memory.db import Base, get_engine, session_scope
@@ -56,7 +56,9 @@ async def _run(corpus_dir: Path | None) -> None:
         # session_scope commits on success and rolls back on error, so a failed
         # run never leaves a half-ingested document behind.
         async with session_scope() as session:
-            report = await ingest_corpus(session, embedder, corpus_dir=corpus_dir)
+            report = await ingest_corpus(
+                session, embedder, corpus_dir=corpus_dir, force=force
+            )
     finally:
         await get_engine().dispose()
 
@@ -86,8 +88,19 @@ def main() -> None:
         default=None,
         help="Corpus directory to ingest (default: agent/corpus/).",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Delete each discovered source's existing rows and re-ingest. REQUIRED "
+            "after an embedder change: stored vectors are incomparable with queries "
+            "embedded by a different embedder, and the default skip-if-registered "
+            "makes a plain re-ingest a SILENT NO-OP. Safe — the corpus is "
+            "reproducible from the repo."
+        ),
+    )
     args = parser.parse_args()
-    asyncio.run(_run(args.corpus_dir))
+    asyncio.run(_run(args.corpus_dir, args.force))
 
 
 if __name__ == "__main__":

@@ -675,6 +675,25 @@ class MemoryRepository:
         )
         return result.scalar_one_or_none()
 
+    async def delete_guideline_document_by_source(self, source: str) -> int:
+        """Delete a guideline document and its chunks; return the chunks removed.
+
+        Backs the ingest ``--force`` rebuild. Deliberately narrow: guideline rows are
+        the one class of agent-owned data that is **reproducible from the repo** (the
+        corpus is committed and the ingest is deterministic), so rebuilding them
+        destroys nothing irreplaceable — unlike extracted facts or audit rows, which
+        are append-only and must never be deleted. A no-op when the source is absent.
+        """
+        document = await self.get_guideline_document_by_source(source)
+        if document is None:
+            return 0
+        chunks = await self.get_guideline_chunks(document.id)
+        for chunk in chunks:
+            await self._session.delete(chunk)
+        await self._session.delete(document)
+        await self._session.flush()
+        return len(chunks)
+
     async def create_guideline_chunk(
         self,
         *,

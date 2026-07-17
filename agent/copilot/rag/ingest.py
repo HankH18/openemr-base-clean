@@ -206,6 +206,7 @@ async def ingest_corpus(
     embedder: Embedder,
     *,
     corpus_dir: Path | None = None,
+    force: bool = False,
 ) -> IngestReport:
     """Chunk, embed, and persist the corpus; already-ingested sources are skipped.
 
@@ -213,10 +214,20 @@ async def ingest_corpus(
     Embeddings are computed once per document (one batched ``embed`` call) and
     persisted on each ``guideline_chunk`` row, so a later run never re-embeds
     existing content. The caller owns the transaction (commit/rollback).
+
+    ``force`` deletes each discovered source's existing document + chunks before
+    re-ingesting it. This exists because the skip-if-registered default makes a
+    re-ingest a **silent no-op**, which is a trap whenever the *embedder* changes:
+    vectors written by the old embedder are incomparable with queries embedded by
+    the new one, so the corpus keeps scoring as noise and nothing says why. Safe
+    by design — the corpus is reproducible from the repo (see
+    ``discover_corpus``), so rebuilding these rows destroys nothing irreplaceable.
     """
     repository = MemoryRepository(session)
     results: list[DocumentResult] = []
     for document in discover_corpus(corpus_dir):
+        if force:
+            await repository.delete_guideline_document_by_source(document.source)
         if await _document_exists(session, document.source):
             results.append(
                 DocumentResult(
