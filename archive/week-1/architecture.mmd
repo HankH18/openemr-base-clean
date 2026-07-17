@@ -1,0 +1,44 @@
+flowchart TB
+    subgraph Client["Client (in OpenEMR)"]
+        UI["React chat panel<br/>(SMART App Launch, module tab)"]
+    end
+    subgraph Agent["Agent service — Python / FastAPI"]
+        API["copilot-api<br/>chat SSE · rounds · /health · /ready"]
+        WORK["copilot-worker<br/>scheduler · poller · synthesis"]
+        VERIF["verification<br/>citation + value gate · domain rules · fail-closed"]
+        FC["fhir-client<br/>async httpx · OAuth actors"]
+    end
+    subgraph AgentData["Agent state"]
+        PG[("PostgreSQL 16<br/>memory files (JSONB) · sync · cursor<br/>last-seen · conversation · audit")]
+        REDIS[["Redis 7 — pub/sub<br/>(deferred: soft-preempt)"]]
+    end
+    subgraph EMR["OpenEMR 8.2 fork (system of record)"]
+        FHIR["FHIR R4 US Core / REST API"]
+        OAUTH["OAuth2 · SMART App Launch<br/>+ SMART Backend Services"]
+        MYSQL[("MySQL / MariaDB<br/>281 tables · Provenance")]
+    end
+    subgraph Obs["Observability & LLM"]
+        LF["Langfuse<br/>traces · latency · tokens · cost"]
+        CLAUDE["Claude — Anthropic API"]
+    end
+
+    UI -->|"HTTPS / SSE"| API
+    API --> VERIF
+    WORK --> VERIF
+    API --> FC
+    WORK --> FC
+    VERIF -->|"live re-fetch by ID"| FC
+    FC -->|"FHIR reads (physician token)"| FHIR
+    FC -->|"count query _lastUpdated (system scope)"| FHIR
+    FC -->|"token"| OAUTH
+    FHIR --- MYSQL
+    OAUTH --- MYSQL
+    API -->|"SQL"| PG
+    WORK -->|"SQL"| PG
+    WORK -.->|"publish preempt"| REDIS
+    REDIS -.->|"interrupt"| API
+    API -->|"LLM calls"| CLAUDE
+    WORK -->|"LLM calls"| CLAUDE
+    API -->|"traces (correlation ID)"| LF
+    WORK -->|"traces (correlation ID)"| LF
+    VERIF -->|"pass/fail metric"| LF

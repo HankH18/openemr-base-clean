@@ -1,0 +1,392 @@
+# AgentForge — single-VM deployment stack for the OpenEMR fork.
+#
+# Slimmed down from docker/development-easy: drops selenium, phpmyadmin,
+# couchdb, openldap, mailpit, xdebug, the composer-token dev affordance,
+# and the source bind-mounts. The baked image supplies the code, and
+# named volumes persist the DB / uploaded documents / logs across
+# restarts.
+#
+# Secrets come from a `.env` file next to this compose file. See
+# `.env.deploy.example` for the required keys; DEPLOY.md walks through
+# the exact steps on a fresh Ubuntu 22.04 DigitalOcean droplet.
+#
+# Port model:
+#   - openemr publishes 80:80 only. TLS/Caddy is a follow-up (Task 6).
+#   - mariadb is NOT published — internal-only, reached via
+#     `docker compose exec mariadb ...`. Publishing 3306 on a public VM
+#     is the exact class of misconfig the audit's security section flags.
+
+services:
+  mariadb:
+    image: mariadb:11.8.8@sha256:be1ef4fe5f14589325c08a41c76334097ce66c86264b75e1d28342c742782a61
+    platform: linux/amd64
+    restart: always
+    command:
+      - mariadbd
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_DATABASE: openemr
+      MYSQL_USER: openemr
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set in .env}
+    volumes:
+      - db:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/healthcheck.sh
+        - --su-mysql
+        - --connect
+        - --innodb_initialized
+      start_period: 1m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+
+  openemr:
+    image: openemr/openemr:flex@sha256:1d2c8345a320cf2985c9d02138951267739ec498559ca724b3d5397e4568482e
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    # Ports intentionally NOT published — the `caddy` service is the sole
+    # public ingress on :80 and reverse-proxies the agent. OpenEMR stays
+    # reachable to the agent over the internal `agent` network (the agent
+    # calls http://openemr), so nothing needs OpenEMR published. Publishing
+    # :80 here would collide with Caddy. (443 was never published — no cert.)
+    # ports:
+    #   - "80:80"
+    environment:
+      # HOST_UID/HOST_GID: the entrypoint adopts the host uid for apache.
+      # Defaults to 1000 which matches most fresh Ubuntu VMs (root=0, first
+      # sudo user is 1000). Override in .env if the droplet is unusual.
+      HOST_UID: "${HOST_UID:-1000}"
+      HOST_GID: "${HOST_GID:-1000}"
+      MYSQL_HOST: mariadb
+      MYSQL_PORT: 3306
+      MYSQL_ROOT_PASS: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD must be set in .env}
+      MYSQL_USER: openemr
+      MYSQL_PASS: ${MYSQL_PASSWORD:?MYSQL_PASSWORD must be set in .env}
+      OE_USER: ${OE_USER:-admin}
+      OE_PASS: ${OE_PASS:?OE_PASS must be set in .env — do NOT ship with the default}
+      # Public URL — must match how users (and OAuth clients) reach the
+      # host. SMART / OAuth redirect-URI validation breaks silently if
+      # this is wrong.
+      OPENEMR_SETTING_site_addr_oath: ${SITE_ADDR_OATH:?SITE_ADDR_OATH must be set (e.g. http://your-droplet-ip)}
+      # API surface required by the agent's data path + the Task 10
+      # keystone smoke test.
+      OPENEMR_SETTING_rest_api: 1
+      OPENEMR_SETTING_rest_fhir_api: 1
+      OPENEMR_SETTING_rest_portal_api: 1
+      OPENEMR_SETTING_rest_system_scopes_api: 1
+      OPENEMR_SETTING_oauth_password_grant: 3
+      OPENEMR_DOCKER_ENV_TAG: deploy-single-vm
+    volumes:
+      - sites:/var/www/localhost/htdocs/openemr/sites
+      - assets:/var/www/localhost/htdocs/openemr/public/assets
+      - logs:/var/log
+      # AgentForge OAuth2/SMART login restyle. The deployed OpenEMR is the
+      # stock openemr/openemr:flex image (not our fork's PHP), so ship the
+      # custom asset hook by bind-mounting our repo's custom/assets over the
+      # image's webroot. Header.php autoloads custom/assets/custom.yaml ->
+      # css/agentforge-login.css site-wide (read-only; OpenEMR only reads it).
+      - ./custom/assets:/var/www/localhost/htdocs/openemr/custom/assets:ro
+    networks:
+      - internal
+      # `agent` is reserved so the Task 7 Python agent can join later
+      # without a compose rewrite.
+      - agent
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/curl
+        - --fail
+        - --insecure
+        - --location
+        - --show-error
+        - --silent
+        - https://localhost/meta/health/readyz
+      start_period: 3m
+      start_interval: 10s
+      interval: 1m
+      timeout: 5s
+      retries: 3
+
+  # ---- Agent-owned Postgres (agent state — NOT OpenEMR data) ----------
+  #
+  # Encrypted-at-rest posture in production comes from the underlying disk
+  # layer (DO block volume encryption). Postgres is not exposed on the host.
+  agent-postgres:
+    # pgvector-capable Postgres 16: the guideline-RAG index stores dense vectors
+    # in a `vector(1024)` column and needs the `vector` extension available at
+    # deploy time (migration 0006 enables it). The stock postgres image lacks it.
+    image: pgvector/pgvector:pg16
+    platform: linux/amd64
+    restart: always
+    environment:
+      POSTGRES_USER: copilot
+      POSTGRES_PASSWORD: ${AGENT_POSTGRES_PASSWORD:?AGENT_POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: copilot
+    volumes:
+      - agent_db:/var/lib/postgresql/data
+    networks:
+      - agent
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U copilot -d copilot"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---- copilot-api (Clinical Co-Pilot agent) --------------------------
+  #
+  # Reads OpenEMR **only** via FHIR/REST. Two OAuth actors are configured
+  # via env; secrets injected at runtime (see .env.deploy.example).
+  # Not exposed publicly for MVP — reachable from OpenEMR's `agent`
+  # network; a reverse proxy will front it once the chat UI ships.
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    platform: linux/amd64
+    restart: always
+    # Blast radius, not a tuning knob. Rasterization allocates width*height*4 bytes
+    # per page, and a 546-BYTE pdf declaring a 200x200in page renders 40000x40000 at
+    # the default 200 DPI -- 1.6 gigapixel, 6.4 GB requested, measured 3.62 GB peak
+    # RSS against the shipped function. Unbounded, that OOM-kills this container AND
+    # takes the droplet's other services (openemr, mariadb, caddy, langfuse) with it,
+    # because the kernel picks the victim, not us.
+    #
+    # raster.py now rejects oversized geometry before allocating, so this limit
+    # should never be reached. It is here for the case where that guard is wrong:
+    # with it, the kernel kills only this container and `restart: always` brings it
+    # back; without it, one bad upload is a whole-host outage.
+    #
+    # 1g against a measured 86 MiB idle and tens of MB for a normal letter page at
+    # 200 DPI -- ~12x headroom. Raise it if a real deployment legitimately needs
+    # bigger scans (and raise the raster caps to match; they are the real gate).
+    mem_limit: 1g
+    depends_on:
+      agent-postgres:
+        condition: service_healthy
+      openemr:
+        condition: service_healthy
+    environment:
+      COPILOT_DATABASE_URL: postgresql+psycopg://copilot:${AGENT_POSTGRES_PASSWORD:?}@agent-postgres:5432/copilot
+      COPILOT_FHIR_BASE_URL: http://openemr/apis/default/fhir
+      COPILOT_OAUTH_TOKEN_URL: http://openemr/oauth2/default/token
+      # The token exchange is a server-side back-channel, so it stays on the
+      # internal http://openemr host (OpenEMR does no host validation there).
+      # The AUTHORIZE url, by contrast, is where the physician's BROWSER is sent,
+      # so under SMART login it must be the PUBLIC https origin (proxied to
+      # OpenEMR by Caddy's /oauth2/* route). Defaults to the internal URL so the
+      # bare-IP demo (auth_mode=disabled) is unchanged.
+      COPILOT_OAUTH_AUTHORIZE_URL: ${COPILOT_OAUTH_AUTHORIZE_URL:-http://openemr/oauth2/default/authorize}
+      COPILOT_SMART_APP_CLIENT_ID: ${SMART_APP_CLIENT_ID:-}
+      # Secret for the confidential SMART (login) client — client_secret_basic
+      # auth on the token exchange. Secrets-manager/.env only; never committed.
+      COPILOT_SMART_APP_CLIENT_SECRET: ${SMART_APP_CLIENT_SECRET:-}
+      COPILOT_BACKEND_SERVICES_CLIENT_ID: ${BACKEND_SERVICES_CLIENT_ID:-}
+      COPILOT_BACKEND_SERVICES_SCOPES: ${BACKEND_SERVICES_SCOPES:-}
+      COPILOT_BACKEND_SERVICES_PRIVATE_KEY_PATH: /run/secrets/backend-key.pem
+      # The JWT-assertion audience must be the issuer OpenEMR advertises — i.e.
+      # SITE_ADDR_OATH's token endpoint — NOT the internal http://openemr URL the
+      # agent actually POSTs to. A mismatch yields invalid_client.
+      COPILOT_OAUTH_AUDIENCE: ${SITE_ADDR_OATH:?}/oauth2/default/token
+      # Maps the agent's integer patient ids to OpenEMR FHIR Patient UUIDs; set to
+      # the seed's scheme when demoing on seeded data, else leave empty.
+      COPILOT_FHIR_PATIENT_ID_TEMPLATE: ${FHIR_PATIENT_ID_TEMPLATE:-}
+      COPILOT_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COPILOT_ANTHROPIC_MODEL_SYNTHESIS: ${ANTHROPIC_MODEL_SYNTHESIS:-claude-sonnet-5}
+      COPILOT_ANTHROPIC_MODEL_GATING: ${ANTHROPIC_MODEL_GATING:-claude-haiku-4-5-20251001}
+      COPILOT_POLLER_ENABLED: ${POLLER_ENABLED:-false}
+      # Week-2 multimodal flags. Defaults match copilot/config.py, so an unset
+      # .env leaves behavior byte-for-byte unchanged. CHAT_GRAPH_ENABLED routes
+      # serve-time chat through the supervisor/worker/critic graph. Voyage/Cohere
+      # blank ⇒ deterministic keyless stubs for embeddings/rerank; set them for
+      # real hybrid RAG + rerank.
+      COPILOT_CHAT_GRAPH_ENABLED: ${COPILOT_CHAT_GRAPH_ENABLED:-false}
+      # Ingestion kill switch — on by default (ingestion is the Week-2 capability);
+      # set false to make POST /v1/documents return 503 without redeploying code.
+      COPILOT_DOCUMENT_INGESTION_ENABLED: ${COPILOT_DOCUMENT_INGESTION_ENABLED:-true}
+      COPILOT_VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      COPILOT_COHERE_API_KEY: ${COHERE_API_KEY:-}
+      # Langfuse (observability). Cloud by default (set the keys in .env). To
+      # keep PHI-adjacent traces on the droplet, bring up the self-hosted
+      # services below with `--profile observability` and set
+      # LANGFUSE_HOST=http://langfuse:3000 (+ keys minted in that UI) in .env.
+      # All three blank ⇒ tracing is a silent no-op (unchanged default).
+      COPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      COPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      COPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Per-physician SMART login + at-rest posture. All defaults below match
+      # copilot/config.py's defaults, so an unset .env leaves the container's
+      # config byte-for-byte identical to today (no login; identity from the
+      # request). Set them only when opting into HTTPS + SMART (see DEPLOY.md).
+      COPILOT_PUBLIC_BASE_URL: ${COPILOT_PUBLIC_BASE_URL:-}
+      COPILOT_AUTH_MODE: ${COPILOT_AUTH_MODE:-disabled}
+      COPILOT_SESSION_ENC_KEY: ${COPILOT_SESSION_ENC_KEY:-}
+      COPILOT_AUDIT_RETENTION_YEARS: ${COPILOT_AUDIT_RETENTION_YEARS:-6}
+      COPILOT_CHAT_RETENTION_DAYS: ${COPILOT_CHAT_RETENTION_DAYS:-}
+      COPILOT_SESSION_IDLE_SECONDS: ${COPILOT_SESSION_IDLE_SECONDS:-}
+      COPILOT_SESSION_ABSOLUTE_SECONDS: ${COPILOT_SESSION_ABSOLUTE_SECONDS:-}
+      COPILOT_TLS_VERIFY: ${COPILOT_TLS_VERIFY:-}
+      # Ingestion limits — the guards that stop a 544-BYTE pdf declaring a 60x60in
+      # page from rendering to 1.1 GB and OOM-killing the box. raster.py's own docs
+      # say "raise it on a larger box", which was impossible: Settings defined these
+      # and compose never passed them, so 27 of 53 settings were unreachable. A knob
+      # an operator cannot reach is not a knob.
+      COPILOT_OCR_DPI: ${COPILOT_OCR_DPI:-}
+      COPILOT_RASTER_MAX_PAGE_PIXELS: ${COPILOT_RASTER_MAX_PAGE_PIXELS:-}
+      COPILOT_RASTER_MAX_PAGES: ${COPILOT_RASTER_MAX_PAGES:-}
+      COPILOT_VISION_MAX_PAGES_PER_CALL: ${COPILOT_VISION_MAX_PAGES_PER_CALL:-}
+      # Keyed digest for the patient pseudonym on Langfuse spans. UNSET IS SAFE and
+      # stays the default: with no key the backend DROPS patient_id rather than emit
+      # a per-process id that changes on restart (an operator grouping by that reads
+      # one patient as two). Setting it trades nothing away — the third party still
+      # never sees a raw id — it only makes traces groupable by patient across
+      # restarts. Until now it could not be set here at all, so the deployment got
+      # the safe behaviour by accident rather than by choice.
+      COPILOT_OBSERVABILITY_PSEUDONYM_KEY: ${COPILOT_OBSERVABILITY_PSEUDONYM_KEY:-}
+    volumes:
+      # Backend Services client private key (PEM). Create it BEFORE `up`-ing the
+      # agent (see DEPLOY.md §10): scripts/register_backend_client.py writes it to
+      # ./secrets/backend-key.pem. Never bake into the image or commit it.
+      - ${BACKEND_KEY_PATH:-./secrets/backend-key.pem}:/run/secrets/backend-key.pem:ro
+    networks:
+      - agent
+
+  # ---- Self-hosted Langfuse (OPT-IN: `--profile observability`) -------
+  #
+  # Keeps PHI-adjacent trace data (patient/clinician ids in span metadata)
+  # on the org's own infra instead of Langfuse Cloud. Both services are gated
+  # behind the `observability` profile, so a plain `docker compose up` does
+  # NOT start them — the default bare-IP demo is unchanged, and no unset-secret
+  # crash-loop or idle resource use occurs. Opt in explicitly:
+  #
+  #   docker compose -f docker-compose.deploy.yml --env-file .env \
+  #     --profile observability up -d
+  #
+  # then set LANGFUSE_HOST=http://langfuse:3000 (+ the public/secret keys you
+  # mint in the self-hosted UI) in .env and recreate the agent. Full runbook:
+  # agent/LANGFUSE_SETUP.md ("Self-hosted (droplet)").
+  #
+  # Pinned to a Langfuse v2 server image to match the SDK pin
+  # (langfuse>=2.55,<3, see pyproject.toml). v2 needs only Postgres. v3
+  # additionally requires ClickHouse + Redis + object storage (MinIO) and is a
+  # separate, larger decision — do NOT bump the major here without adding them.
+  langfuse-postgres:
+    image: postgres:16-alpine
+    platform: linux/amd64
+    profiles: ["observability"]
+    restart: always
+    environment:
+      POSTGRES_USER: langfuse
+      # Empty default keeps `docker compose config` parsing without secrets.
+      # The postgres image REFUSES to initialize with an empty password, so a
+      # forgotten value fails loud at `--profile observability up` time rather
+      # than booting insecurely. Set it in .env before enabling the profile.
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:-}
+      POSTGRES_DB: langfuse
+    volumes:
+      # Separate volume — Langfuse trace data must NOT share agent-postgres.
+      - langfuse_db:/var/lib/postgresql/data
+    networks:
+      # Internal-only; NOT reachable from the broad `agent` network and never
+      # published to the host.
+      - observability
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  langfuse:
+    # Langfuse v2 (2.95.11) pinned by manifest-list digest for immutability,
+    # matching the digest-pin convention used for mariadb/openemr above.
+    image: langfuse/langfuse:2@sha256:85c278dcab96c15db94191a5c1664f85aba2d7fb6771a00e99681c902c4b7015
+    platform: linux/amd64
+    profiles: ["observability"]
+    restart: always
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD:-}@langfuse-postgres:5432/langfuse
+      # Set BOTH in .env before enabling the profile (`openssl rand -base64 32`
+      # each). Empty defaults keep `config` parsing; Langfuse refuses to start
+      # without them, so a forgotten value fails loud rather than insecurely.
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      SALT: ${SALT:-}
+      # UI origin. Default assumes SSH-tunnel-only access (recommended — no
+      # public ingress). If you later front the UI with Caddy, set
+      # LANGFUSE_NEXTAUTH_URL to that public https URL.
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3000}
+      TELEMETRY_ENABLED: "false"
+    networks:
+      # On `observability` to reach its own Postgres, and on `agent` so the
+      # agent can POST traces to http://langfuse:3000. The agent reaches the
+      # UI/API in-network at http://langfuse:3000 with no host publish needed.
+      - observability
+      - agent
+    # NO public ingress. To view the UI, bind the port to the droplet's
+    # LOOPBACK ONLY (never 0.0.0.0) by uncommenting the block below, recreate
+    # the service, then tunnel from your Mac:
+    #   ssh -L 3000:127.0.0.1:3000 root@<droplet-ip>   # then open http://localhost:3000
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+
+  # ---- caddy (public ingress) -----------------------------------------
+  #
+  # Sole public entrypoint. Serves the built React SPA (mounted from
+  # ./agent/web/dist) and reverse-proxies the agent's API (/v1/*, /health,
+  # /ready, /docs) to the internal agent:8000. A site-wide basic_auth guard
+  # (see ./Caddyfile) keeps the chat API — which spends the Anthropic budget —
+  # off the open internet.
+  #
+  # DEFAULT: plain HTTP on :80 at a bare IP (copy Caddyfile.example ->
+  # Caddyfile). :443 is ALSO published below so the OPT-IN domain/auto-HTTPS
+  # variant (copy Caddyfile.https.example -> Caddyfile, after a DNS A-record
+  # exists) can serve Let's Encrypt TLS + ACME with no compose change. Until
+  # you switch to the domain Caddyfile, :443 simply goes unused — publishing
+  # it is harmless and does not alter the running :80 demo.
+  caddy:
+    image: caddy:2-alpine
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      agent:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./agent/web/dist:/srv/dist:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - agent
+
+networks:
+  internal: {}
+  agent: {}
+  # Isolates the self-hosted Langfuse stack (opt-in `observability` profile).
+  # Only created when that profile is up; unused by the default demo.
+  observability: {}
+
+volumes:
+  db: {}
+  sites: {}
+  assets: {}
+  logs: {}
+  agent_db: {}
+  caddy_data: {}
+  caddy_config: {}
+  # Self-hosted Langfuse Postgres data (opt-in `observability` profile).
+  # Separate from agent_db — Langfuse trace data never shares agent-postgres.
+  langfuse_db: {}

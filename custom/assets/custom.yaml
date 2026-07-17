@@ -1,0 +1,14 @@
+---
+# AgentForge custom asset loader.
+#
+# Parsed by \OpenEMR\Core\Header::includeAsset AFTER config/config.yaml (same
+# structure as config.yaml), so an autoloaded stylesheet here wins the cascade
+# on every page — including the OAuth2 / SMART login. The stylesheet itself is
+# tightly scoped (body.bg-dark #userLogin ...) so only the login page changes.
+#
+# No core OpenEMR file is edited; this is upgrade-safe (see custom/assets/README).
+assets:
+    agentforge-login:
+        basePath: '%webroot%/custom/assets/'
+        link: css/agentforge-login.css
+        autoload: true

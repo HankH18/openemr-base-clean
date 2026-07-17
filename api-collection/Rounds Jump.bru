@@ -1,0 +1,24 @@
+meta {
+  name: Rounds Jump
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/rounds/jump
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "clinician_id": {{clinician_id}},
+    "patient_id": 102
+  }
+}
+
+docs {
+  POST /v1/rounds/jump — reposition the round's cursor to a patient already on
+  the list (reuses the summaries synthesized at start; no re-rank, no
+  re-synthesis). 404 if no active round or the patient is not on the list.
+}

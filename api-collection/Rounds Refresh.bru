@@ -1,0 +1,30 @@
+meta {
+  name: Rounds Refresh
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/rounds/refresh
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "clinician_id": {{clinician_id}}
+  }
+}
+
+docs {
+  POST /v1/rounds/refresh — force a change-gated re-sync of every patient on the
+  clinician's active rounding list (poll -> verify-at-synthesis -> score ->
+  persist) and report per patient. On-demand equivalent of the background
+  poller (the auto-scheduler is out of scope for this endpoint).
+
+  Response: { "results": [ {per-patient refresh result}, ... ] }.
+
+  Identity follows the auth-mode contract: disabled -> body clinician_id;
+  smart -> the af_session session cookie (401 without one, 403 if the body
+  clinician_id disagrees).
+}

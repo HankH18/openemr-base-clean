@@ -1,0 +1,38 @@
+meta {
+  name: Chat (grounded drill-down)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/chat
+  body: json
+  auth: none
+}
+
+headers {
+  ~X-Correlation-ID: demo-chat-001
+}
+
+body:json {
+  {
+    "clinician_id": {{clinician_id}},
+    "patient_id": {{patient_id}},
+    "message": "What is the patient's most recent potassium?"
+  }
+}
+
+docs {
+  POST /v1/chat — answer a grounded question about one patient. Every claim is
+  gated against a live FHIR re-fetch; an ungroundable question is WITHHELD
+  (fail-closed) rather than guessed.
+
+  Requires the clinician to have the patient on an active rounding list (call
+  "Rounds Start" first) or the request 403s: "Patient is not on your rounding
+  list".
+
+  Optional: add "conversation_id" to continue a thread. Response carries
+  "answer", "claims" (each with source_ref), "verification" {action, passed},
+  "conversation_id", "correlation_id". The X-Correlation-ID response header is
+  the Langfuse trace id.
+}

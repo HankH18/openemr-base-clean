@@ -1,0 +1,85 @@
+# logs
+/logs
+
+# environment vars
+.env
+.env.local
+# agent local secrets (private keys, etc.) — never commit
+agent/secrets/
+# deploy-time secrets: the single-VM stack mounts ./secrets/backend-key.pem at
+# the repo root, so this MUST be ignored or a stray `git clean` wipes the
+# backend-services private key on the droplet.
+/secrets/
+# stray compose backup files (e.g. docker-compose.deploy.yml.bak)
+*.bak
+
+# doc-archive: transient archive-unlock sentinel — never commit an unlock state
+.claude/.archive-unlocked
+
+# swarm-loop: archived Week-1 harness (completed run, kept locally for reference)
+.swarm-loop-week1-archive/
+
+# vendor and assets
+node_modules
+/vendor/*
+
+# oe-module-claimrev-connect is installed as a Composer dependency
+# (claimrevolution/oe-module-claimrev-connect) and relocated into this path by
+# the oe-module-installer-plugin during `composer install`. Never commit the
+# installed copy.
+/interface/modules/custom_modules/oe-module-claimrev-connect/*
+/public/assets/*
+/public/themes/*
+!/public/assets/modified
+/.docs/.out/*
+
+# ccda service build
+ccdaservice/node_modules
+
+# dev editor configs
+/.idea/*
+/.vscode/*
+/.vscode-oss/*
+/nbproject/*
+.DS_Store
+.buildpath
+.project
+.settings
+
+# testing
+.phpunit.result.cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# dev tool local overrides
+phpcs.xml
+phpstan.neon
+coverage/js-unit
+
+# phpstan
+tmp-phpstan/*
+
+# easy dev worktree support
+.worktrees.json
+.worktrees.json.lock
+docker/development-easy/docker-compose.override.yml
+docker/development-easy-light/docker-compose.override.yml
+docker/development-easy-redis/docker-compose.override.yml
+compose.override.yml
+tmp/
+.webpack-cache/
+.swarm-loop/worktrees/
+# swarm-loop volatile orchestrator state (kept on disk for resume, out of git so
+# per-cycle report commits don't move HEAD and defeat the no-progress kill switch)
+.swarm-loop/state.json
+.swarm-loop/history.csv
+.swarm-loop/analysis/
+.swarm-loop/reports/
+# agent local sqlite dbs (dev/live-test)
+agent/*.db
+
+# Local Caddy ingress config (holds a credential hash) — use Caddyfile.example
+/Caddyfile
+# Built SPA (generated)
+agent/web/dist/

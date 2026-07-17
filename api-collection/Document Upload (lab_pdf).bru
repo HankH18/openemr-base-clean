@@ -1,0 +1,65 @@
+meta {
+  name: Document Upload (lab_pdf)
+  type: http
+  seq: 19
+}
+
+post {
+  url: {{baseUrl}}/v1/documents
+  body: multipartForm
+  auth: none
+}
+
+headers {
+  ~X-Correlation-ID: demo-upload-lab-001
+}
+
+body:multipart-form {
+  file: @file(../demo/sample_docs/sample_lab_report.pdf)
+  patient_id: {{patient_id}}
+  clinician_id: {{clinician_id}}
+  doc_type: lab_pdf
+}
+
+vars:post-response {
+  document_id: res.body.document_id
+}
+
+docs {
+  POST /v1/documents — upload a source document (multipart/form-data) and run it
+  through the Week-2 ingestion pipeline: rasterize -> OCR -> structured vision
+  extraction -> OCR-reconcile (every fact's page + bbox) -> append-only persist.
+
+  Fields (per the OpenAPI multipart body):
+    file         REQUIRED  the scanned PDF. Points at the committed sample
+                           ../demo/sample_docs/sample_lab_report.pdf (fictional
+                           patient Jordan A. Rivera — no real PHI). Bruno resolves
+                           @file() relative to this collection directory; if it
+                           does not resolve on your machine, re-pick the file in
+                           the Body tab.
+    patient_id   REQUIRED  integer > 0.
+    clinician_id OPTIONAL  integer > 0. Optional ON PURPOSE so smart mode (where
+                           the cookie is authoritative and the UI sends none) does
+                           not 422 before auth runs. In disabled mode it IS
+                           required — an absent asserted id is a 400.
+    doc_type     OPTIONAL  default "lab_pdf". CLOSED set: lab_pdf | intake_form |
+                           medication_list. An unknown value fails loud with 400
+                           (never silently coerced to lab_pdf) — a mis-typed
+                           upload would otherwise extract against the wrong schema.
+
+  Response 202: { document_id, status, correlation_id }. status is one of
+  uploaded | extracting | extracted | failed. This request captures document_id
+  into the {{document_id}} runtime variable, so "Document Status", "Document Page
+  Image" and "Writes Propose from Document" run against this upload with no
+  copy-paste.
+
+  Errors: 400 (unsupported doc_type / empty file), 403 "Patient is not on your
+  rounding list" (run "Rounds Start" first — the same UC-6 boundary as chat), 422
+  (missing file/patient_id). Identity follows the auth-mode contract: disabled ->
+  the form clinician_id; smart -> the af_session session cookie (401 without one,
+  403 on mismatch).
+
+  When write-back is off (as on the droplet) the pipeline uses the derived-only
+  uploader: ingestion + extraction still run locally, the source document is just
+  not pushed to OpenEMR (openemr_document_id stays null).
+}

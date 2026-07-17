@@ -1,0 +1,2079 @@
+/* App layout + components — the clinical ledger. */
+
+/* Tabular figures on every data/numeric surface — scoped here rather than
+   on body, because Schibsted Grotesk's tnum also widens punctuation and
+   would put gaps around colons in running prose. */
+.acuity-num,
+.claim-val,
+.freshness,
+.q-rank,
+.rail-progress,
+.recheck-status,
+.section-count,
+.mode-tag,
+.msg-a-foot,
+.prov-meta dd,
+.metric-tick,
+.metric-endlabel,
+.hero-overline {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Screen-reader-only, for the chart's data-table fallback. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes visit-out {
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes soft-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes gate-grow {
+  from {
+    transform: scaleX(0.25);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* --------------------------------------------------------------- buttons */
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  color: var(--ink);
+  padding: 7px 14px;
+  border-radius: 2px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease,
+    transform 80ms ease;
+}
+
+.btn[data-hovered] {
+  border-color: var(--ink-soft);
+}
+
+.btn[data-pressed] {
+  transform: translateY(1px);
+}
+
+.btn[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn--primary[data-hovered] {
+  filter: brightness(1.08);
+  border-color: var(--accent);
+}
+
+.btn--critical {
+  background: var(--critical);
+  border-color: var(--critical);
+  color: var(--on-critical);
+}
+
+.btn--critical[data-hovered] {
+  filter: brightness(1.08);
+  border-color: var(--critical);
+}
+
+.btn--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+
+.btn--quiet[data-hovered] {
+  color: var(--ink);
+  text-decoration: underline;
+  border-color: transparent;
+}
+
+.btn--advance {
+  font-size: 15px;
+  padding: 12px 24px;
+}
+
+/* ---------------------------------------------------------------- topbar */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: var(--topbar-h);
+  padding: 0 22px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.wordmark-name {
+  font-family: var(--font-display);
+  font-size: 23px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+
+.wordmark-sub {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mode-tag {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.topbar-spacer {
+  flex: 1;
+}
+
+.recheck-status {
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.clinician {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  border-left: 1px solid var(--line);
+  padding-left: 14px;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------- alert banner */
+
+.alert-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 22px;
+  background: var(--critical-soft);
+  border-bottom: 1px solid var(--critical);
+  animation: banner-in 240ms ease-out;
+}
+
+.alert-kicker {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--critical);
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  animation: soft-pulse 1.8s ease-in-out infinite;
+}
+
+.alert-body {
+  flex: 1;
+  min-width: 260px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.alert-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.notice {
+  padding: 9px 22px;
+  font-size: 13px;
+  color: var(--critical);
+  border-bottom: 1px dashed var(--critical);
+  background: var(--surface);
+}
+
+/* ----------------------------------------------------------------- frame */
+
+.frame {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+  padding: 24px 18px 32px;
+  position: sticky;
+  top: var(--topbar-h);
+  align-self: start;
+  max-height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+}
+
+.rail-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+  padding: 0 8px;
+}
+
+.rail-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.rail-progress {
+  font-family: var(--font-data);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.queue {
+  display: flex;
+  flex-direction: column;
+}
+
+.q-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+/* The whole padded row is one keyboard-accessible button (jump to patient). */
+.q-row-btn {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  width: 100%;
+  padding: 11px 8px;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.q-row-btn:hover {
+  background: var(--raised);
+}
+
+.q-row-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.q-row-btn[data-disabled] {
+  cursor: default;
+}
+
+.q-row-btn[data-disabled]:hover {
+  background: transparent;
+}
+
+.queue .q-row:last-child {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.q-row--now {
+  background: var(--raised);
+  border-top-color: var(--line-strong);
+}
+
+.q-row--seen {
+  opacity: 0.55;
+}
+
+.q-rank {
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--ink-faint);
+  padding-top: 2px;
+}
+
+.q-name {
+  display: block;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.q-meta {
+  display: block;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.q-status {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  padding: 2px 7px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+.q-status--now {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.q-status--seen {
+  border: 1px solid var(--line-strong);
+  color: var(--ink-faint);
+}
+
+.q-status--next {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.q-status--upcoming {
+  color: var(--ink-faint);
+}
+
+.q-status--alert {
+  background: var(--critical);
+  color: var(--on-critical);
+  animation: soft-pulse 1.8s ease-in-out infinite;
+}
+
+/* ----------------------------------------------------------------- stage */
+
+.stage {
+  padding: 34px 44px 96px;
+  max-width: 1010px;
+  min-width: 0;
+}
+
+.visit--leaving {
+  animation: visit-out 190ms ease-in forwards;
+}
+
+.reveal {
+  animation: rise 360ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+
+/* ------------------------------------------------------------------ hero */
+
+.hero-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 30px;
+  padding-bottom: 22px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.hero-overline {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-family: var(--font-data);
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.hero-name {
+  font-family: var(--font-display);
+  font-size: clamp(34px, 4.5vw, 46px);
+  font-weight: 560;
+  line-height: 1.04;
+  letter-spacing: -0.01em;
+  margin-top: 10px;
+}
+
+.hero-line {
+  margin-top: 8px;
+  font-size: 14.5px;
+  color: var(--ink-soft);
+}
+
+.freshness {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.freshness--stale {
+  color: var(--warning);
+}
+
+.stale-tag {
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  color: var(--warning);
+  border-radius: 2px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.acuity-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  padding-top: 4px;
+  text-align: right;
+}
+
+.acuity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+}
+
+.acuity-num {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.acuity-score {
+  font-size: 46px;
+  font-weight: 560;
+}
+
+.acuity-max {
+  font-size: 15px;
+  color: var(--ink-faint);
+  margin-left: 3px;
+}
+
+.acuity--critical .acuity-score {
+  color: var(--critical);
+}
+
+.acuity--guarded .acuity-score {
+  color: var(--warning);
+}
+
+.acuity-ticks {
+  display: flex;
+  gap: 3px;
+}
+
+.tick {
+  width: 9px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 1px;
+}
+
+.acuity--critical .tick--on {
+  background: var(--critical);
+  border-color: var(--critical);
+}
+
+.acuity--guarded .tick--on {
+  background: var(--warning);
+  border-color: var(--warning);
+}
+
+.acuity--routine .tick--on {
+  background: var(--ink-soft);
+  border-color: var(--ink-soft);
+}
+
+.acuity-reason {
+  font-size: 13px;
+  color: var(--ink-soft);
+  max-width: 240px;
+  line-height: 1.45;
+}
+
+/* ---------------------------------------------------------- safety strip */
+
+.safety-strip {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-top: 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  background: var(--critical-soft);
+}
+
+.safety-kicker {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--critical);
+  padding-top: 4px;
+  white-space: nowrap;
+}
+
+.safety-strip .claims {
+  flex: 1;
+  min-width: 0;
+}
+
+.safety-strip .claim {
+  border: none;
+  padding: 3px 0;
+}
+
+.safety-strip .claim-text {
+  font-weight: 550;
+}
+
+/* -------------------------------------------------------------- sections */
+
+.section {
+  margin-top: 32px;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.section-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 19px;
+  font-weight: 520;
+}
+
+.section-count {
+  font-family: var(--font-data);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- claims */
+
+.claims {
+  margin: 0;
+}
+
+.claim {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 20px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.claim-text {
+  font-size: 15.5px;
+  line-height: 1.55;
+  max-width: 660px;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+.claims--dense .claim {
+  padding: 8px 0;
+}
+
+.claims--dense .claim-text {
+  font-size: 13.5px;
+}
+
+/* Category term ("Heart Rate:") leading a claim — muted, slightly heavier
+   than the description that follows it. */
+.claim-label {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+/* Record-grounded severity of the metric name, as a muted green→amber→red
+   satisfaction scale (from the observation's abnormal flag): normal reads as
+   satisfactory (green), warning as caution (amber), critical as unsatisfactory
+   (red). Non-observation claims carry no severity and keep the default muted
+   ink above. Placed after `.claim-label` so equal-specificity source order lets
+   the modifier win. */
+.claim-label--normal {
+  color: var(--satisfactory);
+}
+
+.claim-label--warning {
+  color: var(--warning);
+}
+
+.claim-label--critical {
+  color: var(--critical);
+}
+
+.claim-val {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+  font-size: 0.95em;
+}
+
+.claim-val--critical {
+  color: var(--critical);
+}
+
+.claim-val--high {
+  color: var(--warning);
+}
+
+.claim-val--ok {
+  color: var(--ok);
+}
+
+/* Movement marker: ↑ (value rose) / ↓ (fell) / — (unchanged or no prior).
+   The glyph shows raw motion; its COLOUR shows range-relative trend — green
+   when moving toward the reference range ("improving"), red when moving away
+   ("worsening"), and a muted neutral otherwise (steady / no range / no prior,
+   incl. the "—" marker). Colour is always paired with the glyph, so it is
+   never the sole signal. */
+.claim-trend {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-weight: 640;
+  color: var(--ink-faint);
+}
+
+.claim-trend--improving {
+  color: var(--improving);
+}
+
+.claim-trend--worsening {
+  color: var(--critical);
+}
+
+.empty-changes {
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15.5px;
+  color: var(--ink-faint);
+}
+
+.hero-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 16px;
+  margin-top: 36px;
+}
+
+.hero-actions-note {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------ provenance chips */
+
+.prov-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 3px;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--font-data);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.prov-chip[data-hovered] {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+.prov-chip[data-pressed] {
+  background: var(--accent-soft);
+}
+
+.prov-chip-check {
+  font-size: 9px;
+  line-height: 1;
+  color: var(--ok);
+}
+
+.prov-chip-type {
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.prov-chip[data-hovered] .prov-chip-type {
+  color: var(--accent);
+}
+
+.prov-pop[data-entering] {
+  animation: pop-in 140ms ease-out;
+}
+
+.prov-pop[data-exiting] {
+  animation: pop-out 100ms ease-in;
+}
+
+.prov-pop-dialog {
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  padding: 14px 16px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+.prov-meta {
+  display: grid;
+  gap: 7px;
+}
+
+.prov-meta > div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.prov-meta dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding-top: 2px;
+}
+
+.prov-meta dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.prov-value {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.prov-note {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* Citation-union variants. Each source type must read distinctly at a
+   glance: record (fhir) keeps the verified green check; document wears the
+   petrol accent (an uploaded page — interactive territory); guideline is
+   dotted + section-sign (literature, not this patient's record); unknown is
+   amber — an unverified source demanding attention, never dressed as ok. */
+
+.prov-chip--document .prov-chip-check {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+.prov-chip--guideline {
+  border-bottom-style: dotted;
+}
+
+.prov-chip--guideline .prov-chip-check {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.prov-chip--unknown {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--warning);
+}
+
+.prov-chip--unknown .prov-chip-check {
+  color: var(--warning);
+  font-size: 10px;
+}
+
+.prov-chip--unknown .prov-chip-type {
+  color: var(--warning);
+}
+
+/* ----------------------------------------------------- evidence overlay */
+
+/* SVG-over-image bounding boxes for document citations. The svg shares the
+   image's intrinsic pixel viewBox and stretches across the identical box, so
+   normalized bboxes land correctly at any rendered size (see
+   EvidenceOverlay.tsx for the geometry contract). */
+
+.evidence-overlay {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  line-height: 0;
+}
+
+.evidence-page {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+}
+
+.evidence-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.evidence-box {
+  fill: var(--accent);
+  fill-opacity: 0.16;
+  stroke: var(--accent);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The popover-embedded evidence figure (DocumentEvidence): a quiet
+   placeholder while the page image loads, then the overlay. A failed image
+   renders nothing — the text rows below remain the fallback view. */
+
+.prov-pop-dialog--evidence {
+  width: 420px;
+}
+
+.evidence-figure {
+  margin: 0 0 12px;
+}
+
+.evidence-loading {
+  display: grid;
+  place-items: center;
+  min-height: 140px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 2px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.evidence-probe {
+  display: none;
+}
+
+/* ------------------------------------------------------ document upload */
+
+.doc-upload {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Document-kind selector — a compact segmented radio group. The selection
+   is sent verbatim as doc_type; the values are the backend's closed enum
+   (lab_pdf / intake_form / medication_list), typed end-to-end. */
+.doc-type-group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.doc-type-chip {
+  padding: 6px 10px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.doc-type-chip + .doc-type-chip {
+  border-left: 1px solid var(--line-soft);
+}
+
+.doc-type-chip[data-hovered] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.doc-type-chip[data-selected] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.doc-type-chip[data-disabled] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* In the hero action row, the upload sits left while Done stays right. */
+.hero-actions .doc-upload {
+  margin-right: auto;
+}
+
+.doc-upload-status {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.doc-upload-status--accepted {
+  color: var(--ok);
+}
+
+.doc-upload-status--error {
+  color: var(--critical);
+}
+
+/* ------------------------------------------- extracted document facts */
+
+/* The post-upload extraction panel: the async pipeline's facts, rendered in
+   the same ledger idiom as the claim lists. Every supported fact carries a
+   document-variant provenance chip (page + bbox → the evidence overlay); a
+   fact the no-invention gate could NOT locate on the page is dimmed and
+   wears an amber "not found on page" tag — unverified shown as unverified. */
+
+.doc-extract-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15.5px;
+  color: var(--ink-faint);
+}
+
+.doc-extract-wait::before {
+  content: '';
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .doc-extract-wait::before {
+    animation: soft-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+.doc-extract-error {
+  padding: 14px 2px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13.5px;
+  color: var(--critical);
+}
+
+/* Abnormal flag verbatim from the source ("H", "L", …) — caution-tinted,
+   mono, never the sole signal (the reference range sits beside it). */
+.doc-fact-flag {
+  font-family: var(--font-data);
+  font-size: 0.8em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warning);
+}
+
+.doc-fact-range {
+  font-family: var(--font-data);
+  font-size: 0.8em;
+  color: var(--ink-faint);
+}
+
+/* A fact the OCR-reconciliation gate rejected: dimmed value + amber tag.
+   Amber (not red): the document is fine, this one value is unverified. */
+.claim--unsupported .claim-val {
+  color: var(--ink-faint);
+}
+
+.doc-fact-unsupported {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--warning);
+  border: 1px dashed var(--warning);
+  border-radius: 2px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+/* The action chips that trail a claim (view trend + provenance). */
+.claim-tools {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+/* --------------------------------------------------------- trend chart */
+
+.trend-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.trend-chip[data-hovered] {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+.trend-chip[data-pressed] {
+  background: var(--accent-soft);
+}
+
+.trend-chip-spark {
+  width: 12px;
+  height: 8px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-chip-text {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.trend-chip[data-hovered] .trend-chip-text {
+  color: var(--accent);
+}
+
+.trend-pop[data-entering] {
+  animation: pop-in 140ms ease-out;
+}
+
+.trend-pop[data-exiting] {
+  animation: pop-out 100ms ease-in;
+}
+
+.trend-pop-dialog {
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  padding: 14px 16px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+.trend-loading,
+.trend-empty {
+  padding: 10px 2px;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+/* ---------------------------------------------------- direct-edit dialog */
+
+/* The "Edit" affordance trailing a writable-vital claim. Mirrors the
+   trend/provenance chips, but carries the petrol accent on its glyph so it
+   reads as an action, not a citation. */
+.edit-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 3px;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.edit-chip[data-hovered] {
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+
+.edit-chip[data-pressed] {
+  background: var(--accent-soft);
+}
+
+.edit-chip-icon {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.edit-chip-text {
+  font-family: var(--font-data);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.edit-chip[data-hovered] .edit-chip-text {
+  color: var(--accent);
+}
+
+.edit-pop[data-entering] {
+  animation: pop-in 140ms ease-out;
+}
+
+.edit-pop[data-exiting] {
+  animation: pop-out 100ms ease-in;
+}
+
+.edit-pop-dialog {
+  width: 336px;
+  max-width: calc(100vw - 24px);
+  padding: 16px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  box-shadow: var(--shadow-pop);
+  outline: none;
+}
+
+.edit-form {
+  display: block;
+}
+
+.edit-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 4px;
+}
+
+.edit-kicker {
+  font-family: var(--font-data);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.edit-kicker--ok {
+  color: var(--ok);
+}
+
+.edit-kicker--muted {
+  color: var(--ink-faint);
+}
+
+.edit-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 560;
+  line-height: 1.1;
+  color: var(--ink);
+}
+
+.edit-sub {
+  margin: 6px 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.edit-prose {
+  margin: 10px 0 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.edit-strong {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* The "On file" / committed-record key-value block. */
+.edit-meta {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.edit-meta > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.edit-meta dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.edit-meta dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.edit-field-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.edit-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.edit-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--raised);
+  color: var(--ink);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+}
+
+.edit-input[data-focused] {
+  border-color: var(--accent);
+}
+
+.edit-input[data-disabled] {
+  opacity: 0.55;
+}
+
+/* The unit is LOCKED — a static pill with a lock glyph, never an input. */
+.edit-unit {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  font-family: var(--font-data);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.edit-unit-lock {
+  width: 9px;
+  height: 11px;
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-width: 1;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The propose echo-back: from → to, with the new value emphasised. */
+.edit-echo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-echo-from {
+  font-size: 13px;
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+.edit-echo-arrow {
+  color: var(--ink-faint);
+}
+
+.edit-echo-to {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* Soft, overridable range warning — amber, never blocks confirm. */
+.edit-warn {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 2px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.edit-warn p {
+  margin: 0;
+}
+
+.edit-warn p + p {
+  margin-top: 5px;
+}
+
+/* Hard rejection / commit failure — critical, blocks the flow. */
+.edit-errors {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  background: var(--critical-soft);
+  color: var(--critical);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.edit-errors p {
+  margin: 0;
+}
+
+.edit-errors p + p {
+  margin-top: 5px;
+}
+
+.edit-notice {
+  margin: 0 0 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+}
+
+.trend-loading {
+  animation: soft-pulse 1.2s ease-in-out infinite;
+}
+
+.metric-chart {
+  margin: 0;
+}
+
+.metric-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.metric-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 16px;
+  font-weight: 520;
+}
+
+.metric-unit {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.metric-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.metric-band {
+  fill: var(--accent-soft);
+  opacity: 0.5;
+}
+
+.metric-refline {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.metric-axis {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.metric-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.metric-pt {
+  fill: var(--accent);
+  stroke: var(--raised);
+  stroke-width: 2;
+}
+
+.metric-pt--warning {
+  fill: var(--warning);
+}
+
+.metric-pt--critical {
+  fill: var(--critical);
+}
+
+.metric-tick {
+  fill: var(--ink-faint);
+  font-family: var(--font-data);
+  font-size: 8.5px;
+}
+
+.metric-endlabel {
+  fill: var(--ink);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 640;
+}
+
+.metric-caption {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+/* The 2px line-draw reveal is motion; only when the user allows it. */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes metric-draw {
+    from {
+      stroke-dashoffset: 1;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  .metric-line {
+    stroke-dasharray: 1;
+    animation: metric-draw 650ms ease-out;
+  }
+}
+
+/* ------------------------------------------------------------------ chat */
+
+.chat {
+  margin-top: 46px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 19px;
+  font-weight: 520;
+}
+
+.chat-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 440px;
+  overflow-y: auto;
+  padding: 16px 16px 10px;
+  scroll-behavior: smooth;
+}
+
+.chat-empty {
+  font-size: 13.5px;
+  color: var(--ink-faint);
+  padding-bottom: 6px;
+}
+
+.msg--q {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.msg-q-label {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.msg-q-text {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.msg--a {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--raised);
+}
+
+.v-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.v-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.v-row--served {
+  color: var(--ok);
+}
+
+.v-row--degraded {
+  color: var(--warning);
+}
+
+.v-row--withheld {
+  color: var(--critical);
+}
+
+.v-row--pending {
+  color: var(--ink-faint);
+}
+
+.v-row--pending .v-dot {
+  animation: soft-pulse 1.2s ease-in-out infinite;
+}
+
+.msg-a-body {
+  padding: 12px 14px;
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+.pending-pulse {
+  color: var(--ink-faint);
+  animation: soft-pulse 1.2s ease-in-out infinite;
+}
+
+.msg-a-claims {
+  margin: 0 14px;
+  border-top: 1px dashed var(--line);
+}
+
+.msg-a-claims .claim:last-child {
+  border-bottom: none;
+}
+
+.msg-a-foot {
+  padding: 6px 14px 10px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+/* -------------------------------------------------- guideline evidence */
+
+/* The SEPARATE guideline-evidence block under an answer. Literature, not
+   the patient's record — a dotted frame + section-sign kicker (the same
+   motif as the guideline citation chip), so it can never be mistaken for
+   the grounded claim rows above it. */
+.guideline-block {
+  margin: 12px 14px;
+  padding: 10px 12px;
+  border: 1px dotted var(--line-strong);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.guideline-kicker {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.guideline-glyph {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.guideline-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+
+.guideline-item {
+  padding: 8px 0 6px;
+}
+
+.guideline-item + .guideline-item {
+  border-top: 1px dashed var(--line-soft);
+}
+
+.guideline-section {
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.guideline-quote {
+  margin: 3px 0 0;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.guideline-source {
+  margin-top: 4px;
+  font-family: var(--font-data);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.guideline-note {
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px dotted var(--line);
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* Degraded: caution border, normal voice. */
+.msg--degraded {
+  border-color: var(--warning);
+}
+
+.msg--degraded .v-row {
+  border-bottom-color: var(--warning-soft);
+}
+
+/* Withheld: honest refusal — dashed, tinted, set in the editorial voice.
+   Deliberately NOT styled like a normal answer. */
+.msg--withheld {
+  border: 1px dashed var(--critical);
+  background: color-mix(in srgb, var(--critical-soft) 55%, var(--surface));
+}
+
+.msg--withheld .v-row {
+  border-bottom: 1px dashed var(--critical-soft);
+}
+
+.msg--withheld .msg-a-body {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: 15.5px;
+}
+
+.msg--error {
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--critical);
+}
+
+.chat-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 16px 12px;
+}
+
+.suggest-chip {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.suggest-chip[data-hovered] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.suggest-chip[data-disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chat-form {
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.chat-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--raised);
+  font-size: 14.5px;
+}
+
+.chat-input[data-focused] {
+  border-color: var(--accent);
+}
+
+.chat-input[data-disabled] {
+  opacity: 0.55;
+}
+
+/* ----------------------------------------------------------- gate states */
+
+.gate {
+  max-width: 660px;
+  padding: 88px 44px;
+}
+
+.gate-pulse {
+  width: 46px;
+  height: 3px;
+  background: var(--accent);
+  margin-bottom: 26px;
+  transform-origin: left;
+  animation: gate-grow 0.9s ease-in-out infinite alternate;
+}
+
+.gate-title {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 560;
+  line-height: 1.1;
+}
+
+.gate-sub {
+  margin: 12px 0 26px;
+  font-size: 15px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.done-list {
+  margin: 0 0 30px;
+  max-width: 420px;
+}
+
+.done-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 2px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.done-list .done-row:last-child {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.done-name {
+  font-weight: 650;
+  font-size: 14.5px;
+}
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 940px) {
+  .frame {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rail {
+    position: static;
+    max-height: none;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 18px 22px;
+  }
+
+  .queue {
+    flex-direction: row;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .q-row,
+  .queue .q-row:last-child {
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    min-width: 210px;
+    flex: none;
+  }
+
+  .q-row--now {
+    border-color: var(--line-strong);
+  }
+
+  .stage {
+    padding: 24px 22px 72px;
+  }
+
+  .hero-head {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .acuity-block,
+  .acuity {
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .clinician {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-h);
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 10px 16px;
+  }
+
+  .claim {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .chat-head {
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .hero-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    text-align: center;
+  }
+}

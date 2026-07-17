@@ -1,0 +1,130 @@
+/**
+ * Design tokens — "clinical ledger" system.
+ *
+ * Neutrals carry a cool cyan bias (chart paper / blue-black ink). The brand
+ * accent is petrol blue and is deliberately none of the clinical semantic
+ * hues: critical (red), caution (amber), verified (green). Green appears
+ * ONLY for verification outcomes, never for brand or low acuity.
+ *
+ * Both themes are first-class. The explicit data-theme attribute must win
+ * over the media query in both directions, hence the three blocks below.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* neutrals — cool paper + blue-black ink */
+  --bg: #eef2f2;
+  --surface: #f6f9f8;
+  --raised: #fdfefe;
+  --ink: #16262d;
+  --ink-soft: #4a5e68;
+  --ink-faint: #71838c;
+  --line: #c7d4d8;
+  --line-soft: #dbe3e5;
+  --line-strong: #9fb2b9;
+
+  /* brand — petrol */
+  --accent: #175e77;
+  --on-accent: #f2f7f9;
+  --accent-soft: #dbe9ee;
+
+  /* clinical semantics — never reused for brand */
+  --critical: #a8271b;
+  --on-critical: #fbf3f1;
+  --critical-soft: #f4e3e0;
+  --warning: #8f5a05;
+  --warning-soft: #f2e8d3;
+  --ok: #1b6e4a;
+  --ok-soft: #deede4;
+
+  /* Trend moving toward its range = a positive signal. A single restrained,
+     desaturated positive token, deliberately NOT the vivid verified green
+     (--ok, reserved for the VERIFIED badge) and never the petrol brand accent
+     (reserved for interaction). Only ever tints the inline ↑/↓ trend glyph, so
+     it always ships paired with a direction (secondary encoding). */
+  --improving: #2f8168;
+
+  /* Muted "satisfactory" green for the metric-name severity scale
+     (normal → satisfactory). A grounded, restrained 3-step read of the row:
+     satisfactory (this token) → caution (--warning) → unsatisfactory
+     (--critical). Deliberately the same desaturated green family as --improving
+     and NOT the vivid verified green (--ok, reserved for the VERIFIED badge). */
+  --satisfactory: #2f8168;
+
+  --focus: #175e77;
+  --shadow-pop: 0 12px 32px rgba(22, 38, 45, 0.18);
+
+  /* type */
+  --font-display: 'Newsreader Variable', Georgia, 'Times New Roman', serif;
+  --font-body: 'Schibsted Grotesk Variable', -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-data: 'Spline Sans Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --topbar-h: 58px;
+}
+
+/* System dark, unless the user explicitly chose light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+
+    --bg: #0b1519;
+    --surface: #101d23;
+    --raised: #16262e;
+    --ink: #d9e5e8;
+    --ink-soft: #9db2ba;
+    --ink-faint: #74898f;
+    --line: #24363e;
+    --line-soft: #1b2c33;
+    --line-strong: #3a5460;
+
+    --accent: #6fb8d3;
+    --on-accent: #0b1519;
+    --accent-soft: #14313d;
+
+    --critical: #f08578;
+    --on-critical: #2a0f0a;
+    --critical-soft: #38150f;
+    --warning: #e0a54e;
+    --warning-soft: #33250c;
+    --ok: #5fc793;
+    --ok-soft: #0f2e1e;
+    --improving: #6cc1a8;
+    --satisfactory: #6cc1a8;
+
+    --focus: #6fb8d3;
+    --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* Explicit dark choice wins over a light system preference. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0b1519;
+  --surface: #101d23;
+  --raised: #16262e;
+  --ink: #d9e5e8;
+  --ink-soft: #9db2ba;
+  --ink-faint: #74898f;
+  --line: #24363e;
+  --line-soft: #1b2c33;
+  --line-strong: #3a5460;
+
+  --accent: #6fb8d3;
+  --on-accent: #0b1519;
+  --accent-soft: #14313d;
+
+  --critical: #f08578;
+  --on-critical: #2a0f0a;
+  --critical-soft: #38150f;
+  --warning: #e0a54e;
+  --warning-soft: #33250c;
+  --ok: #5fc793;
+  --ok-soft: #0f2e1e;
+  --improving: #6cc1a8;
+  --satisfactory: #6cc1a8;
+
+  --focus: #6fb8d3;
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);
+}

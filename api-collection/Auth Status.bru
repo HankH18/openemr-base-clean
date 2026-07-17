@@ -1,0 +1,24 @@
+meta {
+  name: Auth Status
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/v1/auth/status
+  body: none
+  auth: none
+}
+
+docs {
+  GET /v1/auth/status — UNAUTHENTICATED probe the SPA calls on load. Never
+  errors. Returns { "auth_mode": "disabled" | "smart", "authenticated": bool }.
+
+  "authenticated" is true only when auth_mode is "smart" AND the request's
+  session cookie ({{sessionCookie}}, default af_session) resolves to a live
+  session. Use it to tell which mode a deployment is in:
+    - Droplet (smart): expect {"auth_mode":"smart","authenticated":false} until
+      you complete the SMART login in a browser (see Auth Login).
+    - Local (disabled): expect {"auth_mode":"disabled","authenticated":false};
+      identity comes from the request clinician_id, no login.
+}

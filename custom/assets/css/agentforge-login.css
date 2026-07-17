@@ -1,0 +1,160 @@
+/*
+ * AgentForge — OAuth2 / SMART login restyle (Option A, upgrade-safe).
+ *
+ * Loaded site-wide via custom/assets/custom.yaml (read by
+ * src/Core/Header.php AFTER the core theme, so it wins the cascade) WITHOUT
+ * editing any core OpenEMR file. Because it is autoloaded on every page,
+ * EVERY selector below is tightly scoped:
+ *   - `body.bg-dark`            is set only by templates/oauth2/oauth2-base
+ *                               (no other OpenEMR page puts bg-dark on <body>).
+ *   - `#userLogin`              is the login form, unique to oauth2-login.
+ *   - `:has(#userLogin)`        pins the card / wordmark / page-background rules
+ *                               to the login page only, leaving the sibling
+ *                               SMART pages (patient-select, scope-authorize,
+ *                               which share the same .col-sm-6.bg-light card)
+ *                               untouched.
+ * Nothing here uses an unscoped/global selector.
+ *
+ * Palette is hardcoded from agent/web/src/styles/tokens.css (the app can't see
+ * those CSS variables from inside OpenEMR). Light-theme brand values used, since
+ * the sign-in card is a light surface floating on the dark page frame:
+ *   accent (petrol) #175e77   on-accent #f2f7f9   accent-soft #dbe9ee
+ *   ink #16262d   ink-soft #4a5e68   line #c7d4d8   line-soft #dbe3e5
+ *   surface/raised #f6f9f8 / #fdfefe   dark bg #0b1519 / #101d23
+ *
+ * @package   OpenEMR (AgentForge fork)
+ * @link      https://www.open-emr.org
+ * @license   https://github.com/openemr/openemr/blob/master/LICENSE GNU General Public License 3
+ */
+
+/* --- Page frame: soften the raw bg-dark toward the AgentForge dark neutral,
+       ONLY on the login page (guarded by :has(#userLogin)). --------------- */
+body.bg-dark:has(#userLogin) {
+    background-color: #0b1519;
+    background-image: radial-gradient(circle at 50% 28%, #101d23 0%, #0b1519 72%);
+}
+
+/* --- Sign-in card: polished, constrained, soft shadow. Scoped to the card
+       that actually contains the login form. ------------------------------ */
+body.bg-dark .col-sm-6.bg-light:has(#userLogin) {
+    max-width: 26rem;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 2rem 2.25rem 2.25rem;
+    background-color: #fdfefe;
+    border: 1px solid #dbe3e5;
+    border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(22, 38, 45, 0.18);
+}
+
+/* Soften the divider rules inside the card. */
+body.bg-dark .col-sm-6.bg-light:has(#userLogin) hr {
+    border-top-color: #dbe3e5;
+}
+
+/* --- Brand lockup above the "Sign In" heading. Rendered as CSS text so no
+       template edit and no logo asset are required. The container's ::before
+       is the wordmark; the heading's ::before is the tagline — together they
+       read "AgentForge / Clinical Co-Pilot" above the OpenEMR sign-in title,
+       without hiding that this is OpenEMR's login. ------------------------ */
+body.bg-dark .col-sm-6.bg-light:has(#userLogin) .text-md-center::before {
+    content: "AgentForge";
+    display: block;
+    margin-bottom: 0.15rem;
+    font-family: Georgia, 'Times New Roman', 'Iowan Old Style', serif;
+    font-size: 1.6rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: 0.2px;
+    color: #175e77;
+}
+
+body.bg-dark .col-sm-6.bg-light:has(#userLogin) .text-md-center h4::before {
+    content: "Clinical Co-Pilot";
+    display: block;
+    margin-bottom: 0.75rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: #4a5e68;
+}
+
+/* "Sign In" / "MFA Verification" heading. */
+body.bg-dark .col-sm-6.bg-light:has(#userLogin) .text-md-center h4 {
+    color: #16262d;
+    font-weight: 600;
+}
+
+/* --- Hide the elements not used by the physician SMART login flow.
+       Physicians always use "OpenEMR Login", so the Patient-Login button and
+       the optional email field are both safe to hide. -------------------- */
+body.bg-dark #userLogin .btn-outline-info,          /* "Patient Login" (value="portal-api") */
+body.bg-dark #userLogin input[name="email"] {       /* "Email if required" */
+    display: none !important;
+}
+
+/* --- Inputs: subtle rounding + AgentForge focus state (accessible ring). - */
+body.bg-dark #userLogin .form-control {
+    border-color: #c7d4d8;
+    border-radius: 8px;
+}
+
+body.bg-dark #userLogin .form-control:focus {
+    border-color: #175e77;
+    box-shadow: 0 0 0 0.2rem rgba(23, 94, 119, 0.25);
+}
+
+/* --- Primary CTA: "OpenEMR Login" filled in the AgentForge accent. With the
+       patient button hidden it becomes a single full-width call to action. - */
+body.bg-dark #userLogin .btn-group {
+    display: flex;
+    width: 100%;
+}
+
+body.bg-dark #userLogin .btn-group .btn {
+    flex: 1 1 auto;
+}
+
+body.bg-dark #userLogin .btn-outline-primary {
+    background-color: #175e77;
+    border-color: #175e77;
+    color: #f2f7f9;
+    font-weight: 600;
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+    transition: background-color 0.15s ease-in-out, border-color 0.15s ease-in-out;
+}
+
+body.bg-dark #userLogin .btn-outline-primary:hover {
+    background-color: #145369;
+    border-color: #145369;
+    color: #f2f7f9;
+}
+
+body.bg-dark #userLogin .btn-outline-primary:active {
+    background-color: #11475a;
+    border-color: #11475a;
+    color: #f2f7f9;
+}
+
+/* Keep focus clearly visible for keyboard users (accessibility). */
+body.bg-dark #userLogin .btn-outline-primary:focus,
+body.bg-dark #userLogin .btn-outline-primary:focus-visible {
+    outline: 2px solid #175e77;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 0.2rem rgba(23, 94, 119, 0.35);
+}
+
+/* Push "Remember Me" onto its own line beneath the now full-width CTA. */
+body.bg-dark #userLogin .form-check-inline.float-right {
+    margin-top: 0.85rem;
+    color: #4a5e68;
+}
+
+/* Respect reduced-motion preferences. */
+@media (prefers-reduced-motion: reduce) {
+    body.bg-dark #userLogin .btn-outline-primary {
+        transition: none;
+    }
+}
