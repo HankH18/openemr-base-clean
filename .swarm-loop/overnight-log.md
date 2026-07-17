@@ -761,3 +761,82 @@ Even an adversarial probe needs to be checked that it actually bites.
 - `test_summary_correctness.py:261-263` asserts `== []` on a PURE RE-RECORD fixture
   but names a GENERAL rule — that is exactly how #52 got in.
 - `test_reconcile_multiword.py:548` flagged; unreviewed.
+
+## Cycle 7 CLOSED — deployed and verified live (HEAD b64b192, tree 9162 files)
+
+1185 tests green, mypy clean, gate 0, acceptance 97.83, harness intact, both remotes
+verified BY TREE SIZE (9162), not just by SHA.
+
+### The readiness probe caught a REAL problem in production, hours after being written
+Deploying b64b192 brought migration 0009 in code while the live DB sat at 0008:
+
+  /ready HTTP: 503 | ready: False
+    [GATING] migrations  ok=False  schema at ['0008'] but code expects head ['0009']
+                                   — run 'alembic upgrade head'
+
+Before today /ready would have said 200/ready:true here, Caddy would have routed
+traffic, and every corpus ingest would have failed on a missing column — with the
+container still reporting "healthy", because Docker probes /health. Exactly the
+scenario the probe was built for. Applied 0009 on live Postgres (ran clean against a
+populated table, as the nullable-column design predicted) -> /ready 200, ready: True.
+
+### The RAG is fixed live — the defect that was reaching clinicians
+  [OK] MAP target in septic shock  -> vasopressors-and-map-target  (was recognition-and-screening)
+  [OK] crystalloid for resuscitation -> initial-resuscitation
+  [OK] urgent RRT indications      -> indications-for-renal-replacement
+  all score sequences monotonic; cohere/voyage keys unset (the deployed keyless path)
+
+And the pseudonym fail-safe announces itself instead of failing silently:
+"pseudonym key unset — patient_id will be OMITTED ... traces stay correlated by
+correlation_id but cannot be grouped by patient".
+
+### Agents corrected MY instructions four times this cycle — the loop's best signal
+- **My prescribed migration verification was a lying green.** `alembic upgrade head &&
+  downgrade base && upgrade head` against a `:memory:` default DB gives every command
+  a FRESH EMPTY database: downgrade ran against nothing. Re-run file-backed AND
+  against a populated table, it is real. Now in LEARNED.md.
+- **My headline test spec was wrong.** A trailing space is NOT a mixed-unit case —
+  once normalized the units MATCH, so the right outcome is the RECOVERED ↑80, not
+  "no trend". Asserting "no trend" would have pinned a degraded outcome and masked a
+  working normalization.
+- **My analysis's attribution was wrong.** "The stub reranker is strictly harmful,
+  0 wins/2 losses" — right in direction, wrong in cause: feeding the SECTION rescues
+  the MAP query even with the stub applied. Re-measured: 0 wins / 1 loss. The agent
+  corrected its own docstrings rather than leave the stronger claim standing.
+- **An audit's own sabotage was invalid.** Its "inverted rrf_fuse" probe was a no-op:
+  retrieve calls rrf_scores, never rrf_fuse. The conclusion was right and confirmed
+  by three other probes; that demonstration proved nothing. Now in LEARNED.md: check
+  your sabotage actually reached the code path before believing its result.
+
+### Fixed this cycle
+- **#49** keyless reranker discarded the fused order (7bc9839) — gated at the
+  composition root, section fed, window bounded to 4*top_k, .score follows the served
+  order.
+- **#50** the eval gate was blind to the RAG (0f076bc) — 3 known-answer probes; gate
+  is now 61 cases and goes RED under four separate RAG sabotages.
+- **#51** corpus staleness (377317c) — keyed on CONTENT; a NULL hash means UNKNOWN and
+  rebuilds once; default is correct so no --force is needed for a text fix. Proven
+  end-to-end through the real CLI: 50-100 mg -> 5-10 mg.
+- **#52** mixed-unit rows silently dropped (b64b192) — OUR regression from 397a39e,
+  fixed at the source (_unit strip+casefold on a closed 8-key display set, where a
+  MISS keeps case so mg/Mg never collide) plus a gate term mirroring _is_future.
+  Silently repaired a separate defect: the series chart was dropping 2 of 3 real
+  points on a degF/'degF '/[DEGF] history.
+- **my own vacuous test** (195fd4a) — asserted a value equal to the field's default,
+  so it passed with the guard deleted. It was the ONLY guard on that fix's decision.
+
+### STILL OPEN
+**#53 P1 CLINICAL — the keyless stack serves the WRONG guideline for two queries even
+with a healthy RAG.** "How do I reverse warfarin in major life-threatening bleeding?"
+-> serves supratherapeutic-inr-without-bleeding (INR-HOLD ADVICE, FOR A MAJOR BLEED).
+"Which nephrotoxins should I stop in AKI?" -> initial-evaluation. Both fail under
+identity rerank, so it is the lexical stack favouring whichever section repeats the
+query's words — fused is only 3/7 on "the section a clinician actually wants". The
+agent EXCLUDED these from the gate rather than commit an unfixable red, and said so.
+NEXT CYCLE'S TOP ITEM.
+
+Also open: unit dropped on persist->rehydrate (_citation_to_json) and never grounded
+at StubSynthesizer/rounds; page-1 token fallback (pipeline.py:390) can produce false
+citations (pre-existing); test_reconcile_multiword.py:548 flagged vacuous, unreviewed;
+mypy does not cover evals/ (25 errors there); the Langfuse BAA question; self-granted
+authorization.
