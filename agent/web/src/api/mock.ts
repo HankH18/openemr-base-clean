@@ -22,6 +22,9 @@ import {
   type ConversationMessage,
   type DeteriorationAlert,
   type DocumentAccepted,
+  type DocumentCitation,
+  type DocumentDetail,
+  type ExtractedFact,
   type PatientCard,
   type ProposedWrite,
   type RefreshOutcome,
@@ -31,6 +34,79 @@ import {
 
 const DETERIORATION_AFTER_MS = 12_000;
 const DETERIORATING_PATIENT = 1005;
+/** Simulated extraction latency for an uploaded document (async, like live). */
+const MOCK_EXTRACTION_MS = 3_200;
+
+function mockCitation(
+  documentId: string,
+  factId: string,
+  quote: string,
+  bbox: number[],
+  confidence: number,
+): DocumentCitation {
+  return {
+    source_type: 'document',
+    source_id: documentId,
+    page_or_section: 1,
+    field_or_chunk_id: factId,
+    quote_or_value: quote,
+    bbox,
+    confidence,
+  };
+}
+
+/**
+ * The canned extraction a mock upload resolves to: two supported lab facts
+ * with page/bbox citations, plus one fact the no-invention gate could not
+ * locate on the page (supported: false, no citation) — so the offline demo
+ * exercises every rendering path. The page image itself cannot be served in
+ * mock mode, so the evidence popover degrades to its text rows by design.
+ */
+function mockFacts(documentId: string): ExtractedFact[] {
+  const hgbBox = [0.18, 0.42, 0.3, 0.045];
+  const kBox = [0.18, 0.52, 0.3, 0.045];
+  return [
+    {
+      id: 'fact-1',
+      field_path: 'hemoglobin',
+      value: '9.1',
+      unit: 'g/dL',
+      reference_range: '13.5–17.5',
+      abnormal_flag: 'L',
+      page_no: 1,
+      bbox: hgbBox,
+      match_confidence: 0.94,
+      supported: true,
+      citation: mockCitation(documentId, 'fact-1', 'Hemoglobin 9.1 g/dL', hgbBox, 0.94),
+    },
+    {
+      id: 'fact-2',
+      field_path: 'potassium',
+      value: '5.6',
+      unit: 'mmol/L',
+      reference_range: '3.5–5.0',
+      abnormal_flag: 'H',
+      page_no: 1,
+      bbox: kBox,
+      match_confidence: 0.9,
+      supported: true,
+      citation: mockCitation(documentId, 'fact-2', 'Potassium 5.6 mmol/L', kBox, 0.9),
+    },
+    {
+      id: 'fact-3',
+      field_path: 'specimen_source',
+      value: 'Venous draw',
+      unit: '',
+      reference_range: '',
+      abnormal_flag: '',
+      page_no: null,
+      bbox: null,
+      match_confidence: null,
+      supported: false,
+      citation: null,
+    },
+  ];
+}
 
 const cohortById = new Map<number, CohortPatient>(COHORT.map((p) => [p.id, p]));
 
@@ -66,6 +142,11 @@ export function createMockApi(): CopilotApi {
   let nextConversationId = 9001;
   /** idempotency_key → the record already committed for it (double-confirm safe). */
   const committedWrites = new Map<string, CommittedWrite>();
+  /** document_id → the simulated ingestion (extraction lands after a delay). */
+  const uploadedDocuments = new Map<
+    string,
+    { patientId: number; docType: string; uploadedAt: number }
+  >();
 
   function maybeFireDeterioration(): void {
     if (deteriorationFired || session === null) {
@@ -408,9 +489,10 @@ export function createMockApi(): CopilotApi {
       return committed;
     },
 
-    async uploadDocument(patientId, _file, _docType) {
-      // Simulated ingestion: the 202 acknowledgement, offline. No extraction
-      // ever materializes in mock mode — status stays honest ("processing").
+    async uploadDocument(patientId, _file, docType) {
+      // Simulated ingestion: the 202 acknowledgement, offline. Extraction is
+      // async, like live — getDocument reports "processing" until the canned
+      // facts land a few seconds later.
       await delay(jitter(600, 500));
       requirePatient(patientId);
       const accepted: DocumentAccepted = {
@@ -418,7 +500,30 @@ export function createMockApi(): CopilotApi {
         status: 'processing',
         correlation_id: `mock-${newCorrelationId()}`,
       };
+      uploadedDocuments.set(accepted.document_id, {
+        patientId,
+        docType: docType ?? 'lab_pdf',
+        uploadedAt: Date.now(),
+      });
       return accepted;
+    },
+
+    async getDocument(_clinicianId, documentId) {
+      await delay(jitter(160, 140));
+      const doc = uploadedDocuments.get(documentId);
+      if (doc === undefined) {
+        throw new ApiError('Document not found', 404);
+      }
+      const extracted = Date.now() - doc.uploadedAt >= MOCK_EXTRACTION_MS;
+      const detail: DocumentDetail = {
+        document_id: documentId,
+        patient_id: doc.patientId,
+        status: extracted ? 'extracted' : 'processing',
+        doc_type: doc.docType,
+        page_count: 1,
+        facts: extracted ? mockFacts(documentId) : [],
+      };
+      return detail;
     },
   };
 }

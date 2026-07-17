@@ -1,11 +1,12 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { Button } from 'react-aria-components';
-import type { ObservationSeries, PatientCard } from '../api/types';
+import type { DocumentAccepted, ObservationSeries, PatientCard } from '../api/types';
 import { objectPronoun, type CensusEntry } from '../census';
 import { fmtClock, isSafetyClaim } from '../fmt';
 import { dedupeMedicationClaims } from '../labels';
 import { AcuityMeter } from './AcuityMeter';
 import { ClaimList } from './ClaimList';
+import { DocumentFacts, type FetchDocumentFn } from './DocumentFacts';
 import { DocumentUpload, type UploadFn } from './DocumentUpload';
 import type { ConfirmWrite, ProposeWrite } from './EditRecordDialog';
 import { FreshnessTag } from './FreshnessTag';
@@ -32,6 +33,7 @@ export function PatientHero({
   proposeWrite,
   confirmWrite,
   uploadDocument,
+  fetchDocument,
 }: {
   card: PatientCard;
   entry: CensusEntry | undefined;
@@ -46,7 +48,16 @@ export function PatientHero({
   confirmWrite?: ConfirmWrite;
   /** Document ingestion, bound to this patient at the App seam. */
   uploadDocument?: UploadFn;
+  /**
+   * Reader for an uploaded document's extraction status/facts, bound to the
+   * clinician at the App seam. When present, an accepted upload's id is
+   * carried into the extraction panel (poll → facts → bbox-cited chips).
+   */
+  fetchDocument?: FetchDocumentFn;
 }): JSX.Element {
+  // The accepted upload for THIS card. PatientHero remounts per patient
+  // (keyed at the App seam), so the panel never leaks across patients.
+  const [acceptedDoc, setAcceptedDoc] = useState<DocumentAccepted | null>(null);
   const name = entry?.name ?? `Patient ${card.patient_id}`;
   const given = entry?.given ?? `patient ${card.patient_id}`;
   const pronoun = objectPronoun(card.patient_id);
@@ -130,9 +141,23 @@ export function PatientHero({
         />
       </section>
 
+      {acceptedDoc !== null && fetchDocument !== undefined ? (
+        // Keyed on the document id: a fresh upload remounts the panel, which
+        // resets its poll loop cleanly.
+        <DocumentFacts
+          key={acceptedDoc.document_id}
+          documentId={acceptedDoc.document_id}
+          fetchDocument={fetchDocument}
+        />
+      ) : null}
+
       <div className="hero-actions reveal" style={revealDelay(4)}>
         {uploadDocument !== undefined ? (
-          <DocumentUpload patientId={card.patient_id} upload={uploadDocument} />
+          <DocumentUpload
+            patientId={card.patient_id}
+            upload={uploadDocument}
+            onAccepted={setAcceptedDoc}
+          />
         ) : null}
         <span className="hero-actions-note">Marks {given} seen; the queue advances by acuity.</span>
         <Button className="btn btn--primary btn--advance" onPress={onDone} isDisabled={busy}>

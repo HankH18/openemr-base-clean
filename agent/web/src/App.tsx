@@ -287,6 +287,7 @@ function RoundsApp({
                 uploadDocument={(file, docType) =>
                   api.uploadDocument(card.patient_id, file, docType)
                 }
+                fetchDocument={(documentId) => api.getDocument(clinicianId, documentId)}
               />
               <ChatPanel
                 given={entry?.given ?? `patient ${card.patient_id}`}
