@@ -11,6 +11,10 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import Insert as SqliteInsert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from copilot.domain.contracts import (
@@ -52,6 +56,36 @@ from copilot.memory.models import (
 from copilot.memory.records import ConversationMessage, RoundingCursor
 
 
+def _upsert(session: AsyncSession, entity: Any) -> PostgresInsert | SqliteInsert:
+    """An ``INSERT .. ON CONFLICT`` construct for whatever dialect ``session`` is bound to.
+
+    Why this exists: ``ON CONFLICT`` is not in SQLAlchemy's dialect-agnostic
+    ``insert()`` — it is only on the Postgres and SQLite dialect constructs. Prod
+    runs Postgres and the suite runs in-memory SQLite, so a bare
+    ``postgresql.insert`` would make every upsert below untestable, and a bare
+    ``sqlite_insert`` would fail in prod. Both dialects implement the same
+    ``ON CONFLICT (cols) DO UPDATE SET .. `` grammar, so the *only* thing that
+    differs is which factory builds the statement: conflict target and ``set_``
+    are constructed once by the caller and handed to whichever branch is live.
+
+    Dispatch reads the **bind**, not ``Settings``, for the same reason
+    ``JSONType.load_dialect_impl`` and ``embedding_column``'s ``with_variant``
+    do: the statement has to match the connection that will execute it, and the
+    bind is that connection. A config-derived guess can drift from it; this
+    cannot. Unknown dialects fail loudly rather than silently degrading to a
+    read-then-write race.
+    """
+    name = session.get_bind().dialect.name
+    if name == "postgresql":
+        return postgres_insert(entity)
+    if name == "sqlite":
+        return sqlite_insert(entity)
+    raise RuntimeError(
+        f"no ON CONFLICT upsert construct for SQLAlchemy dialect {name!r}; "
+        "MemoryRepository supports postgresql (prod) and sqlite (tests)"
+    )
+
+
 class MemoryRepository:
     """One instance per Session — do NOT share across event loop tasks."""
 
@@ -76,17 +110,59 @@ class MemoryRepository:
         content_hash: str,
         consecutive_failures: int,
     ) -> SyncStateRow:
-        row = await self.get_sync_state(patient_id)
-        if row is None:
-            row = SyncStateRow(patient_id=patient_id.value)
-            self._session.add(row)
-        row.last_polled_at = polled_at
+        """Insert-or-update this patient's poller bookkeeping, atomically.
+
+        One statement. This used to be a read-then-write (``get_sync_state`` →
+        mutate → flush) with an ``await`` in the middle, which is a yield point:
+        ``POST /refresh`` and a poller tick are separate tasks on one event loop
+        holding separate sessions, so both could observe "no row", both INSERT,
+        and the loser took an ``IntegrityError`` on ``sync_state``'s PK — a 500
+        on the clinician's refresh, or an aborted tick that rolled back its own
+        audit row with it. ``ON CONFLICT DO UPDATE`` closes the window in the
+        database rather than in application code, so no interleaving of the two
+        tasks can produce a lost insert.
+
+        Update semantics are carried over from the read-then-write exactly: a
+        ``None`` ``success_at``/``watermark`` meant "leave the stored value
+        alone" (the poller's error paths pass ``None`` for both precisely so a
+        failed tick does not erase a good watermark), so those columns are left
+        out of the ``DO UPDATE`` set rather than being written as NULL. They are
+        still part of the INSERT, where NULL is the correct first-ever value.
+
+        Deliberately NOT monotonic on ``watermark`` — see the module note in the
+        concurrency tests. A ``GREATEST``-style guard would pin the watermark at
+        the high value even when the *lower*-coverage writer's memory file won
+        the paired race, converting a self-healing re-poll into a permanent skip.
+        """
+        stmt = _upsert(self._session, SyncStateRow).values(
+            patient_id=patient_id.value,
+            last_polled_at=polled_at,
+            last_success_at=success_at,
+            watermark=watermark,
+            content_hash=content_hash,
+            consecutive_failures=consecutive_failures,
+        )
+        set_: dict[str, Any] = {
+            "last_polled_at": stmt.excluded.last_polled_at,
+            "content_hash": stmt.excluded.content_hash,
+            "consecutive_failures": stmt.excluded.consecutive_failures,
+        }
         if success_at is not None:
-            row.last_success_at = success_at
+            set_["last_success_at"] = stmt.excluded.last_success_at
         if watermark is not None:
-            row.watermark = watermark
-        row.content_hash = content_hash
-        row.consecutive_failures = consecutive_failures
+            set_["watermark"] = stmt.excluded.watermark
+        result = await self._session.execute(
+            stmt.on_conflict_do_update(index_elements=["patient_id"], set_=set_).returning(
+                SyncStateRow
+            ),
+            # The upsert is Core-level, so it bypasses the identity map. The
+            # poller calls get_sync_state() before this, meaning a stale
+            # SyncStateRow for this patient is already loaded; without
+            # populate_existing the returned entity would be that cached object
+            # with its pre-upsert attributes.
+            execution_options={"populate_existing": True},
+        )
+        row = result.scalar_one()
         await self._session.flush()
         return row
 
@@ -102,21 +178,30 @@ class MemoryRepository:
         return _row_to_summary(row)
 
     async def save_memory_file(self, summary: MemoryFileSummary) -> None:
-        existing = await self._session.execute(
-            select(MemoryFileRow).where(MemoryFileRow.patient_id == summary.patient_id.value)
+        """Insert-or-replace this patient's synthesized card, atomically.
+
+        ``memory_file.patient_id`` is the PK, so the previous read-then-write
+        raced exactly like :meth:`upsert_sync_state`. Every column is
+        unconditionally overwritten here (as before) — a memory file is a whole
+        synthesized artifact, never a partial merge of two writers' fields.
+        """
+        values: dict[str, Any] = {
+            "patient_id": summary.patient_id.value,
+            "summary": _summary_to_json(summary),
+            "acuity_score": summary.acuity_score,
+            "rank_reason": summary.rank_reason,
+            "synthesized_at": summary.synthesized_at.replace(tzinfo=None),
+            "source_watermark": summary.source_watermark.replace(tzinfo=None),
+            "content_hash": summary.content_hash,
+            "stale": False,
+        }
+        stmt = _upsert(self._session, MemoryFileRow).values(**values)
+        await self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["patient_id"],
+                set_={k: stmt.excluded[k] for k in values if k != "patient_id"},
+            )
         )
-        row = existing.scalar_one_or_none()
-        payload = _summary_to_json(summary)
-        if row is None:
-            row = MemoryFileRow(patient_id=summary.patient_id.value)
-            self._session.add(row)
-        row.summary = payload
-        row.acuity_score = summary.acuity_score
-        row.rank_reason = summary.rank_reason
-        row.synthesized_at = summary.synthesized_at.replace(tzinfo=None)
-        row.source_watermark = summary.source_watermark.replace(tzinfo=None)
-        row.content_hash = summary.content_hash
-        row.stale = False
         await self._session.flush()
 
     # --- audit ------------------------------------------------------------
@@ -230,17 +315,26 @@ class MemoryRepository:
         current_index: int,
         completed_ids: list[int],
     ) -> None:
-        result = await self._session.execute(
-            select(RoundingCursorRow).where(RoundingCursorRow.clinician_id == clinician_id.value)
+        """Insert-or-update a clinician's round position, atomically.
+
+        ``rounding_cursor.clinician_id`` is the PK. Same read-then-write race as
+        the two above: one clinician with two in-flight requests (a refresh and
+        a "done" signal) is two tasks, two sessions, one row.
+        """
+        values: dict[str, Any] = {
+            "clinician_id": clinician_id.value,
+            "ordered_patient_ids": ordered_patient_ids,
+            "current_index": current_index,
+            "completed_ids": completed_ids,
+            "updated_at": utcnow().replace(tzinfo=None),
+        }
+        stmt = _upsert(self._session, RoundingCursorRow).values(**values)
+        await self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["clinician_id"],
+                set_={k: stmt.excluded[k] for k in values if k != "clinician_id"},
+            )
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            row = RoundingCursorRow(clinician_id=clinician_id.value)
-            self._session.add(row)
-        row.ordered_patient_ids = ordered_patient_ids
-        row.current_index = current_index
-        row.completed_ids = completed_ids
-        row.updated_at = utcnow().replace(tzinfo=None)
         await self._session.flush()
 
     # --- last_seen --------------------------------------------------------
@@ -251,19 +345,26 @@ class MemoryRepository:
         patient_id: PatientId,
         seen_at: datetime | None = None,
     ) -> None:
-        """Mark (clinician, patient) as seen; upsert on the unique pair."""
+        """Mark (clinician, patient) as seen; upsert on the unique pair.
+
+        Unlike the three above, the conflict target here is not the PK — ``id``
+        is an autoincrement surrogate — but the ``uq_last_seen_cln_pt`` unique
+        constraint on ``(clinician_id, patient_id)``, which is the pair the old
+        read-then-write SELECTed on and therefore the pair it could race on.
+        ``id`` is left out of the INSERT so it keeps autoincrementing.
+        """
         when = (seen_at if seen_at is not None else utcnow()).replace(tzinfo=None)
-        result = await self._session.execute(
-            select(LastSeenRow).where(
-                LastSeenRow.clinician_id == clinician_id.value,
-                LastSeenRow.patient_id == patient_id.value,
+        stmt = _upsert(self._session, LastSeenRow).values(
+            clinician_id=clinician_id.value,
+            patient_id=patient_id.value,
+            seen_at=when,
+        )
+        await self._session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["clinician_id", "patient_id"],
+                set_={"seen_at": stmt.excluded.seen_at},
             )
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            row = LastSeenRow(clinician_id=clinician_id.value, patient_id=patient_id.value)
-            self._session.add(row)
-        row.seen_at = when
         await self._session.flush()
 
     async def get_last_seen(
