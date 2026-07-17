@@ -250,9 +250,14 @@ class AgentGraph:
         # correlation id alone.
         async with (
             self._obs.span("graph.run", patient_id=task.patient_id),
-            self._obs.span(
-                "supervisor.route", patient_id=task.patient_id, question=task.question
-            ) as supervisor_span,
+            # Attributes are non-PHI signals only — never `task.question`, which
+            # is free clinical prose. Same invariant as
+            # `copilot.rag.retriever.retrieve`: "never the query text, which may
+            # carry PHI even before the de-identify choke point". The observability
+            # backend is a passthrough to a third-party SaaS, and `deidentify()`
+            # guards the RAG leg only — it is NOT a choke point on this path. The
+            # span name plus `route_plan` below already identify the work.
+            self._obs.span("supervisor.route", patient_id=task.patient_id) as supervisor_span,
         ):
             plan = self._supervisor.route(task)
             supervisor_span.set_attribute("route_plan", plan)
@@ -375,15 +380,20 @@ class AgentGraph:
         carries the router's matched signals, so the trace explains *why* this
         worker was dispatched, not merely that it was.
         """
+        # Payload + attributes are non-PHI signals only — never `task.question`.
+        # `signals` is the routing signal AND is drawn from the fixed vocabulary
+        # defined above (never from the record), so the trace still explains *why*
+        # this worker was dispatched without shipping clinical prose to a
+        # third-party backend. The handoff payload is emitted verbatim as a
+        # `worker.handoff` event, so it egresses exactly like a span attribute.
+        signals = evidence_signals(task.question)
         self._log_handoff(
             handoffs,
             _EVIDENCE_AGENT,
             "guideline need — retrieve supporting evidence",
-            {"question": task.question, "signals": evidence_signals(task.question)},
+            {"signals": signals},
         )
-        async with self._obs.span(
-            "evidence-retriever.retrieve", question=task.question
-        ) as span:
+        async with self._obs.span("evidence-retriever.retrieve", signals=signals) as span:
             report = await self._evidence.run(task)
             span.set_attribute("retrieval_hits", report.hits)
             span.set_output({"retrieval_hits": report.hits})
