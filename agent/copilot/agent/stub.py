@@ -17,11 +17,18 @@ import re
 from collections.abc import Mapping
 from typing import Any, cast
 
-from copilot.agent.base import AgentAnswer, ConversationTurn
+from copilot.agent.base import (
+    AgentAnswer,
+    ConversationTurn,
+    render_document_facts,
+    render_guideline_evidence,
+)
 from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
 from copilot.domain.contracts import Claim
+from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
+from copilot.rag.retriever import GuidelineEvidence
 
 # The resource types the stub pulls for one patient.  Order here is only
 # the fetch order; emission is re-sorted by resource id for determinism.
@@ -42,6 +49,34 @@ _MIN_TOKEN_LEN = 3
 
 _NO_MATCH_ANSWER = "I can't confirm that from this patient's record."
 
+# Prefixes for the multi-agent graph's worker output. Both are appended to the
+# grounded prose and never merged into it: a document fact and a guideline
+# recommendation must stay legible as *not* a verified FHIR claim.
+_DOCUMENT_PREFIX = " From the attached document(s): "
+_GUIDELINE_PREFIX = " Guideline context (from the guideline corpus, not this patient's record): "
+
+
+def _worker_context(
+    guideline_evidence: list[GuidelineEvidence] | None,
+    document_facts: list[ExtractedFact] | None,
+) -> str:
+    """The graph workers' output rendered as a prose suffix ("" when there is none).
+
+    With no worker output — every inline (flag-OFF) call — this returns the empty
+    string, so the answer is byte-for-byte what the stub produced before the
+    graph could feed it anything.
+    """
+    parts: list[str] = []
+    if document_facts:
+        lines = render_document_facts(document_facts)
+        if lines:
+            parts.append(_DOCUMENT_PREFIX + "; ".join(lines) + ".")
+    if guideline_evidence:
+        lines = render_guideline_evidence(guideline_evidence)
+        if lines:
+            parts.append(_GUIDELINE_PREFIX + " ".join(lines))
+    return "".join(parts)
+
 
 class StubAgent:
     """A ``ChatAgent`` that grounds every claim or says nothing at all."""
@@ -54,6 +89,9 @@ class StubAgent:
         patient_id: PatientId,
         message: str,
         history: list[ConversationTurn] | None = None,
+        *,
+        guideline_evidence: list[GuidelineEvidence] | None = None,
+        document_facts: list[ExtractedFact] | None = None,
     ) -> AgentAnswer:
         resources = await self._fetch(patient_id)
         resources.sort(key=lambda r: str(r.get("id", "")))
@@ -94,6 +132,9 @@ class StubAgent:
             return AgentAnswer(answer=_NO_MATCH_ANSWER, claims=[])
 
         prose = "Based on this patient's record: " + " ".join(c.text for c in claims)
+        # Worker output (graph path only) extends the prose; the claims — the
+        # audited evidence — stay exactly the FHIR-grounded set above.
+        prose += _worker_context(guideline_evidence, document_facts)
         return AgentAnswer(answer=prose, claims=claims)
 
     async def _fetch(self, patient_id: PatientId) -> list[dict[str, Any]]:

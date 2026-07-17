@@ -19,12 +19,19 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from copilot.agent.base import AgentAnswer, ConversationTurn
+from copilot.agent.base import (
+    AgentAnswer,
+    ConversationTurn,
+    render_document_facts,
+    render_guideline_evidence,
+)
 from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
 from copilot.config import Settings
 from copilot.domain.contracts import Claim
+from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
+from copilot.rag.retriever import GuidelineEvidence
 
 _MAX_TOOL_ITERATIONS = 6
 _MAX_TOKENS = 2048
@@ -123,11 +130,16 @@ class ClaudeAgent:
         patient_id: PatientId,
         message: str,
         history: list[ConversationTurn] | None = None,
+        *,
+        guideline_evidence: list[GuidelineEvidence] | None = None,
+        document_facts: list[ExtractedFact] | None = None,
     ) -> AgentAnswer:
         messages: list[dict[str, Any]] = [
             {"role": turn.role, "content": turn.content} for turn in (history or [])
         ]
-        messages.append({"role": "user", "content": message})
+        messages.append(
+            {"role": "user", "content": _with_worker_context(message, guideline_evidence, document_facts)}
+        )
 
         # Cache every resource the tools return, keyed by (resourceType, id), so
         # claims can be grounded against the exact fetched record.
@@ -244,6 +256,43 @@ class ClaudeAgent:
             output_tokens=output_tokens,
             tool_calls=tool_calls,
         )
+
+
+def _with_worker_context(
+    message: str,
+    guideline_evidence: list[GuidelineEvidence] | None,
+    document_facts: list[ExtractedFact] | None,
+) -> str:
+    """``message`` plus the graph workers' output as labelled prompt context.
+
+    With no worker output — every inline (flag-OFF) call — the message is
+    returned unchanged, so the prompt is byte-for-byte what it was before.
+
+    The blocks are explicit that neither source is citable: claims must still
+    name a resource a tool returned, which is what keeps every ``source_ref``
+    grounded in a live FHIR read.
+    """
+    blocks: list[str] = []
+    if document_facts:
+        lines = render_document_facts(document_facts)
+        if lines:
+            blocks.append(
+                "Facts the intake-extractor read from the document(s) attached to this "
+                "question. They are NOT FHIR resources — use them to inform your prose, "
+                "but never cite one as a claim source:\n" + "\n".join(f"- {line}" for line in lines)
+            )
+    if guideline_evidence:
+        lines = render_guideline_evidence(guideline_evidence)
+        if lines:
+            blocks.append(
+                "Guideline excerpts the evidence-retriever retrieved for this question. "
+                "They are general recommendations, NOT this patient's data — use them to "
+                "inform your prose, but never cite one as a claim source:\n"
+                + "\n".join(f"- {line}" for line in lines)
+            )
+    if not blocks:
+        return message
+    return message + "\n\n" + "\n\n".join(blocks)
 
 
 def _cache_bundle(bundle: dict[str, Any], fetched: dict[tuple[str, str], dict[str, Any]]) -> None:
