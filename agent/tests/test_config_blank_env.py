@@ -70,8 +70,27 @@ def test_a_malformed_value_still_fails_loudly(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_an_empty_string_field_keeps_its_empty_meaning(monkeypatch: pytest.MonkeyPatch) -> None:
-    # "" is MEANINGFUL for str settings and must not be swapped for a default: an
-    # empty anthropic_api_key selects the keyless stub, and an empty
-    # fhir_patient_id_template means "no mapping configured".
+    """"" is MEANINGFUL for a str setting and must not be swapped for its default.
+
+    An empty ``anthropic_api_key`` selects the keyless stub; an empty
+    ``fhir_patient_id_template`` means "no mapping configured" and makes the write
+    client refuse. The validator is scoped to non-str fields precisely so those
+    survive, and this is the ONLY test guarding that scoping.
+
+    It must assert on a field whose default is NOT "". The first version of this
+    test used ``anthropic_api_key``, whose default IS "" — so it passed whether the
+    scoping worked or not, and an audit proved it still passed with the ``is not
+    str`` check deleted. It was the sole guard on the design decision and could not
+    detect the bug it existed to pin. ``session_cookie_name`` defaults to
+    "af_session", so "" vs the default are distinguishable and this can fail.
+    """
+    monkeypatch.setenv("COPILOT_SESSION_COOKIE_NAME", "")
+    assert Settings().session_cookie_name == "", (
+        "an empty str field must keep its empty meaning, not silently take its default"
+    )
+
+    # ...and the two that actually matter behaviourally.
     monkeypatch.setenv("COPILOT_ANTHROPIC_API_KEY", "")
     assert Settings().anthropic_api_key == ""
+    monkeypatch.setenv("COPILOT_FHIR_PATIENT_ID_TEMPLATE", "")
+    assert Settings().fhir_patient_id_template == ""
