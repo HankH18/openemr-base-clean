@@ -976,3 +976,52 @@ Verified live: foreign conversation_id -> REFUSED (was PHI replay); fresh thread
   correctness). Both carried to cycle 10.
 
 ### HALT: still not met. Cycles 5-9 found 2,9,3,4,4 live/latent defects. Base rate 100%.
+
+## Cycle 10 CLOSED — deployed and verified live (HEAD 37a9faa, tree 9169 files)
+
+1278 tests green, mypy clean, gate 0 (no_phi_in_logs 61/61), pass_rate 97.83, harness intact.
+Live-verified: deidentify scrubs "pt Robert Smith"->patient, "MRN A1234567"->[redacted],
+clinical content untouched.
+
+### Fixed (issues 63-65)
+- **#63 unbounded conversation history** (4e09e51). A long thread grew the prompt without
+  bound, re-sent the whole history every turn (quadratic cost), eventually exceeded the
+  context window -> a NON-retryable 400 -> 500 -> that thread PERMANENTLY un-answerable.
+  Capped at chat_history_max_turns=40 in _to_turns (both inline and graph paths inherit it),
+  keeping the most-recent turns and trimming a dangling leading assistant.
+- **#64 one worker's exception aborted the whole turn** (4e09e51). A worker raise propagated
+  out of run() -> 500, discarding the OTHER worker's good result. Now each dispatch is
+  try/except-contained (Exception, not BaseException), degrades to the surviving workers.
+  Fail-closed correctness UNCHANGED: the verifier still gates every claim; a missing worker
+  is just less evidence, never a lowered bar.
+- **#65 deidentify made a false PHI guarantee** (37a9faa). The egress choke point promised
+  "no downstream client sees a name/MRN/DOB" but "pt Robert Smith", "MRN A1234567" and textual
+  DOBs all passed through. NOT live (voyage/cohere unset), but a config flip from a live PHI
+  leak to a third party, guarded by a false promise. Fixed BOTH ways: docstring narrowed to
+  the truth + three safe new patterns (alnum MRN on the same 5+-digit threshold, bare-label
+  names, textual dates). HONEST RESIDUAL documented and tested: a bare unlabelled name still
+  passes (regex can't do NER safely). 35-test adversarial suite with a MUST-NOT-SCRUB corpus
+  as important as MUST-SCRUB.
+
+### Auditor's CLEAN list this cycle (the strongest "nothing found" yet)
+- OCR->extraction->reconcile numeric mangle: no silent decimal/comma/leading-zero path; the
+  "both misread identically" case is an inherent, DOCUMENTED limitation, not a hidden bug.
+- Idempotency/proposal KEY generation: secrets.token_urlsafe(24) = 192-bit, unguessable,
+  collision-free; confirm binds owner (clinician AND patient) + candidate; run_once is
+  TOCTOU-safe. One clinician cannot guess/reuse another's key.
+- Cross-patient state under CONCURRENCY: identity per-request from the cookie; the observations
+  ContextVar is token-reset in try/finally; the shared Langfuse backend holds no per-request
+  mutable state; FHIR clients are per-request; no lru_cache/global/default-mutable holds
+  patient data. No bleed under overlapping requests.
+
+### STRUCTURAL RECOMMENDATION carried forward (human call)
+The deidentify residual (bare unlabelled names pass) is best mitigated by DISTILLING the query
+to clinical terms BEFORE egress rather than relying on the free-text scrub as the last line
+(evidence_retriever.py:60 sends task.question verbatim). Out of the fix agent's scope; reported.
+
+### HALT: STILL NOT MET, but the signal is shifting. Cycles 5-10 found 2,9,3,4,4,3 defects.
+The cycle-10 audit's "nothing found" on THREE of four deep-probed surfaces (numeric mangle,
+key generation, concurrency) is the strongest clean signal yet -- the remaining findings are
+increasingly latent (not-live, config-gated) rather than live P0s. Two live P0s in cycle 9
+(POST /chat IDOR) but cycle 10 found zero LIVE defects -- only latent/robustness ones. Getting
+close to the clean cycle.
