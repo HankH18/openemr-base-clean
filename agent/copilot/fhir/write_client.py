@@ -39,6 +39,7 @@ from copilot.domain.writes import (
     VitalWrite,
     WritableMetric,
     WriteKind,
+    WriteSource,
 )
 from copilot.fhir.auth import TokenAcquisitionError, TokenProvider
 
@@ -184,7 +185,15 @@ class OpenEmrWriteClient:
         *,
         idempotency_key: str | None = None,
     ) -> CommittedWrite:
-        """POST a new medication-list row. Returns proof or raises."""
+        """POST a new medication-list row. Returns proof or raises.
+
+        **No provenance in the record itself, deliberately** — same finding as
+        ``create_medical_problem``, one layer deeper. This route reaches
+        ``ListService::insert``, whose INSERT names a fixed column list
+        (``pid, type, title, begdate, enddate, diagnosis``); ``comments`` is
+        never bound, so it would be silently discarded no matter what we send.
+        Medication provenance therefore lives in ``audit_log.source_ref``.
+        """
         payload: dict[str, str] = {"title": med.title, "begdate": med.begdate}
         if med.enddate:
             payload["enddate"] = med.enddate
@@ -249,6 +258,19 @@ class OpenEmrWriteClient:
         physician-confirmed commit of an intake-derived problem. Fail-closed
         like every write: only an explicit ``201`` whose body carries a
         parseable id is success.
+
+        **No provenance in the record itself, deliberately.** Unlike
+        ``create_allergy``, this route has no honest field for it:
+        ``ConditionRestController::WHITELISTED_FIELDS`` is exactly
+        ``['title', 'begdate', 'enddate', 'diagnosis']``, and ``filterData``
+        ``array_filter``s every other key out *silently* — a ``comments`` field
+        would be accepted with a 201 and then dropped on the floor, producing a
+        record that looks traceable in our code and is not in the chart. Worse
+        would be smuggling provenance into ``title`` or ``diagnosis``, which are
+        clinical fields that feed problem-list display and coding. So the
+        provenance for a medical_problem lives where it can be trusted: the
+        ``audit_log.source_ref`` trail and the agent store's FK chain. Restore
+        this only if the upstream whitelist gains ``comments``.
         """
         payload: dict[str, str] = {"title": problem.title, "begdate": problem.begdate}
         if problem.diagnosis:
@@ -274,6 +296,7 @@ class OpenEmrWriteClient:
         allergy: AllergyWrite,
         *,
         idempotency_key: str | None = None,
+        source: WriteSource | None = None,
     ) -> CommittedWrite:
         """POST a new allergy list row. Returns proof or raises.
 
@@ -281,10 +304,23 @@ class OpenEmrWriteClient:
         physician-confirmed commit of an intake-derived allergy. Fail-closed
         like every write: only an explicit ``201`` whose body carries a
         parseable id is success.
+
+        ``source``, when present, is rendered into ``comments`` so the record
+        lands in OpenEMR **traceable to the page it came from**, readable by a
+        physician who never opens the agent. This is the ONLY write kind that
+        gets provenance in the record itself, and only because the allergy route
+        genuinely accepts it: ``AllergyIntoleranceRestController`` whitelists
+        ``comments`` (``WHITELISTED_FIELDS``), ``AllergyIntoleranceService``
+        passes it through ``buildInsertColumns``, and ``lists.comments`` is a
+        real ``longtext`` column. Verified end-to-end, not assumed — the sibling
+        routes are checked in ``create_medical_problem`` / ``create_medication``
+        and honestly cannot carry it.
         """
         payload: dict[str, str] = {"title": allergy.title, "begdate": allergy.begdate}
         if allergy.reaction:
             payload["reaction"] = allergy.reaction
+        if source is not None:
+            payload["comments"] = source.provenance_note()
         resp = await self._send(
             "POST",
             f"/patient/{pid}/allergy",

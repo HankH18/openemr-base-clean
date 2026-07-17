@@ -51,6 +51,7 @@ from copilot.domain.writes import (
     WriteCandidate,
     WriteEntryMode,
     WriteKind,
+    WriteSource,
     WriteVerdict,
 )
 from copilot.fhir.client import FhirClient
@@ -146,6 +147,7 @@ class WriteService:
         metric: str | None = None,
         unit: str | None = None,
         entry_mode: WriteEntryMode = WriteEntryMode.human_direct,
+        source: WriteSource | None = None,
     ) -> tuple[ProposedWrite, str]:
         """Parse → verify → echo-back. Never commits; audits ``write_proposed``.
 
@@ -161,6 +163,12 @@ class WriteService:
         for the agent path (F4b), where the verifier runs strict and the write
         stays uncommitted until the separate physician confirm transaction.
         The propose step itself performs **no** OpenEMR call in either mode.
+
+        ``source`` is the optional (document, fact) provenance — the intake bridge
+        passes the document + extracted_fact the value was read off, so the
+        candidate, its echo-back, and the ``write_proposed`` audit row all name
+        the scanned page it came from. It defaults to ``None`` for the
+        physician-direct path, which has no source document.
         """
         idempotency_key = _new_idempotency_key()
         candidate = self._parse_candidate(
@@ -172,6 +180,7 @@ class WriteService:
             unit=unit,
             idempotency_key=idempotency_key,
             entry_mode=entry_mode,
+            source=source,
         )
 
         async with self._obs.span(
@@ -184,8 +193,16 @@ class WriteService:
 
         # HIPAA §164.312(b): the proposal is a physician-attributed action on the
         # chart, so it leaves a trail. Fail-open — the echo-back is already built.
+        # ``resource_id`` stays None: a proposal creates nothing, so the trail
+        # never names a returned resource. Provenance rides the separate
+        # ``source_ref`` field, which is what it honestly is — an input.
         await self._record_write_audit(
-            "write_proposed", clinician_id, patient_id, resource_id=None, mode=candidate.entry_mode
+            "write_proposed",
+            clinician_id,
+            patient_id,
+            resource_id=None,
+            mode=candidate.entry_mode,
+            source=candidate.source,
         )
         return proposed, idempotency_key
 
@@ -238,6 +255,7 @@ class WriteService:
                     patient_id,
                     resource_id=None,
                     mode=candidate.entry_mode,
+                    source=candidate.source,
                 )
                 raise
 
@@ -247,6 +265,7 @@ class WriteService:
                 patient_id,
                 resource_id=committed.new_id,
                 mode=candidate.entry_mode,
+                source=candidate.source,
             )
             await self._read_back(patient_id, candidate, committed)
 
@@ -266,11 +285,16 @@ class WriteService:
         unit: str | None,
         idempotency_key: str,
         entry_mode: WriteEntryMode,
+        source: WriteSource | None = None,
     ) -> AnyWriteCandidate:
         """Parse raw physician/agent input into a typed candidate over the closed set.
 
         Exhaustive ``match`` (no ``default``): a new ``WriteKind`` fails to compile
         until handled. All construction errors collapse to ``WriteInputError``.
+
+        ``source`` is attached verbatim to whichever candidate shape ``kind``
+        selects, so provenance is carried by the same object the physician
+        confirms — never re-derived later from something that could have drifted.
         """
         try:
             match kind:
@@ -282,6 +306,7 @@ class WriteService:
                         idempotency_key=idempotency_key,
                         entry_mode=entry_mode,
                         vital=self._parse_vital(raw_value, metric, unit),
+                        source=source,
                     )
                 case WriteKind.medication:
                     return WriteCandidate(
@@ -291,6 +316,7 @@ class WriteService:
                         idempotency_key=idempotency_key,
                         entry_mode=entry_mode,
                         medication=self._parse_medication(raw_value),
+                        source=source,
                     )
                 case WriteKind.medical_problem:
                     return IssueWriteCandidate(
@@ -300,6 +326,7 @@ class WriteService:
                         idempotency_key=idempotency_key,
                         entry_mode=entry_mode,
                         medical_problem=self._parse_medical_problem(raw_value),
+                        source=source,
                     )
                 case WriteKind.allergy:
                     return IssueWriteCandidate(
@@ -309,6 +336,7 @@ class WriteService:
                         idempotency_key=idempotency_key,
                         entry_mode=entry_mode,
                         allergy=self._parse_allergy(raw_value),
+                        source=source,
                     )
         except ValidationError as exc:
             raise WriteInputError(
@@ -404,8 +432,14 @@ class WriteService:
                 allergy = candidate.allergy
                 if allergy is None:  # unreachable given the candidate validator.
                     raise WriteInputError("allergy candidate is missing its payload")
+                # ``source`` reaches OpenEMR only here: the allergy route is the
+                # single Standard-API list write with an honest home for it (a
+                # whitelisted ``comments`` column). See create_allergy.
                 return await writer.create_allergy(
-                    patient_id, allergy, idempotency_key=candidate.idempotency_key
+                    patient_id,
+                    allergy,
+                    idempotency_key=candidate.idempotency_key,
+                    source=candidate.source,
                 )
 
     async def _read_back(
@@ -490,6 +524,7 @@ class WriteService:
         *,
         resource_id: str | None,
         mode: WriteEntryMode,
+        source: WriteSource | None = None,
     ) -> None:
         """Append the physician-attributed write-trail row (fail-open).
 
@@ -499,6 +534,14 @@ class WriteService:
         the created resource on a commit, empty on a proposal or a failure. A
         broken audit write is logged and swallowed so it can never turn a
         completed write into a 500.
+
+        ``source`` is the (document, fact) provenance of a derived write, recorded
+        in its own ``source_ref`` column — never folded into
+        ``resources_returned``, which means "resources this action returned or
+        created". Together the two answer the spec's traceability question on
+        every row: *what did this write create* (``resources_returned``) and
+        *what was it derived from* (``source_ref``). ``None`` for a
+        physician-direct write, which has no source document.
         """
         try:
             async with session_scope() as session:
@@ -509,6 +552,7 @@ class WriteService:
                     clinician_id=clinician_id.value,
                     resources_returned=[resource_id] if resource_id else [],
                     entry_mode=mode.value,
+                    source_ref=source,
                 )
         except Exception:
             _logger.exception(

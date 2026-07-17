@@ -30,6 +30,7 @@ from copilot.domain.primitives import (
     ResourceType,
     utcnow,
 )
+from copilot.domain.writes import WriteSource
 from copilot.memory.models import (
     AuditLogRow,
     ClinicianRow,
@@ -129,12 +130,22 @@ class MemoryRepository:
         clinician_id: int | None = None,
         resources_returned: list[str] | None = None,
         entry_mode: str | None = None,
+        source_ref: WriteSource | None = None,
     ) -> None:
         """Append one access/write trail row.
 
         ``entry_mode`` is the write-back physician-attribution field
         (``human_direct`` in Phase 1); it defaults to ``None`` so every existing
         read-audit caller is unaffected.
+
+        ``source_ref`` is the write-back provenance: the (source_document,
+        extracted_fact) a derived write descends from, serialized to JSON. It is
+        deliberately NOT folded into ``resources_returned`` — that field names the
+        FHIR resources an action returned or created, and a source document is an
+        agent-store *input*, so naming it there would misreport the access trail
+        (see ``chat/service.py``, which drops non-FHIR citations for the same
+        reason). Defaults to ``None``, so reads and physician-direct writes — which
+        genuinely have no source document — are unaffected.
         """
         self._session.add(
             AuditLogRow(
@@ -144,6 +155,7 @@ class MemoryRepository:
                 clinician_id=clinician_id,
                 resources_returned=resources_returned or [],
                 entry_mode=entry_mode,
+                source_ref=source_ref.model_dump(mode="json") if source_ref else None,
                 at=utcnow().replace(tzinfo=None),
             )
         )

@@ -82,6 +82,44 @@ def test_upgrade_head_adds_audit_entry_mode_column(alembic_config: Config) -> No
     engine.dispose()
 
 
+def test_upgrade_head_adds_audit_source_ref_column(alembic_config: Config) -> None:
+    """Migration 0008 adds the nullable ``source_ref`` write-back provenance column.
+
+    Nullable is load-bearing, not incidental: reads and physician-direct writes
+    genuinely have no source document, and the column must stay backward-compatible
+    with every pre-existing row (same contract as ``entry_mode`` in 0002).
+    """
+    from sqlalchemy import create_engine, inspect
+
+    command.upgrade(alembic_config, "head")
+
+    url_sync = os.environ["COPILOT_DATABASE_URL"].replace("+aiosqlite", "")
+    engine = create_engine(url_sync)
+    columns = {c["name"]: c for c in inspect(engine).get_columns("audit_log")}
+    assert "source_ref" in columns
+    assert columns["source_ref"]["nullable"] is True
+    # Provenance gets its own column rather than overloading resources_returned,
+    # which means "the FHIR resources this action returned/created".
+    assert "resources_returned" in columns
+    engine.dispose()
+
+
+def test_downgrade_removes_audit_source_ref_column(alembic_config: Config) -> None:
+    """0008 is reversible — the provenance column drops cleanly back to 0007."""
+    from sqlalchemy import create_engine, inspect
+
+    command.upgrade(alembic_config, "head")
+    command.downgrade(alembic_config, "0007")
+
+    url_sync = os.environ["COPILOT_DATABASE_URL"].replace("+aiosqlite", "")
+    engine = create_engine(url_sync)
+    columns = {c["name"] for c in inspect(engine).get_columns("audit_log")}
+    assert "source_ref" not in columns
+    # The rest of the trail survives the downgrade untouched.
+    assert {"action", "entry_mode", "resources_returned"} <= columns
+    engine.dispose()
+
+
 def test_head_creates_audit_at_index(alembic_config: Config) -> None:
     """Migration 0003 adds the ``audit_log(at)`` index for retention range scans."""
     from sqlalchemy import create_engine, inspect
