@@ -382,13 +382,39 @@ def _reconcile_facts(
     tokens_by_page: Mapping[int, list[dict[str, object]]],
     settings: Settings,
 ) -> list[tuple[ExtractedFact, Reconciliation]]:
-    """Reconcile each extracted value to its page's OCR tokens."""
+    """Reconcile each extracted value to *its own* page's OCR tokens — never another's.
+
+    A fact is only ever searched against the page it names. This used to fall back
+    to page 1's tokens whenever the named page's were falsy, which inverted the
+    no-invention gate on precisely the pages it exists to protect: an empty list is
+    falsy, so a page the vision model can read but OCR cannot — handwriting, a
+    photographed or angled page, a low-contrast fax, a rotated scan, all routine on
+    clinical intake — was silently reconciled against page 1 instead. The fact then
+    won ``supported=True`` at a high confidence on a genuine exact string match
+    (page 1's "DOB: 10 mg" header blessing a handwritten dose on page 3) while
+    keeping its own page number, and the citation stored page 1's bbox under page 3
+    — a highlight drawn where the value is not. Neither the confidence threshold nor
+    ``vision._check_page_numbers`` can catch that: the match is real and the page
+    number is real; only the pairing is a lie. An unsearchable page has exactly one
+    honest answer, and reconciliation already gives it for empty tokens —
+    ``supported=False``, no bbox, surfaced as unverified.
+
+    A fact with no ``page_no`` is searched only when the document has exactly ONE
+    page, where "page 1" is not a fallback but the only page the fact can have come
+    from — the sole page is named by elimination. On a multi-page document an
+    unnumbered fact is refused rather than guessed at page 1, which is the milder
+    half of the same bug (a coincidental header match blessed as provenance).
+    """
     threshold = settings.doc_extraction_confidence_threshold
+    # By elimination, not by default: only meaningful when there is one page.
+    sole_page = next(iter(tokens_by_page)) if len(tokens_by_page) == 1 else None
     out: list[tuple[ExtractedFact, Reconciliation]] = []
     for fact in facts:
-        page_no = fact.page_no or 1
-        tokens = tokens_by_page.get(page_no) or tokens_by_page.get(1) or []
-        recon = reconcile_value(fact.value, tokens, page_no=page_no, threshold=threshold)
+        page_no = fact.page_no if fact.page_no is not None else sole_page
+        # .get(page_no, []) — never another page's tokens. A page that is present
+        # but OCR'd to nothing reconciles to nothing, which is the honest answer.
+        tokens = tokens_by_page.get(page_no, []) if page_no is not None else []
+        recon = reconcile_value(fact.value, tokens, page_no=page_no or 1, threshold=threshold)
         out.append((fact, recon))
     return out
 

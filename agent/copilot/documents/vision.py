@@ -329,10 +329,14 @@ def _check_page_numbers(payload: dict[str, Any], batch: Sequence[RasterizedPage]
     ``page_no`` outside the batch is *provably* fabricated provenance — not a
     decoration like the extras ``_drop_extras`` forgives. It matters because
     ``page_no`` is load-bearing: ``pipeline._reconcile_facts`` searches the OCR
-    tokens of the page a fact names (falling back to page 1), so a wrong number
-    either loses a real match or, worse, blesses a value against the WRONG
-    page's tokens and stores that page's bbox under this page's number — a
-    citation pointing somewhere the value is not. Fail closed instead.
+    tokens of the page a fact names, so a wrong number costs a real match — the
+    value is reconciled against a page it is not on, finds nothing, and is
+    surfaced as unverified. Fail closed instead.
+
+    This check is NOT what keeps a fact off another page's tokens, and never was:
+    it only proves a number was in the batch, so a fact swapping two pages of the
+    same batch passes it. Page scoping is enforced where it belongs, in
+    ``_reconcile_facts``, which searches the named page alone.
 
     Facts without a ``page_no`` are left alone: "I did not record which page"
     is honest, and is exactly what the single-call path has always allowed. A
