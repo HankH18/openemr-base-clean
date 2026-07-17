@@ -25,6 +25,11 @@ similarity over the stored embeddings (pgvector on Postgres, a JSON list on
 SQLite). The Cohere rerank is a best-effort refinement: its failure or absence
 falls back to the fused order and is logged, never raised — the answer path is
 never gated on the reranker.
+
+Every remote leg is best-effort in exactly the same sense: an embedder failure
+degrades the hybrid to sparse-only (RRF over an empty dense ranking *is* the
+sparse ranking) and is logged and marked on the span, never raised. The answer
+path is gated on the corpus, not on any network call.
 """
 
 from __future__ import annotations
@@ -173,8 +178,21 @@ class GuidelineRetriever:
                     span.set_output({"hits": 0, "corpus_chunks": 0})
                     return []
                 # Dense: embed the (de-identified, expanded) query at retrieve time.
-                query_vec = self._embedder.embed([expanded])[0]
-                dense_ids = _dense_rank(rows, query_vec)
+                dense_ids: list[str] = []
+                try:
+                    query_vec = self._embedder.embed([expanded])[0]
+                except Exception:  # best-effort dense leg; retrieval never gates on it
+                    # An embedder outage (Voyage 5xx, or a 4xx that exhausts the
+                    # retry budget) degrades to sparse-only: rrf_scores(sparse, [])
+                    # is already the sparse ranking. Marked on the span so the
+                    # outage reads as degradation in the trace, never as silence.
+                    _logger.warning(
+                        "guideline query embedding failed; serving sparse-only ranking",
+                        exc_info=True,
+                    )
+                    span.set_attribute("dense_degraded", True)
+                else:
+                    dense_ids = _dense_rank(rows, query_vec)
                 sparse_ids = await self._sparse_rank(session, rows, expanded)
                 candidates = {
                     str(row.id): _Candidate(
