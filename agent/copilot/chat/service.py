@@ -14,6 +14,20 @@ flags) is the wrong default here: an answer with no evidence must not read as
 confirmed.  A verifier ``withheld`` (claims existed but all failed the live
 re-fetch — the record drifted) collapses to the same honest, evidence-free
 reply.
+
+In graph mode a SECOND gate runs after the verifier: the graph's critic. The
+order is the safety property — the deterministic verifier is authoritative and
+runs first, then the critic's verdict narrows what survived (see
+``_critic_narrowed``). The critic is demote-only: it can drop a claim (uncited,
+or flagged unsafe/narratively-inconsistent by the keyed safety pass) but can
+never add or resurrect one. A verdict that rejects everything lands in the same
+"nothing grounded ⇒ withheld" policy above rather than a new state.
+
+Known limitation (pre-existing, not introduced by the critic gate): dropping a
+claim removes it from the served evidence and from the HIPAA access trail, but
+the answer PROSE is the agent's and may still narrate a dropped claim — exactly
+as the verifier's ``degraded`` path already does. Prose regeneration is not
+wired here.
 """
 
 from __future__ import annotations
@@ -21,7 +35,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from copilot.agent.base import AgentAnswer, ConversationTurn
 from copilot.agent.factory import build_agent
@@ -30,13 +44,14 @@ from copilot.domain.contracts import Claim, VerificationAction, VerificationResu
 from copilot.domain.primitives import ClinicianId, FhirReference, PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
-from copilot.graph.contracts import AgentTask
+from copilot.graph.contracts import AgentTask, CriticVerdict, Handoff
 from copilot.graph.factory import build_graph
 from copilot.memory.db import session_scope
 from copilot.memory.records import ConversationMessage
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import NoopObservability, Observability, Span, current_correlation_id
 from copilot.observability.pricing import cost_usd
+from copilot.rag import GuidelineEvidence
 from copilot.verification.serve import verify_answer
 
 _logger = logging.getLogger(__name__)
@@ -45,9 +60,46 @@ _logger = logging.getLogger(__name__)
 # evidence-free reply that surfaces uncertainty instead of guessing.
 _WITHHELD_ANSWER = "I can't confirm that from this patient's record."
 
+# Step names for the inline path's recorded tool/step sequence (req 7). Stable
+# strings: a trace consumer keys on them.
+_STEP_AGENT = "chat-agent.answer"
+_STEP_VERIFY = "serve-verifier.verify_answer"
+
+
+class _TurnOutcome(BaseModel):
+    """What one grounded-answer path produced, before persistence + shaping.
+
+    The two paths (inline / graph) return this same shape; the graph-only fields
+    default to the inline path's "not applicable", so the flag-OFF default is
+    unchanged.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    answer: str
+    claims: list[Claim]
+    action: VerificationAction
+    passed: bool
+    guideline_evidence: list[GuidelineEvidence] | None = None
+    handoffs: list[Handoff] = Field(default_factory=list)
+
 
 class ChatReply(BaseModel):
-    """The assembled result of one chat turn, ready for HTTP shaping."""
+    """The assembled result of one chat turn, ready for HTTP shaping.
+
+    ``guideline_evidence`` distinguishes three states, and the ``None`` vs ``[]``
+    difference is load-bearing for the caller:
+
+    - ``None`` — this turn ran the inline path, which does not retrieve. The
+      route is responsible for retrieving the evidence block itself.
+    - ``[]`` — the graph ran and the supervisor did not route to the
+      evidence-retriever (no guideline need in the question), so there is
+      genuinely no evidence for this turn.
+    - non-empty — exactly the chunks the evidence-retriever worker retrieved.
+
+    ``handoffs`` is the graph's ordered agent-transition log (empty on the inline
+    path, which has no agents to hand off between).
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -57,6 +109,8 @@ class ChatReply(BaseModel):
     passed: bool
     conversation_id: int
     correlation_id: str
+    guideline_evidence: list[GuidelineEvidence] | None = None
+    handoffs: list[Handoff] = Field(default_factory=list)
 
 
 class ChatService:
@@ -107,29 +161,29 @@ class ChatService:
             history = _to_turns(await repo.get_conversation_messages(resolved_id))
 
         if self._settings.chat_graph_enabled:
-            answer, claims, action, passed = await self._answer_via_graph(
+            outcome = await self._answer_via_graph(
                 patient_id, message, history, document_ids or []
             )
         else:
-            answer, claims, action, passed = await self._answer_inline(
-                clinician_id, patient_id, message, history
-            )
+            outcome = await self._answer_inline(clinician_id, patient_id, message, history)
 
         async with session_scope() as session:
             repo = MemoryRepository(session)
             await repo.append_message(resolved_id, "user", message)
-            await repo.append_message(resolved_id, "assistant", answer)
+            await repo.append_message(resolved_id, "assistant", outcome.answer)
 
         # HIPAA §164.312(b): every PHI read leaves an append-only trail.
-        await self._record_read_audit(clinician_id, patient_id, claims)
+        await self._record_read_audit(clinician_id, patient_id, outcome.claims)
 
         return ChatReply(
-            answer=answer,
-            claims=claims,
-            action=action,
-            passed=passed,
+            answer=outcome.answer,
+            claims=outcome.claims,
+            action=outcome.action,
+            passed=outcome.passed,
             conversation_id=resolved_id,
             correlation_id=correlation_id,
+            guideline_evidence=outcome.guideline_evidence,
+            handoffs=outcome.handoffs,
         )
 
     # --- grounded-answer paths --------------------------------------------
@@ -140,18 +194,28 @@ class ChatService:
         patient_id: PatientId,
         message: str,
         history: list[ConversationTurn],
-    ) -> tuple[str, list[Claim], VerificationAction, bool]:
+    ) -> _TurnOutcome:
         """The inline agent+verify path — this service owns span + telemetry.
 
         Behaviour-preserving: identical spans, verification event, and token
-        usage as before the graph flag existed (the flag-OFF default path).
+        usage as before the graph flag existed (the flag-OFF default path). The
+        observability fields added since are span ATTRIBUTES only — the inline
+        path still emits no events of its own beyond ``llm.usage``.
         """
         async with self._obs.span(
             "chat", patient_id=patient_id.value, clinician_id=clinician_id.value
         ) as span:
+            # The ordered steps this turn actually ran, recorded as they run —
+            # the inline path's answer to req-7's "tool sequence" (a sequence,
+            # not the bare count it used to report). The agent's own inner FHIR
+            # tool invocations are counted, not named: AgentAnswer carries only
+            # `tool_calls`, so naming them here would be invention.
+            tool_sequence: list[str] = []
             async with self._fhir_client() as fhir:
                 agent = build_agent(self._settings, fhir)
+                tool_sequence.append(_STEP_AGENT)
                 agent_answer = await agent.answer(patient_id, message, history)
+                tool_sequence.append(_STEP_VERIFY)
                 result = await verify_answer(agent_answer.claims, patient_id, fhir)
 
             # Fail-closed: an answer that grounded nothing is withheld, never
@@ -175,12 +239,16 @@ class ChatService:
             self._obs.record_verification(
                 passed=passed, action=action.value, patient_id=patient_id.value
             )
+            span.set_attribute("tool_sequence", tool_sequence)
+            span.set_attribute("eval_outcome", action.value)
             # Token usage + computed USD cost onto the same span, so the trace
             # answers "how many tokens, at what cost". LLM path only.
             self._record_token_usage(span, agent_answer)
             span.set_output({"action": action.value, "passed": passed, "claims": len(claims)})
 
-        return answer, claims, action, passed
+        # guideline_evidence=None: the inline path does not retrieve — the route
+        # owns the evidence block for this mode (see ChatReply).
+        return _TurnOutcome(answer=answer, claims=claims, action=action, passed=passed)
 
     async def _answer_via_graph(
         self,
@@ -188,7 +256,7 @@ class ChatService:
         message: str,
         history: list[ConversationTurn],
         document_ids: list[str],
-    ) -> tuple[str, list[Claim], VerificationAction, bool]:
+    ) -> _TurnOutcome:
         """The multi-agent graph path (``chat_graph_enabled``).
 
         Division of ownership: in graph mode the graph owns verification and
@@ -198,6 +266,11 @@ class ChatService:
         verification event nor token usage here; it only reshapes the graph's
         result into the fail-closed reply. Persistence + audit + reply shape are
         owned by ``chat`` and stay identical to the inline path.
+
+        Two gates run here, in this order, and the order is the safety property:
+        the deterministic verifier is authoritative and runs first (inside the
+        graph), then the critic's verdict narrows what survived. The critic can
+        only ever take claims away — see :func:`_critic_narrowed`.
         """
         graph = build_graph(
             self._settings,
@@ -213,10 +286,19 @@ class ChatService:
         result = await graph.run(task)
         verification = result.verification
 
+        # The verifier's survivors, then narrowed by the critic's verdict — a
+        # claim the critic rejected (uncited, or flagged unsafe by the keyed
+        # safety pass) is NOT served. Computing a rejection and serving the claim
+        # anyway would make the critic decorative.
+        claims = _critic_narrowed(_passed_claims(verification), result.critic)
+
         # Identical fail-closed invariant to the inline path: an answer that
         # grounded no verified claims is withheld, never served, regardless of
-        # the verifier's empty-claims convenience.
-        if not verification.claims:
+        # the verifier's empty-claims convenience. `not claims` folds the
+        # critic's all-rejected case into that same existing policy rather than
+        # inventing a state: nothing survived both gates, so there is nothing we
+        # can prove — which is exactly what "withheld" already means.
+        if not verification.claims or not claims:
             action = VerificationAction.withheld
             passed = False
         else:
@@ -225,12 +307,18 @@ class ChatService:
 
         if action == VerificationAction.withheld:
             answer = _WITHHELD_ANSWER
-            claims: list[Claim] = []
+            claims = []
         else:
             answer = result.answer
-            claims = _passed_claims(verification)
 
-        return answer, claims, action, passed
+        return _TurnOutcome(
+            answer=answer,
+            claims=claims,
+            action=action,
+            passed=passed,
+            guideline_evidence=result.guideline_evidence,
+            handoffs=result.handoffs,
+        )
 
     # --- collaborators ----------------------------------------------------
 
@@ -345,3 +433,28 @@ def _passed_claims(result: VerificationResult) -> list[Claim]:
         for r in result.claims
         if r.attribution_ok and r.value_match
     ]
+
+
+def _critic_narrowed(claims: list[Claim], verdict: CriticVerdict | None) -> list[Claim]:
+    """The verifier-passed ``claims`` the critic also accepted — DEMOTE-ONLY.
+
+    Structurally incapable of resurrecting a claim: it FILTERS the list the
+    deterministic verifier already passed rather than reading ``verdict.accepted``
+    as a source of claims. A text the verifier dropped is simply not in ``claims``,
+    so no verdict — however wrong, however adversarial the model behind it — can
+    put it back. The verifier stays authoritative; the critic only narrows.
+
+    Subtracting ``rejected`` matters when two claims share a text (the verdict is
+    keyed by text, so such a pair is genuinely ambiguous): the ambiguity resolves
+    toward dropping, never toward serving something the critic rejected.
+
+    ``None`` narrows nothing — the run never reached the critic (iteration cap),
+    so there is no verdict to apply. Note a critic *error* never arrives here as
+    ``None``: ``RealCritic.review`` fails safe to its deterministic partition,
+    which accepts every cited claim, so an LLM outage degrades to the pre-existing
+    citation gate rather than withholding the turn.
+    """
+    if verdict is None:
+        return claims
+    accepted = set(verdict.accepted) - set(verdict.rejected)
+    return [claim for claim in claims if claim.text in accepted]

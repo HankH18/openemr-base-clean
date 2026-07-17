@@ -312,6 +312,13 @@ class AgentGraph:
             handoffs=handoffs,
             metrics=metrics,
             critic=critic_verdict,
+            # The worker's own evidence rides out on the result so the chat route
+            # can display it rather than retrieving a second, decoupled set —
+            # one retrieval per turn, and what is shown is what the supervisor
+            # actually decided to retrieve (and what informed the prose).
+            guideline_evidence=list(evidence_report.evidence)
+            if evidence_report is not None
+            else [],
         )
 
     # --- worker dispatch --------------------------------------------------

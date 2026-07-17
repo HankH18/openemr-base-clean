@@ -26,6 +26,7 @@ from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client_for_session
+from copilot.graph.contracts import Handoff
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability
@@ -76,6 +77,28 @@ def _reply_body(reply: ChatReply) -> dict[str, Any]:
         "verification": {"action": reply.action.value, "passed": reply.passed},
         "conversation_id": reply.conversation_id,
         "correlation_id": reply.correlation_id,
+        "handoffs": [_handoff_view(h) for h in reply.handoffs],
+    }
+
+
+def _handoff_view(handoff: Handoff) -> dict[str, Any]:
+    """One graph handoff, projected to a PHI-free view safe to serve.
+
+    Makes the multi-agent routing observable to a caller (which agents ran, in
+    what order, and why) instead of a claim only a doc makes. Deliberately a
+    PROJECTION, not a ``model_dump``: the typed ``Handoff.payload`` carries
+    routing context that is patient content — the raw question, document ids —
+    and none of it belongs in a response block whose whole purpose is to explain
+    routing. Only the agent names, the static reason string, and the router's
+    matched vocabulary terms (drawn from a fixed word list in
+    ``copilot.graph.supervisor``, never from the record) cross this boundary.
+    """
+    signals = handoff.payload.get("signals")
+    return {
+        "from_agent": handoff.from_agent,
+        "to_agent": handoff.to_agent,
+        "reason": handoff.reason,
+        "signals": [str(s) for s in signals] if isinstance(signals, list) else [],
     }
 
 
@@ -117,9 +140,8 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     if not await is_authorized(clinician_id, patient_id):
         raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
 
-    reply = await _service(
-        request.app.state.observability, _reader_factory(acting.session_id)
-    ).chat(
+    observability = request.app.state.observability
+    reply = await _service(observability, _reader_factory(acting.session_id)).chat(
         clinician_id=clinician_id,
         patient_id=patient_id,
         message=req.message,
@@ -130,7 +152,26 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     body = _reply_body(reply)
     # Evidence separation: guideline backing rides as a distinct top-level block,
     # never inside a patient-fact claim's citation.
-    body["guideline_evidence"] = await _guideline_evidence(req.message)
+    #
+    # ONE retrieval per turn. In graph mode the evidence-retriever worker has
+    # already retrieved under the supervisor's routing decision, so we display
+    # exactly that (`reply.guideline_evidence` is not None) — retrieving again
+    # here would both double the cost and decouple what the clinician sees from
+    # what the supervisor actually decided. The inline path has no worker, so it
+    # is the one mode that retrieves here, unchanged.
+    if reply.guideline_evidence is None:
+        evidence = await _guideline_evidence(req.message)
+        # Req 7: the inline path's retrieval happens here, so its hit count is
+        # only knowable here. Correlated to the rest of the turn's telemetry by
+        # correlation id. (Graph mode records its own hits inside graph.run.)
+        observability.event(
+            "chat.retrieval",
+            retrieval_hits=len(evidence),
+            correlation_id=reply.correlation_id,
+        )
+    else:
+        evidence = [e.model_dump(mode="json") for e in reply.guideline_evidence]
+    body["guideline_evidence"] = evidence
     return body
 
 

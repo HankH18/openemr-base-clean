@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from copilot.agent.base import ConversationTurn
 from copilot.domain.contracts import VerificationResult
+from copilot.rag import GuidelineEvidence
 
 
 class AgentTask(BaseModel):
@@ -58,12 +59,19 @@ class Handoff(BaseModel):
 
 
 class CriticVerdict(BaseModel):
-    """The critic's deterministic accept/reject partition of drafted claims.
+    """The critic's accept/reject partition of drafted claims — SERVE-AFFECTING.
 
-    ``accepted`` holds the claim texts that carry a machine-readable citation;
-    ``rejected`` the texts of claims that do not. The critic AUGMENTS — it never
-    replaces — the deterministic verifier, so a verdict is advisory telemetry
-    alongside the authoritative :class:`VerificationResult`.
+    ``accepted`` holds the claim texts that carry a machine-readable citation
+    (and that the keyed safety pass did not flag as unsafe/inconsistent);
+    ``rejected`` the texts of the rest.
+
+    The critic AUGMENTS — it never replaces — the deterministic verifier, and the
+    order is fixed: the verifier runs first and is authoritative, then the chat
+    service intersects the verifier-passed claims with ``accepted`` (see
+    ``copilot.chat.service._critic_narrowed``). So this verdict is DEMOTE-ONLY —
+    it can drop a claim from the served answer but can never add or resurrect one
+    the verifier already rejected. It is not advisory: a rejected claim is not
+    served.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -100,7 +108,16 @@ class GraphResult(BaseModel):
     service consumes — the graph preserves that contract rather than inventing a
     new one. ``answer`` is the drafted prose, ``handoffs`` the ordered typed
     transition log, ``metrics`` the observability fields, and ``critic`` the
-    (advisory) verdict when the run reached finalize.
+    demote-only verdict when the run reached finalize (``None`` when the
+    iteration cap stopped the run before it).
+
+    ``guideline_evidence`` is exactly what the evidence-retriever worker
+    retrieved under the supervisor's routing decision — the same chunks that
+    informed the prose. Surfacing it here is what lets the chat route DISPLAY the
+    supervisor's evidence instead of retrieving a second, decoupled set of its
+    own (one retrieval per turn). Empty when the supervisor did not dispatch the
+    evidence worker: honest "this turn needed no guideline evidence", not
+    "retrieval found nothing".
     """
 
     model_config = ConfigDict(frozen=True)
@@ -110,3 +127,4 @@ class GraphResult(BaseModel):
     handoffs: list[Handoff] = Field(default_factory=list)
     metrics: GraphMetrics
     critic: CriticVerdict | None = None
+    guideline_evidence: list[GuidelineEvidence] = Field(default_factory=list)
