@@ -382,6 +382,24 @@ organization's behalf.
   the alternative is the **self-hosted** Langfuse stack shipped (off by default)
   in `docker-compose.deploy.yml` (see `agent/LANGFUSE_SETUP.md`), which keeps
   trace metadata on the organization's own infrastructure.
+- **Voyage AI + Cohere — required *if keyed* (Week-2 retrieval).** When
+  `VOYAGE_API_KEY` / `COHERE_API_KEY` are set, the clinician's **retrieval query
+  text** leaves the deployment to Voyage (embedding) and Cohere (rerank). Keyless
+  is the default and the deterministic stubs make **zero outbound calls**, so an
+  unkeyed deploy has no Voyage/Cohere egress at all. Every query is routed through
+  the `deidentify()` choke point first (`copilot/rag/retriever.py:150`) — a single,
+  real, architecturally-enforced control. **But state its limit honestly:** the
+  scrub is a deterministic regex pass (`copilot/rag/deidentify.py`), not a model.
+  It removes structured identifiers by shape (email, SSN, dates, phone, 5+-digit
+  runs such as MRNs) and *label-gated* names (`Patient: <Name>`, `deidentify.py:50-53`),
+  and it **does not remove an arbitrary free-text name** a clinician types into a
+  question. It is therefore **not de-identification in the §164.514 Safe Harbor
+  sense**, and a keyed deployment must not treat it as such. An organization
+  enabling these keys **must execute Voyage and Cohere BAAs** (or route to an
+  approved gateway), exactly as for any other PHI-capable subprocessor — the
+  scrub reduces, but does not eliminate, the possibility that identifying text
+  reaches them. Document **images and full chart PHI never go to Voyage/Cohere**;
+  they go only to Anthropic (above), which is BAA-covered.
 - **Any other subprocessor** that can see PHI or PHI-adjacent metadata —
   including any monitoring/log aggregation — must be covered by a BAA or must not
   receive PHI.
@@ -472,8 +490,17 @@ requires a BAA for production, or a switch to the built-in (off-by-default)
 self-hosted stack. The audit-retention sweep remains report-only (6-yr floor, no
 delete path).
 
+**Bounded, not eliminated (Week-2 retrieval egress):** the `deidentify()` choke
+point is a genuine architectural control — one function, one place, every
+retrieval query through it — and the **default keyless deploy sends nothing to
+Voyage/Cohere at all**. But the scrub is shape-based (structured identifiers +
+label-gated names) and **misses a free-text name typed into a question**, so a
+*keyed* deployment must not present it as Safe Harbor de-identification and must
+carry Voyage/Cohere BAAs (§3.1). Closing the gap needs an NER pass or a
+per-request chart-name denylist — neither is built.
+
 **Never the software's to claim:** the BAAs (Anthropic + ZDR, Langfuse Cloud,
-hosting), all §164.308 administrative safeguards, §164.310 physical safeguards,
-and the operational hardening in §3.4.
+hosting, and Voyage/Cohere if keyed), all §164.308 administrative safeguards,
+§164.310 physical safeguards, and the operational hardening in §3.4.
 </content>
 </invoke>

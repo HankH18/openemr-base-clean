@@ -48,10 +48,16 @@ hybrid RAG (sparse+dense → RRF → rerank) behind it.
 cd agent && python evals/gate.py                    # 53 cases, 5 boolean rubrics → pass_rate 100, EXIT 0
 python evals/gate.py --inject-regression            # pass_rate drops → BLOCKED, EXIT 1
 ```
-Say: "50-case golden set, boolean rubrics — `schema_valid`, `citation_present`,
+Say: "53-case golden set, boolean rubrics — `schema_valid`, `citation_present`,
 `factually_consistent`, `safe_refusal`, `no_phi_in_logs`. It blocks a >5% regression, and
-it's wired PR-blocking via the pre-push hook and GitLab CI. When a grader plants a
-regression, this is what fails their build."
+it's wired PR-blocking in **GitLab CI** (`agent:tests`). When a grader plants a regression,
+this is what fails their build."
+
+> **Say it accurately.** CI is the enforcing gate — say "CI", not "the pre-push hook". The
+> committed hook (`.githooks/pre-push`) is *available* but **inert until a dev opts in** with
+> `git config core.hooksPath .githooks` (unset by default). Claiming it blocks pushes today
+> is an overclaim a grader can check in one command. Case count is **53** (13
+> `gate_dataset.jsonl` + 40 `golden_dataset.jsonl`) — matches the terminal output on screen.
 
 **3:30–4:00 — Observability (Requirement 7).** Switch to Langfuse: open the trace for the
 chat turn you just ran, keyed by the **correlation ID** (also returned as the

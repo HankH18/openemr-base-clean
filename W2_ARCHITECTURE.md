@@ -20,7 +20,7 @@ evidence kept visibly separate from patient facts**, and makes **every clinical 
 to its exact source** (a bounding box on the scanned page, a FHIR record, or a guideline chunk).
 Work is routed by a **hand-rolled supervisor** across two workers (intake-extractor,
 evidence-retriever) plus a critic, with logged handoffs and nested traces. Quality is defended by
-a **two-tier eval gate**: a deterministic, PR-blocking suite of 50 boolean-rubric cases that fails
+a **two-tier eval gate**: a deterministic, CI-blocking suite of 53 boolean-rubric cases that fails
 CI on regression, and a separate non-blocking live-model quality run.
 
 The system is intentionally **narrow**: the MVP shipped exactly two document types, one small
@@ -52,8 +52,10 @@ multi-vector (ColQwen2) indexing and a MinIO/Grafana scale-out (documented scale
    physician-confirmed clinical records; the agent DB owns derived extractions, citations, the
    guideline corpus, and audit. Derived-fact storage is **append-only** (re-ingest = new version).
 7. **Minimize PHI egress.** Document images + PHI go only to Claude (as in Week 1). Voyage and
-   Cohere receive only **de-identified clinical-topic queries** — enforced at a single scrub
-   choke-point shared with logging.
+   Cohere receive only **scrubbed clinical-topic queries** — enforced at a single choke-point shared
+   with logging. The scrub is shape-based (structured identifiers + label-gated names) and has a
+   documented free-text-name gap — see §Security for the precise limitation; "de-identified" here
+   means *this scrub ran*, not Safe Harbor.
 8. **Correlation-ID everywhere.** A full multi-agent trace must be reconstructable from the
    correlation ID alone; worker spans are children of the supervisor span.
 
@@ -81,9 +83,10 @@ rasterization → OCR → Claude-vision structured extraction → schema validat
 answer.
 
 **Evidence-retriever worker** (`copilot/graph/evidence_retriever.py`) — owns hybrid retrieval over
-the guideline corpus: de-identify query → sparse (Postgres FTS) + dense (pgvector) → RRF fusion →
-Cohere rerank → top-K grounded snippets with `chunk_id + section`. Returns evidence, explicitly
-typed as guideline (not patient) facts.
+the guideline corpus: de-identify query → sparse (Postgres FTS) + dense (pgvector storage,
+Python-side cosine over the loaded chunk set — see §RAG index) → RRF fusion → Cohere rerank →
+top-K grounded snippets with `chunk_id + section`. Returns evidence, explicitly typed as guideline
+(not patient) facts.
 
 **Critic** (`copilot/graph/critic.py`) — an *additional* gate over the drafted answer: rejects any
 clinical claim lacking a machine-readable citation (deterministic check) and unsafe action
@@ -109,6 +112,28 @@ intake write-back via the existing propose→confirm gate.
 embeddings (precomputed at ingest + cached), pgvector + FTS storage, hybrid retrieve + Cohere
 rerank. All behind swappable/stubbable `Protocol`s.
 
+> **How dense retrieval actually works — stated precisely, because "pgvector" oversells it.**
+> pgvector is the **storage column type only** (`Vector(1024)` on Postgres, a JSON list on SQLite —
+> `copilot/memory/db.py:49`). There is **no vector operator** (`<=>`, `<->`, `cosine_distance`) and
+> **no ANN index** (no `ivfflat`, no `hnsw`) in any SQL in this repo. Dense retrieval is an
+> **in-Python full scan**: `MemoryRepository.list_guideline_chunks()` loads *every* chunk row
+> (`copilot/memory/repository.py:710-719` — "the hybrid retriever loads the full chunk set to rank
+> it in memory"), and `_dense_rank()` computes cosine similarity over each row in Python
+> (`copilot/rag/retriever.py:238-250`). Only the **sparse** half touches Postgres query planning
+> (`to_tsvector`/`plainto_tsquery`, `retriever.py:286-295`), with a term-overlap fallback on SQLite.
+>
+> This is **correct and fast at the committed corpus size** — 4 guideline documents / 19 heading
+> sections (`agent/corpus/`), so the scan is ~19 vectors per query and the measured retrieval floor
+> is **p95 2.0 ms** (`agent/artifacts/latency_report.json`). It is **not an indexed search**, and it
+> is O(corpus) in both rows loaded and Python cosine ops per query — it will degrade linearly as the
+> corpus grows.
+>
+> **Scale path (not built):** switch `_dense_rank` to an in-SQL `ORDER BY embedding <=> :query_vec
+> LIMIT k` and add an ANN index (`ivfflat` or `hnsw`) on `guideline_chunk.embedding`. The storage
+> column is already the right type, so this is a retriever-internal change behind the existing
+> `GuidelineRetriever` surface — no schema migration and no contract change. The trigger is corpus
+> growth (order hundreds-to-thousands of chunks), not current load.
+
 **Observability (extended)** (`copilot/observability/`) — nested spans; wired JSON logging;
 per-encounter cost across the graph; graded `/ready`; SLOs + alerts; hand-rolled status page.
 
@@ -122,8 +147,10 @@ Concrete choices **with versions**; anything pinned by the existing codebase is 
 - **Backend:** Python 3.12 · FastAPI `>=0.115,<0.116` · Pydantic v2 (`>=2.9`) · SQLAlchemy 2
   (async) · Anthropic SDK `>=0.40,<1` (installed 0.116; **pinned `<1`**) · APScheduler · httpx ·
   cryptography · authlib · Langfuse **v2** (`>=2.55,<3` — v3's OTel API emits nothing here).
-- **Datastore:** PostgreSQL **16** with **pgvector** (`pgvector/pgvector:pg16`); SQLite (aiosqlite)
-  in tests via a JSON-vector fallback column mirroring the existing `JSONType` dual-dialect trick.
+- **Datastore:** PostgreSQL **16** with **pgvector** (`pgvector/pgvector:pg16`) — used as the
+  embedding **storage column type**, not as a search index; dense ranking is Python-side cosine
+  (see §RAG index). SQLite (aiosqlite) in tests via a JSON-vector fallback column mirroring the
+  existing `JSONType` dual-dialect trick.
 - **Document pipeline (new deps):** Tesseract (system binary) + `pytesseract` · `pypdfium2`
   (rasterization; BSD/Apache — deliberately *not* PyMuPDF, which is AGPL) · `Pillow`.
 - **Embeddings:** **Voyage AI** `voyage-3.5` (1024-dim) — Anthropic's recommended embedding
@@ -192,6 +219,31 @@ class GuidelineCitation(BaseModel):       # source_type = "guideline"
 into `FhirCitation`. All new columns are nullable/defaulted so old rows rehydrate unchanged
 (the repository already uses `.get(...)` defaults). No backfill required.
 
+### Ownership, lineage, access control, and validation — per artifact type
+
+Principle 6 ("one source of truth per data type") is only meaningful if every artifact names its
+owner. All four Week-2 artifact types, made explicit:
+
+| Artifact | Owner / authority | Lineage (where it came from) | Access control | Validation |
+|---|---|---|---|---|
+| **Extracted lab observations** (`extracted_fact`, `category IS NULL`) | **Agent DB — agent-store-authoritative.** Not OpenEMR: labs/Observations are **read-only** in both the FHIR and Standard APIs (verified against the route maps), so a lab fact *cannot* be written back as a FHIR resource. OpenEMR still owns the **source PDF**. | `source_document` (→ `openemr_document_id`, the authoritative source ref) → `document_page` (raster + OCR tokens) → `extraction` (model, schema_version) → `extracted_fact` (+ `page_no`, `bbox`, `match_confidence`). **Append-only**: re-ingest = new `extraction` row, never an overwrite. | PHI. Route-gated: session auth + **rounding-list RBAC** — `is_authorized(clinician_id, patient_id)` on every route (`api/routes/documents.py:131,188,236`), which requires a persisted rounding cursor covering that patient (`auth/authorization.py:20-28`). Every read writes an `audit_log` row. | Strict Pydantic `LabReport` schema — a field that fails validation is **rejected, not coerced**. Plus OCR reconciliation: a value not locatable in the page tokens gets `supported=false` and **cannot pass the document-grounding gate** (threshold `doc_extraction_confidence_threshold`, default 0.7, `config.py:306`). |
+| **Intake facts** (`extracted_fact` with a non-NULL `category`) | **Split, deliberately.** The agent DB owns the *extraction*; **OpenEMR owns the clinical record** once a physician confirms it. The agent **never self-commits** — write-back goes through the propose→confirm gate, and the confirmed row is OpenEMR's, attributed to the physician's own token. | Same chain as lab facts, plus `IntakeFact.category` (`IntakeCategory` enum) mapping each fact to its OpenEMR record type (`demographic`→`patient_data`, `medication`/`allergy`/`medical_problem`→`lists.type`, …; migration `0007`). Confirmed facts then become OpenEMR-owned records — lineage crosses the boundary **only** through the gate. | PHI. Identical to lab facts (same routes, same RBAC). Write-back additionally requires `writeback_enabled` **and** the physician's delegated write scopes; propose and commit are separately audited. | Strict Pydantic `IntakeForm` / `IntakeFact` schema + the same OCR-reconciliation gate. `IntakeCategory` is a **closed enum** — an uncategorizable fact is not silently written back. |
+| **Guideline chunks** (`guideline_document`, `guideline_chunk`) | **Agent DB — agent-owned, and fully repo-reproducible.** The corpus is *derived data*, not a system of record: the committed Markdown under `agent/corpus/` is the real source of truth and `agent/scripts/ingest_guidelines.py` deterministically rebuilds every row from it. Losing the table costs a re-ingest, not data (see `DEPLOY.md` §19.2). | `agent/corpus/*.md` (committed, each with front-matter `source` + a license recorded in `guideline_document.license`) → heading-aware chunking (`rag/ingest.py`) → Voyage embedding (or the keyless stub) → `guideline_chunk.{text, embedding, fts}`. **Idempotent by the `source` natural key** — an already-registered document is skipped wholesale. | **Non-PHI — public clinical text.** No patient scoping applies or is needed. There is **no public guideline endpoint**: chunks are reachable only *through* an authorized chat turn (`api/routes/chat.py:117`, same RBAC), so no unauthenticated read path exists even though the content is public. Egress: only **scrubbed** queries reach Voyage/Cohere (§Security), never patient facts. | Structural, not clinical: `title` + `source` + `license` front-matter are **required at ingest** (`_REQUIRED_KEYS`, `rag/ingest.py:45`) — a file missing any is rejected; chunk text carries `section` + `chunk_index`. Retrieval returns typed `GuidelineEvidence`, never a patient-fact `Claim`, and a chunk is served **verbatim from storage** — the retrieval path cannot invent one. **But the corpus content itself is demo material, and the docs must say so:** each file's front-matter records `provenance: Original text synthesized for the AgentForge demo corpus from general medical knowledge; not excerpted from any copyrighted guideline. Demonstration only — not for clinical use.` It is **not** a published clinical guideline and carries **no clinical authority** — it exercises the RAG path with license-clean text. A real deployment must replace `agent/corpus/` with licensed guideline sources; the ingest contract (front-matter + heading chunking) is unchanged by that swap. |
+| **Citation records** (`Citation` union in `memory_file.summary` JSON) | **Agent store — authoritative.** No separate table: the discriminated union is persisted with the claim it belongs to, so a claim and its provenance can never drift apart or be independently deleted. | Emitted by whichever path produced the claim: `FhirCitation` ← a live FHIR read; `DocumentCitation` ← `extracted_fact` (carrying `source_id`, `page_no`, `bbox`, `confidence`); `GuidelineCitation` ← `guideline_chunk` (`chunk_id` + `section`). Each points back to a **re-materializable** row — that is the whole design. | Inherits the access control of the claim it accompanies: served only on routes gated by session auth + rounding-list RBAC. A `GuidelineCitation` is non-PHI; `DocumentCitation`/`FhirCitation` are PHI-bearing. | **Pydantic discriminated union on `source_type`** — an unknown type fails deserialization rather than degrading to an untyped ref. Enforced at serve time by the **fail-closed verifier**: every claim must re-materialize its cited source *and* pass a value re-check, or it is dropped; if no claims survive, the answer is withheld. Legacy rows with no `source_type` default to `"fhir"` (migration note above). |
+
+**The invariant this table encodes:** *the agent owns what it derived; OpenEMR owns what a physician
+confirmed; the repo owns what is reproducible.* No artifact has two owners, and the one place data
+crosses an ownership boundary — intake fact → OpenEMR record — is exactly where the propose→confirm
+gate sits.
+
+**Durability follows ownership.** Each row's owner determines how it is protected and what losing it
+costs — full backup/recovery procedure, RPO/RTO estimates, and the (honestly stated) gap that
+**no scheduled backup runs today** are in [`DEPLOY.md`](DEPLOY.md) §19. The short version: the
+repo-owned tier (eval golden set, rubrics, baseline, guideline corpus) is **RPO 0 — reproducible
+from the repo alone**, verified by `python evals/gate.py` on a clean clone with no key, DB, or
+network; the agent-owned derived extractions are the genuinely fragile tier, since OpenEMR holds the
+source PDF but never our parse of it.
+
 ## Interfaces & contracts
 
 HTTP (new/changed; all under `/v1`, auto-mounted from `copilot/api/routes/`, proxied by Caddy):
@@ -242,6 +294,23 @@ bbox highlighted. Full trace reconstructable from the correlation ID.
 - **PHI egress:** a single `deidentify()` choke-point strips patient identifiers before any Voyage
   or Cohere call *and* before logging. Document **images** are sent only to Claude. Guideline chunks
   are public (non-PHI).
+  - **Known limitation — state it plainly.** `deidentify()` (`copilot/rag/deidentify.py`) is a
+    deterministic regex scrub, not a model. It removes **structured identifiers by shape** — email,
+    SSN, dates, phone, and any run of 5+ digits (MRN/account) — and **label-gated names** only:
+    the `_LABELED_NAME_RE` pattern (`deidentify.py:50-53`) requires an explicit `Patient:` / `Pt:` /
+    `Name -` label followed by Title-Case tokens. It therefore **does not scrub an arbitrary
+    free-text name**: a clinician typing *"Marisol's lactate is 4.2 — what does the sepsis guideline
+    say?"* sends that name to Voyage/Cohere. This is a deliberate trade, not an oversight — the
+    label gate is scoped precisely so a greedy Title-Case match can't swallow clinical prose
+    (`"pt: severe sepsis with lactate elevation"` → `"patient"` would destroy the query before
+    retrieval; see the comment at `deidentify.py:44-49`). The bounded blast radius: the scrub
+    protects the **retrieval query egress only** (Voyage/Cohere), the two vendors that never need a
+    name; Claude — which does receive full PHI including document images — is covered by a BAA, not
+    by this scrub. **The choke-point is a real architectural control (one function, one place, every
+    query routed through it — `retriever.py:150`), but it is a shape-based scrub with a known
+    free-text-name gap. Do not describe it as de-identification in the HIPAA Safe Harbor sense.**
+    Closing the gap needs an NER pass or a chart-name denylist (patient names are known per
+    request) — neither is built.
 - **Data at rest:** SMART tokens remain Fernet-encrypted; extracted facts + page images are PHI →
   access-controlled behind the same auth and audited (`audit_log` rows for `document.ingest`,
   `extraction.run`, `guideline.retrieve`, plus existing write-propose/commit).
@@ -288,6 +357,18 @@ deliberate call:)
   step, already documented in the Week 1 deploy runbook.
 - Page-image storage is agent-DB `bytea` for demo scale; MinIO object store is the noted scale path,
   not built.
+- **`document_ingestion_enabled` is dead config — slated for deletion.** The setting is declared at
+  `copilot/config.py:315` and describes itself as the "Master switch for the Week-2
+  document-ingestion HTTP surface… Gates the API surface", defaulting `False`. **It is never read
+  anywhere.** `register_routers` (`copilot/api/app.py:39-58`) auto-discovers and mounts every module
+  with a `router` attribute **unconditionally** — nothing branches on the flag, so toggling it has
+  no effect and the ingestion routes are mounted whenever the agent runs. The routes are not
+  *unprotected* (session auth + rounding-list RBAC gate them like every PHI route), but they are
+  **not flag-gated**, and any doc or runbook that says otherwise is wrong. Two honest resolutions,
+  both deferred: **delete** the field (preferred — the key gate already delivers the
+  $0/no-egress-by-default property the flag was invented for), or **wire** it into
+  `register_routers` if a genuine mount-level kill switch is wanted. Until then the docs must not
+  cite it as a control — `COST_ANALYSIS.md` §1d previously did and has been corrected.
 - **Intake schema ↔ OpenEMR record types — DONE.** Each intake fact is tagged with a typed
   `IntakeCategory` (`demographic` → `patient_data`, `chief_complaint` → `form_encounter.reason`,
   `medication`/`allergy`/`medical_problem` → `lists.type`, `family_history` → `history_data`) via an
@@ -314,17 +395,81 @@ Three layers, each guarding a documented failure mode:
   document/guideline claims pass or are dropped by the extended verifier. Contract tests assert the
   implementation matches `agent/openapi/week2.yaml`. *Guards: ingestion-flow and RAG-pipeline
   wiring regressions; API/spec drift.*
-- **Golden-set evaluation** (agent behavior) — the 50-case boolean-rubric suite (`schema_valid`,
-  `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`), stubbed and
-  deterministic, baseline + >5% regression, PR-blocking. *Guards: behavioral regressions in
-  extraction/citation/grounding/refusal/PHI on every PR — the graders' injected regression trips
-  this.*
+- **Golden-set evaluation** (agent behavior) — the 53-case boolean-rubric suite (13
+  `gate_dataset.jsonl` + 40 `golden_dataset.jsonl`; rubrics `schema_valid`, `citation_present`,
+  `factually_consistent`, `safe_refusal`, `no_phi_in_logs`), stubbed and deterministic, baseline +
+  >5% regression. **Enforced by the GitLab CI `agent:tests` job** (`.gitlab-ci.yml`), which is
+  path-gated to pushes touching `agent/**/*`. The committed `.githooks/pre-push` hook mirrors it
+  locally but is *inert until a dev opts in* (`git config core.hooksPath .githooks`; unset by
+  default), so CI is the gate that actually blocks.
+  *Guards: behavioral regressions in extraction/citation/grounding/refusal/PHI on every push — the
+  graders' injected regression trips this.*
 
 **Not tested (and why):** live model *quality* is not asserted in the blocking gate (non-deterministic,
 needs keys, forbidden in CI) — it's measured in a separate non-blocking live run. Third-party model
 correctness (Claude/Voyage/Cohere internals) is out of scope — we test our *handling* of their
 outputs, not the outputs themselves. Real-scan OCR accuracy beyond our fixture set is not gated —
 covered by the confidence-flagging behavior instead of a pass/fail threshold.
+
+## SLOs & alerting — the latency threshold, chosen and defended
+
+The spec leaves the ingestion SLO as a blank (*"p95 < X seconds"*). Here is the number,
+what it is grounded in, and why it is not arbitrary. Alert definitions and on-call
+response actions live in `OBSERVABILITY.md` §7 — **these thresholds are the same numbers**;
+if the two ever disagree, `OBSERVABILITY.md` §7.1 is the operational source of truth.
+
+| SLO | Signal | p95 target (warn / page) |
+|---|---|---|
+| **Document ingestion latency** | `doc.ingest` + `extraction.run` span duration, per document end-to-end | **< 12 s** warn / **< 30 s** page |
+| **Evidence retrieval latency** | `guideline.retrieve` span duration | **< 800 ms** warn / **< 2 s** page |
+
+### Why p95 < 12 s for document ingestion
+
+**The measurement it starts from.** `agent/scripts/latency_report.py` records the
+**LLM-free floor** of the real pipeline (rasterize → OCR → reconcile → append-only
+persist), committed at `agent/artifacts/latency_report.json`:
+
+| Path (stub, keyless) | p50 | p95 | n |
+|---|---:|---:|---:|
+| `doc_ingestion` | **36.0 ms** | **151.5 ms** | 5 |
+| `evidence_retrieval` | **1.4 ms** | **2.0 ms** | 5 |
+
+**The reasoning, in one line:** our own code costs ~0.15 s at p95; everything else in the
+budget is the vision call, so the SLO is sized around **OCR + vision**, not around us.
+
+1. **The floor proves the deterministic path is not the constraint.** 151.5 ms p95 is
+   ~1.3% of a 12 s budget. Any breach is upstream (the vision model) or systemic (CPU
+   starvation on OCR) — never "our parsing got slow". That is what makes the threshold
+   *diagnostic*: it fires for a reason you can act on.
+2. **The real path is dominated by one Claude-vision call.** `COST_ANALYSIS.md` §9c sizes
+   real ingestion at **≈ 5 s p50 / ≈ 10 s p95** (one vision call per document, §3c, plus
+   ~0.5–1 s/page CPU rasterize+OCR). **12 s ≈ the estimated real p95 (10 s) + ~20%
+   headroom** — tight enough that a genuine regression trips it, loose enough that a
+   normal 2–3 page scan on a busy droplet does not page anyone at 3 a.m.
+3. **30 s page = the "something is broken" line,** ~3× the expected p95 and ~2.5× the warn.
+   At 30 s the likely causes are Anthropic rate-limiting/retry storms, a missing
+   `tesseract` binary forcing a pathological path, or a rasterize loop on a malformed PDF
+   — all real incidents, not noise.
+4. **The tail is cheap here, which is why 12 s is acceptable at all.** Ingestion is
+   **async and non-interactive** (`POST /v1/documents` → `202` + poll `GET
+   /v1/documents/{id}`) and **fails closed** (a failed run persists zero facts). A
+   document a few seconds slow is invisible to the clinician. Contrast **chat** at
+   **p95 < 8 s** (`OBSERVABILITY.md` Alert 2) — a *lower* threshold for a *slower-bounded*
+   path, because a clinician is waiting on it. The SLO tracks who is blocked, not which
+   pipeline has more steps.
+5. **Retrieval's < 800 ms is set the same way:** measured floor 2.0 ms p95 (DB fusion +
+   in-Python cosine over 19 chunks), real path ≈ 800 ms p95 estimated from two sequential
+   network hops (Voyage embed + Cohere rerank, `COST_ANALYSIS.md` §9d). Retrieval is
+   **fail-open** — a timeout falls back to the fused order and still answers — so it warns
+   at the estimate and only pages at 2 s.
+
+**What this number is not.** It is **not** a measured production p95. The floor is measured
+(n=5, stub path); the 12 s is an **SLO-anchored estimate** for the real path, because no
+production traces are retained yet. Both `COST_ANALYSIS.md` §9 and this section label every
+such cell — and the moment real traffic flows, the same `doc.ingest` spans in Langfuse
+recompute it from observed data. **The threshold is a defended starting point to tune
+against the first week of real traffic, not a validated measurement**, and it will be wrong
+in some direction; the honest move is to say so and to have picked it for stated reasons.
 
 ## Failure modes & incident response
 

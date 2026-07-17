@@ -211,9 +211,15 @@ docker compose -f docker-compose.deploy.yml --env-file .env down -v
   self-signed cert on 443 is worse than plain HTTP for a demo.
 - **DNS.** Point a subdomain at the droplet's IP once you're happy with
   the setup, then update `SITE_ADDR_OATH` in `.env` and `up -d` again.
-- **Backups.** The `db` named volume is the crown jewel. For a demo,
-  `docker run --rm -v openemr-base-clean_db:/data -v $PWD:/backup ubuntu \
-  tar czf /backup/db-$(date +%F).tgz -C /data .` on a cron is enough.
+- **Backups.** See **§19 (Backup & recovery)** for the full treatment — artifact
+  ownership, the manual procedure, recovery, and RPO/RTO. Two corrections to what
+  this bullet used to say: the `db` volume is **not** the only crown jewel (`agent_db`
+  holds the derived extractions, which OpenEMR cannot regenerate), and the cron this
+  bullet hand-waved at **was never installed** — there is no scheduled backup today.
+  The one-off demo dump, for reference:
+  `docker run --rm -v openemr-base-clean_db:/data -v $PWD:/backup ubuntu
+  tar czf /backup/db-$(date +%F).tgz -C /data .` — but prefer §19.3's logical dumps,
+  which survive a DB image bump.
 - **Rebuilding the image.** If you ever need to build a custom image
   instead of using `openemr/openemr:flex`, the dev compose file at
   `docker/development-easy/docker-compose.yml` documents the extra env
@@ -669,3 +675,219 @@ then `GET /v1/documents/{id}/evidence` (see the Postman/Bruno collection in
 > `docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent
 > downgrade 0004` drops the Week-2 tables. The prior agent image also remains in the
 > local Docker cache until pruned.
+
+---
+
+## 19. Backup & recovery (what is protected, how to restore, RPO/RTO)
+
+**Read the gap first.** There is **no scheduled backup on this deployment today.**
+No cron unit, no timer, no snapshot policy, no backup container ships in
+`docker-compose.deploy.yml`, and no backup script exists in this repo for our stack.
+§9 offers a one-off `docker run … tar czf` volume-dump *demo* and says "on a cron is
+enough" — that cron **was never installed**. So the honest current posture is:
+
+> **Current RPO = total loss of the agent DB and the OpenEMR DB since deploy** (there
+> is no restore point at all). **Current RTO = unbounded for PHI-bearing derived data**
+> (it cannot be restored from something that was never captured).
+
+Everything below is therefore split into **what is genuinely protected today** (the
+repo-reproducible tier — real, and it covers more than you would expect) and **what an
+operator must install before this handles real PHI** (the snapshot tier). Do not read
+the RPO/RTO table as describing a running system; it describes the system **once §19.3
+is installed**, and says so per row.
+
+### 19.1 The four artifact classes and where they actually live
+
+| Artifact | Authoritative store | Docker volume | Reproducible from repo? |
+|---|---|---|---|
+| **Source documents** (uploaded lab PDFs / intake forms) | **OpenEMR** (`POST /api/patient/:pid/document`) — the agent stores only `openemr_document_id` as a ref | `db` (MariaDB) + `sites` | **No** — clinician-supplied input |
+| **Derived extractions** (`extraction`, `extracted_fact`, citations, `audit_log`) | **Agent DB** — append-only, agent-authoritative (labs are not API-writable, so these are *not* FHIR resources) | `agent_db` (Postgres) | **No** — output of a paid, non-deterministic vision call |
+| **Derived FHIR records** (physician-**confirmed** write-backs: `medical_problem`, `allergy`, `medication`, vitals, encounters) | **OpenEMR** — written through the propose→confirm gate with the physician's own token, so OpenEMR owns and natively audits them | `db` (MariaDB) | **No** — clinical records |
+| **Page-image render cache** (`document_page.image` bytea) | Agent DB, but explicitly a **re-derivable cache** | `agent_db` | **No, but re-derivable** — rasterize the source PDF again |
+| **Eval golden set** (53 cases) + baseline + guideline corpus | **The git repo** | *none* | **Yes — fully** (see §19.2) |
+
+Two consequences worth being blunt about:
+
+- **The agent DB is the only home of the derived extractions.** Losing `agent_db` loses
+  every extracted fact and its bbox provenance. They are *not* recoverable from OpenEMR
+  — OpenEMR has the source PDF, not our parse of it. They are only *re-derivable* by
+  re-running ingestion against a live Anthropic key, which costs money and (being a
+  model call) will not reproduce byte-identical facts. Treat `agent_db` as
+  crown-jewel-equal to `db`, which §9 currently does not.
+- **`.env` is a single point of total loss.** `COPILOT_SESSION_ENC_KEY` (Fernet, §14.1)
+  decrypts the physician SMART tokens at rest. **A volume backup without that key
+  restores unreadable token rows** — physicians must re-authenticate, and any
+  in-flight delegated session is gone. `.env` is gitignored by design; back it up to a
+  secrets manager **separately from the volume dumps**, never into the same tarball.
+
+### 19.2 The eval golden set is reproducible from the repo alone — verified
+
+**This is a genuine "no backup required" claim, and it checks out.** The entire eval
+gate is committed plain-text; a fresh `git clone` reconstitutes it with **zero**
+dependency on any droplet, volume, or snapshot:
+
+| Asset | Path | Committed |
+|---|---|---|
+| Gate cases (13) | `agent/evals/gate_dataset.jsonl` | ✅ tracked |
+| Golden cases (40) | `agent/evals/golden_dataset.jsonl` | ✅ tracked |
+| Regression baseline | `agent/evals/gate_baseline.json` | ✅ tracked |
+| Rubric logic + runner | `agent/evals/rubrics.py`, `agent/evals/gate.py` | ✅ tracked |
+| Guideline corpus (4 docs / 19 sections) | `agent/corpus/*.md` + `LICENSES.md` | ✅ tracked |
+| Corpus ingest script | `agent/scripts/ingest_guidelines.py` | ✅ tracked |
+
+Verify the claim in one command (from a clean clone, no droplet, no keys, no network):
+
+```bash
+cd agent && python evals/gate.py     # 53 cases, 5 boolean rubrics → pass_rate 100, exit 0
+```
+
+The gate is **stubbed and LLM-free**, so it needs no API key and no database — which is
+exactly why it survives losing everything else. The **guideline corpus** is equally
+repo-reproducible: `guideline_chunk` rows are agent-DB-owned but are *derived*, and
+`scripts/ingest_guidelines.py` deterministically rebuilds them from the committed
+Markdown. Idempotency is **automatic, not a flag** — the front-matter `source` is the
+natural key and an already-registered document is **skipped wholesale**
+(`copilot/rag/ingest.py:15-18`), so re-running never duplicates; with the stub embedder
+a from-scratch re-ingest is byte-identical. **RPO 0 / RTO ≈ 1 minute for both.**
+
+> **Two honest limits of this claim.**
+> 1. "Reproducible from the repo alone" covers the eval set, rubrics, baseline, and
+>    guideline corpus — the whole quality-defence apparatus. It does **not** cover
+>    patient data, and nothing here should be read as implying otherwise.
+> 2. **The re-ingest cannot *upgrade* stub vectors to real ones in place.** Because an
+>    already-registered `source` is skipped wholesale, re-running with `VOYAGE_API_KEY`
+>    set against a populated corpus is a **no-op** — it will not re-embed. Real vectors
+>    are only produced when the ingest runs against an **empty** corpus with the key
+>    set. So: on a from-scratch restore, export `VOYAGE_API_KEY` **before** step 4 of
+>    §19.4 and you get real `voyage-3.5` vectors (cheap — one-time corpus embed, §3d);
+>    to re-embed an already-populated corpus you must clear `guideline_chunk` +
+>    `guideline_document` first (or restore the agent dump, which already carries the
+>    real vectors). There is no `--force` / `--reset` flag — the only CLI argument is
+>    `--corpus-dir`.
+
+### 19.3 Manual backup procedure (install this — it is not running)
+
+Logical dumps, not raw volume tars: they survive a Postgres/MariaDB image bump, which a
+`/var/lib/postgresql/data` tarball does not. Run on the droplet in the repo root.
+
+```bash
+set -euo pipefail
+BACKUP_DIR=/opt/agentforge-backups; STAMP=$(date -u +%F-%H%M)
+mkdir -p "$BACKUP_DIR"
+CF="docker compose -f docker-compose.deploy.yml --env-file .env"
+
+# 1. Agent DB (derived extractions, facts, citations, audit_log, guideline chunks).
+$CF exec -T agent-postgres pg_dump -U copilot -d copilot --format=custom \
+  | gzip > "$BACKUP_DIR/agent-db-$STAMP.dump.gz"
+
+# 2. OpenEMR DB (source documents + physician-confirmed FHIR write-backs).
+$CF exec -T mariadb sh -c 'exec mariadb-dump -uroot -p"$MYSQL_ROOT_PASSWORD" \
+  --single-transaction --routines --triggers openemr' \
+  | gzip > "$BACKUP_DIR/openemr-db-$STAMP.sql.gz"
+
+# 3. OpenEMR site assets (uploaded document blobs live here, not only in the DB).
+docker run --rm -v "$(basename "$PWD")_sites":/data -v "$BACKUP_DIR":/backup ubuntu \
+  tar czf "/backup/openemr-sites-$STAMP.tgz" -C /data .
+
+# 4. Verify non-empty, then ship OFF the droplet — a backup on the box it protects
+#    is not a backup (it dies with the droplet).
+ls -lh "$BACKUP_DIR"/*"$STAMP"*
+# e.g.: rclone copy "$BACKUP_DIR" do-spaces:agentforge-backups/  (encrypted remote)
+```
+
+**`.env` (separately, to a secrets manager — NOT into the tarball above):**
+`COPILOT_SESSION_ENC_KEY`, `MYSQL_ROOT_PASSWORD`, `AGENT_POSTGRES_PASSWORD`,
+`ANTHROPIC_API_KEY`, and any `VOYAGE_API_KEY` / `COHERE_API_KEY`.
+
+**Automate it (the actual gap — one line):**
+
+```bash
+# /etc/cron.d/agentforge-backup — nightly 02:15 UTC; RPO becomes 24h.
+15 2 * * * root cd /root/openemr-base-clean && /root/backup.sh >> /var/log/agentforge-backup.log 2>&1
+```
+
+A DigitalOcean **droplet snapshot** or an automated-backups subscription is the
+belt-and-braces layer (whole-VM, weekly) — it protects against droplet loss, which the
+above does not if the dumps never leave the box.
+
+### 19.4 Recovery procedure
+
+**Restore the agent DB** (derived extractions/facts/citations/audit):
+
+```bash
+CF="docker compose -f docker-compose.deploy.yml --env-file .env"
+$CF stop agent                                    # stop writers first
+gunzip -c /opt/agentforge-backups/agent-db-<STAMP>.dump.gz \
+  | $CF exec -T agent-postgres pg_restore -U copilot -d copilot --clean --if-exists
+$CF start agent
+$CF exec agent python -c \
+  "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
+```
+
+**Restore the OpenEMR DB + assets** (source documents, confirmed write-backs):
+
+```bash
+$CF stop openemr agent
+gunzip -c /opt/agentforge-backups/openemr-db-<STAMP>.sql.gz \
+  | $CF exec -T mariadb sh -c 'exec mariadb -uroot -p"$MYSQL_ROOT_PASSWORD" openemr'
+docker run --rm -v "$(basename "$PWD")_sites":/data \
+  -v /opt/agentforge-backups:/backup ubuntu \
+  sh -c 'cd /data && tar xzf /backup/openemr-sites-<STAMP>.tgz'
+$CF start openemr agent
+```
+
+**Rebuild the repo-reproducible tier** (no backup needed — this is §19.2 in practice):
+
+```bash
+git clone <fork-url> && cd openemr-base-clean          # eval set + corpus arrive with the clone
+cd agent && python evals/gate.py                        # prove the gate is intact: 53 cases, exit 0
+
+# Re-seed guideline_chunk. Set VOYAGE_API_KEY in .env BEFORE this runs if you want real
+# voyage-3.5 vectors: the ingest skips already-registered documents wholesale, so a later
+# re-run will NOT re-embed a populated corpus (see §19.2). Keyless = stub vectors, which
+# still serve grounded, cited evidence.
+docker compose -f docker-compose.deploy.yml run --rm -T --no-deps \
+  --entrypoint python agent scripts/ingest_guidelines.py
+```
+
+**Total droplet loss** — the order that matters: (1) rebuild the droplet and restore
+`.env` from the secrets manager **first** (without `COPILOT_SESSION_ENC_KEY` the token
+rows you are about to restore are undecryptable); (2) `git clone` the fork (§5 → §10);
+(3) restore the two DB dumps; (4) re-run the corpus ingest; (5) rebuild the web bundle
+(§18 step 5); (6) verify `/ready` and smoke the Week-2 flow (§18 step 7).
+
+**Restore-test cadence.** A backup never restore-tested is a hypothesis. Restore the
+agent dump into a scratch Postgres quarterly and assert row counts on `extraction` /
+`extracted_fact` / `audit_log` — the append-only tables where silent truncation would
+otherwise go unnoticed until it mattered.
+
+### 19.5 RPO / RTO
+
+Estimates, stated per class. **"Today" = the current no-backup reality; "With §19.3" =
+once the nightly cron is installed.** RTO figures are for the single-droplet reference
+deployment and assume the dumps are reachable.
+
+| Artifact class | RPO today | RPO with §19.3 | RTO | Basis / limiting factor |
+|---|---|---|---|---|
+| **Eval golden set + rubrics + baseline** | **0** | 0 | **≈ 1 min** | Committed plain-text; `git clone` + `python evals/gate.py`. Needs no key, DB, or network — verified §19.2 |
+| **Guideline corpus + chunks** | **0** | 0 | **≈ 1–2 min** | Committed Markdown + deterministic ingest script (idempotent by `source` natural key). Key must be set *before* the from-scratch run for real vectors — §19.2 limit 2 |
+| **Derived extractions / facts / citations / audit** | **∞ — total loss** | **≤ 24 h** | **≈ 10–15 min** | `pg_restore` of a ~small custom-format dump + agent restart. *Not* re-derivable free: only a paid, non-deterministic re-ingest recreates them |
+| **Page-image cache** | ∞ (but re-derivable) | ≤ 24 h | ≈ 10–15 min (with the dump) | Explicitly a re-derivable cache — rasterize the source PDF again if lost |
+| **Source documents + confirmed FHIR write-backs** | **∞ — total loss** | **≤ 24 h** | **≈ 15–30 min** | `mariadb` logical restore + `sites` volume extract; largest dataset, so restore time dominates |
+| **SMART session tokens** | ∞ | ≤ 24 h *(and useless without `.env`)* | ≈ 5 min | Fernet-encrypted; **`COPILOT_SESSION_ENC_KEY` is the hard dependency**. Worst case is not fatal — physicians re-authenticate |
+| **Whole droplet** | ∞ | ≤ 24 h (dumps) / ≤ 7 d (DO snapshot) | **≈ 45–90 min** | Full §19.4 rebuild: droplet + `.env` + clone + 2 restores + ingest + web bundle + verify |
+
+**Why 24 h and not tighter.** A nightly logical dump is the honest fit for this system's
+write profile: ingestion is operator-driven and low-volume, and the highest-value rows
+(`extracted_fact`, `audit_log`) are **append-only** — nothing overwrites history, so a
+restore loses only the tail, never a mutation. Tightening RPO below 24 h means WAL
+archiving / PITR (`wal-g` to object storage) or a managed Postgres with continuous
+backup — that is the **1,000-user tier's** managed-Postgres step
+(`COST_ANALYSIS.md` §7), not a single-droplet demo control, and pretending otherwise
+would be the same kind of overclaim this section exists to retire.
+
+**§164.312 note.** `audit_log` carries a **6-year retention floor** and the retention
+sweep is **report-only** (no delete path) — so the audit trail only ever grows, and
+backup sizing should assume it. A restore that silently loses audit rows is a
+compliance problem, not just a data problem: that is why §19.4's restore test asserts
+`audit_log` row counts specifically. See `agent/COMPLIANCE.md` §(b).
