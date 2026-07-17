@@ -7,11 +7,19 @@ silently coerced into a valid-looking object. In particular every model runs in
 Pydantic **strict** mode with ``extra="forbid"`` — a string is never coerced to
 a bool/float/list, and an unknown key is a hard error — so a VLM that omits a
 required field or emits a wrong-typed one fails loudly instead of producing a
-confident-but-wrong extraction.
+confident-but-wrong extraction. Every document model additionally requires at
+least one fact (``min_length=1``), because "found nothing" is the one failure a
+type check alone will not catch: an empty extraction is well-typed.
 
 The extracted values stay verbatim strings (``ExtractedFact.value``): the
 reconciliation + verification layers compare against the source, so coercing
 ``"13.5"`` to a float here would throw away formatting we need to match.
+
+Fields that a real document genuinely may not carry (``unit``,
+``reference_range``, ``abnormal``, ``collection_date``) stay optional rather
+than rejecting an honest partial extraction — but their absence is reported,
+never silent: see :meth:`ExtractedFact.missing_lab_fields`,
+:attr:`LabReport.incomplete_facts`, and :attr:`IntakeForm.categories_present`.
 """
 
 from __future__ import annotations
@@ -22,14 +30,45 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class LabField(StrEnum):
+    """The lab fields the spec (req 2, p4) names as required, as a closed set.
+
+    Naming them makes the spec's list machine-checkable rather than prose: each
+    member is one slot the extraction contract must *account for*. Four of them
+    (:attr:`unit`, :attr:`reference_range`, :attr:`abnormal`,
+    :attr:`collection_date`) are deliberately optional *fields* on
+    :class:`ExtractedFact` — see :meth:`ExtractedFact.missing_lab_fields` for
+    why, and for how their absence is kept visible instead of silent.
+    """
+
+    test_name = "test_name"  # -> ExtractedFact.field_path
+    value = "value"  # -> ExtractedFact.value
+    unit = "unit"
+    reference_range = "reference_range"
+    collection_date = "collection_date"  # per-fact, or LabReport.collected_at
+    abnormal = "abnormal"
+    source_citation = "source_citation"  # -> supported + bbox (set by reconciliation)
+
+
 class ExtractedFact(BaseModel):
     """One schema-validated fact pulled from a document, with provenance.
 
     Mirrors the frozen ``extracted_fact`` Phase-0 columns. ``field_path`` and
     ``value`` are required — a fact with neither is not a fact — and ``value``
-    is kept as a verbatim string (never coerced numeric). ``supported`` is the
-    no-invention gate: True only when the value was located in the page's OCR
-    tokens (``bbox`` + ``match_confidence`` set).
+    is kept as a verbatim string (never coerced numeric).
+
+    ``supported`` is the no-invention gate, and it is *derived downstream*: the
+    reconciliation layer (``documents/reconcile.py``) sets ``supported=True``
+    together with ``bbox`` + ``match_confidence`` when it locates the value in
+    the page's OCR tokens, and ``supported=False`` when the value is nowhere on
+    the page. A vision model never sets it — at this extraction boundary the
+    field is simply unset. **This schema does not enforce that pairing**; the
+    invariant lives in the layer that derives it, so do not read ``supported``
+    on an un-reconciled fact as evidence of anything.
+
+    The four optional lab fields (``unit``, ``reference_range``, ``abnormal``,
+    ``collection_date``) record *absence*, and absence is reported — not
+    silent — via :meth:`missing_lab_fields`.
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
@@ -50,21 +89,85 @@ class ExtractedFact(BaseModel):
     match_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     supported: bool = False
 
+    def missing_lab_fields(
+        self, *, collected_at_fallback: datetime | None = None
+    ) -> frozenset[LabField]:
+        """Which spec-required lab fields this fact does not carry.
+
+        The completeness signal that keeps optional-ness honest. The spec calls
+        all seven fields required, but a schema that *rejected* a fact lacking a
+        reference range would reject real laboratory documents: unitless
+        analytes (INR, pH, ratios) have no unit, qualitative and narrative
+        results have no reference range, and most report formats print an
+        ``abnormal`` flag only when the result *is* abnormal. Worse, a required
+        field on a model-extraction schema is not a data-quality guarantee — it
+        is pressure to invent, because the model must emit *something* to
+        validate. That would trade a visible gap (``None``) for an invisible
+        fabrication, which is precisely what this pipeline's OCR reconciliation
+        exists to prevent.
+
+        So the fields stay optional and the gap becomes *data*: callers can
+        count, audit, and gate on it. Absence is recorded, never assumed away.
+
+        ``collected_at_fallback`` resolves :attr:`LabField.collection_date`
+        against the report-level date (see :attr:`LabReport.collected_at`),
+        because a real lab prints the collection date once in the specimen
+        header rather than on every analyte row.
+
+        :attr:`LabField.source_citation` counts as present only once
+        reconciliation has attached a bbox — so a freshly-extracted,
+        un-reconciled fact always reports it missing. That is intended: the
+        citation is earned from the page, not claimed by the model.
+        """
+        missing: set[LabField] = set()
+        if not self.unit:
+            missing.add(LabField.unit)
+        if not self.reference_range:
+            missing.add(LabField.reference_range)
+        if not self.abnormal:
+            missing.add(LabField.abnormal)
+        if self.collection_date is None and collected_at_fallback is None:
+            missing.add(LabField.collection_date)
+        if not (self.supported and self.bbox is not None):
+            missing.add(LabField.source_citation)
+        return frozenset(missing)
+
 
 class LabReport(BaseModel):
     """Strict schema for a parsed laboratory report (VLM extraction target).
 
-    ``facts`` is required with no default, so an empty payload can never default
-    itself into a valid (empty) report — the whole point of a strict extraction
-    schema.
+    ``facts`` is required *and* non-empty (``min_length=1``): a payload that
+    omits the key fails, and so does ``{"facts": []}``. "I read a lab report and
+    found nothing" is never an honest extraction — without the length floor a
+    vision model that read nothing produces a clean, confident, empty report
+    that every downstream consumer treats as success. The floor also rides into
+    the tool schema the model is handed (``minItems: 1`` in
+    ``model_json_schema()``), so the constraint is stated to the extractor, not
+    only enforced after it.
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    facts: list[ExtractedFact]
+    facts: list[ExtractedFact] = Field(min_length=1)
     ordering_provider: str | None = None
     specimen: str | None = None
     collected_at: datetime | None = Field(default=None, strict=False)
+
+    @property
+    def incomplete_facts(self) -> tuple[tuple[ExtractedFact, frozenset[LabField]], ...]:
+        """Each fact that lacks a spec-required lab field, paired with the gaps.
+
+        Makes partial extraction auditable: the fields stay optional (see
+        :meth:`ExtractedFact.missing_lab_fields` for the defense), but no gap is
+        silent. ``collection_date`` is resolved against :attr:`collected_at`
+        first, so a report carrying one specimen-header date does not report
+        every analyte as missing it.
+        """
+        gaps = (
+            (fact, fact.missing_lab_fields(collected_at_fallback=self.collected_at))
+            for fact in self.facts
+        )
+        return tuple((fact, missing) for fact, missing in gaps if missing)
 
 
 class IntakeCategory(StrEnum):
@@ -99,17 +202,34 @@ class IntakeFact(ExtractedFact):
 class IntakeForm(BaseModel):
     """Strict schema for a parsed patient-intake form (VLM extraction target).
 
-    Like :class:`LabReport`, ``facts`` is required content — a blank form does
-    not validate. Each fact is an :class:`IntakeFact` (carries its OpenEMR
-    ``category``).
+    Like :class:`LabReport`, ``facts`` is required *and* non-empty
+    (``min_length=1``) — a blank extraction does not validate. Each fact is an
+    :class:`IntakeFact` (carries its OpenEMR ``category``).
+
+    The floor is on the *list*, not on the category coverage: the spec names
+    demographics, chief concern, medications, allergies, and family history as
+    required intake fields, but a real form legitimately has no allergies
+    ("NKDA") or no family history, so requiring one fact per
+    :class:`IntakeCategory` would reject honest paperwork. Which categories a
+    form actually yielded is reported by :attr:`categories_present`.
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    facts: list[IntakeFact]
+    facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
     date_of_birth: str | None = None
     completed_at: datetime | None = Field(default=None, strict=False)
+
+    @property
+    def categories_present(self) -> frozenset[IntakeCategory]:
+        """The OpenEMR record types this form actually yielded facts for.
+
+        Coverage as data rather than as a rejection: absence of a category means
+        "this form did not state it", which a reviewer can act on — it is never
+        asserted to mean "the patient has none".
+        """
+        return frozenset(fact.category for fact in self.facts)
 
 
 class MedicationListDocument(BaseModel):
@@ -122,21 +242,41 @@ class MedicationListDocument(BaseModel):
     homogeneous, so a ``model_validator`` keeps only ``medication``-category
     facts: a stray non-medication line (e.g. a scanned patient/header line the
     VLM picks up) is dropped rather than failing the whole extraction, while the
-    persisted list is still guaranteed to be all medications. ``facts`` is
-    required content (an empty payload does not default itself into a valid doc);
-    each surviving fact round-trips to ``lists type='medication'`` unchanged.
+    persisted list is still guaranteed to be all medications. Each surviving
+    fact round-trips to ``lists type='medication'`` unchanged.
+
+    ``facts`` is required and non-empty, enforced in *two* places, because this
+    model has two distinct ways to end up empty:
+
+    1. ``min_length=1`` rejects an omitted key and a literal ``{"facts": []}``.
+    2. :meth:`_keep_only_medications` runs ``mode="after"`` — i.e. *after* the
+       field constraint — so filtering could still hand back an empty list from
+       a payload that passed step 1 (e.g. facts that are all ``demographic``).
+       It therefore re-checks the floor itself. Dropping a stray line is
+       tolerated; dropping *every* line is not an extraction, it is a
+       misclassified document, and it fails loudly.
     """
 
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
-    facts: list[IntakeFact]
+    facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
     completed_at: datetime | None = Field(default=None, strict=False)
 
     @model_validator(mode="after")
     def _keep_only_medications(self) -> MedicationListDocument:
-        """Drop any non-``medication`` fact so a medication list stays homogeneous."""
+        """Drop any non-``medication`` fact so a medication list stays homogeneous.
+
+        Raises when filtering would empty the list: ``min_length=1`` cannot see
+        this case, because an after-validator runs once the field constraint has
+        already passed.
+        """
         meds = [fact for fact in self.facts if fact.category is IntakeCategory.medication]
         if len(meds) == len(self.facts):
             return self
+        if not meds:
+            raise ValueError(
+                "medication list contains no medication-category facts: "
+                f"{len(self.facts)} fact(s) extracted, all non-medication"
+            )
         return self.model_copy(update={"facts": meds})
