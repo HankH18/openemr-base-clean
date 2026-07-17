@@ -35,6 +35,7 @@ COPY scripts ./scripts
 # these the deployed status page serves zeros for every eval/latency metric — the
 # dashboard requirement fails silently. Only the JSON artifacts are copied, not
 # the eval suite itself: the runtime image ships no test code.
+COPY evals/gate_baseline.json ./evals/gate_baseline.json
 COPY evals/eval_results.json ./evals/eval_results.json
 COPY artifacts/latency_report.json ./artifacts/latency_report.json
 
