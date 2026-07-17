@@ -147,3 +147,36 @@ nothing. I caught it only because I sabotaged the fix and the test stayed green-
 A fixture that derives its output from its input goes vacuous exactly where the input is
 empty. Also: my not-guilty verdict on `feat_ingestion` came from measuring, not from
 reading the diff.
+
+## HALT CONDITION (updated by the user, 2026-07-17 ~05:00)
+
+Run audit->fix cycles until a cycle finds NOTHING worth fixing, or tokens run out.
+NOT a fixed cycle count — the earlier "stop after cycle 5" is superseded. A clean
+audit is evidence; a cycle number is not.
+
+## Cycle 3 close — all six findings fixed, deployed, verified live
+
+Commits: 67f9801, dfb1b8e, f8811b2 (self-correction), 2108b2f, 1406442, d2b09c8,
+4e2ee9f, 45a31bd. 923 tests green, mypy clean, gate exit 0, feat_ingestion 8,
+pass_rate 97.83, frozen harness verified intact across 4 parallel agents.
+
+**Live proof on the DEPLOYED build (real Claude vision, real demo PDFs):**
+  6/6 intake-form extractions succeeded (38-46 facts each) — was failing ~1 in 4.
+  Lab 37 facts, med list 12 facts, all STRICT SCHEMA OK.
+
+**A test edit I REFUSED.** The tool-schema trim (drop reconciliation-derived fields
+from what the model sees) broke a pre-existing test asserting `input_schema ==
+model_json_schema()`. Revert check: would it still fail if I reverted my change? NO —
+so the test was right and my change was wrong. Reverted the trim rather than edit the
+test. It was an optional nice-to-have (the auditor said "none needed for
+correctness"), and it silently broke a real guarantee: the model would be asked for
+one shape and validated against another. Left as a P2 recommendation for a human
+decision instead. This is the justify-test-edit rule doing exactly its job.
+
+**Deferred, with reasons:**
+- `_tool_schema` trim — needs a human call on the "input_schema IS the pydantic
+  schema" contract. Real but optional; not a defect.
+- `STUB_MEDLIST_FACTS` encodes bare drug names ("Lisinopril") while the prompt asks
+  for "dose and frequency exactly as printed" — the fixture and the prompt disagree
+  about what a medication value IS. Deeper stub-blindness; touching it moves frozen
+  metrics, so it needs its own measured cycle.
