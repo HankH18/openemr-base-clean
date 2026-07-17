@@ -292,6 +292,22 @@ class AgentGraph:
                 total_tokens = outcome.total_tokens
                 cost = outcome.cost_usd
 
+                # The critic's unsafe flag condemns the PROSE, not just a citation,
+                # so the graph withholds here rather than trusting a collaborator to
+                # notice. Two things were wrong while this lived only in ChatService:
+                # (1) `build_graph` is exported, so any other caller — eval harness,
+                # batch job, CLI — read `action=served, passed=True` off a turn this
+                # very critic called unsafe, and served it; (2) `record_verification`
+                # below fired on the UN-withheld verification, so every unsafe
+                # withhold was logged to the safety dashboard as `served`. The one
+                # metric that proves the safety pass fires reported its opposite.
+                # ChatService's own check stays as defense-in-depth. Mirrors `capped`.
+                if critic_verdict is not None and critic_verdict.unsafe:
+                    answer = _INSUFFICIENT_ANSWER
+                    verification = VerificationResult(
+                        passed=False, claims=[], action=VerificationAction.withheld
+                    )
+
             metrics = GraphMetrics(
                 latency_ms=(perf_counter() - started) * 1000.0,
                 total_tokens=total_tokens,
