@@ -83,3 +83,12 @@ agent/*.db
 /Caddyfile
 # Built SPA (generated)
 agent/web/dist/
+
+# macOS/sync-conflict duplicate snapshots (e.g. "foo 2.py", "bar 3.ts"). A file
+# sync scattered hundreds of these overnight; one got committed via `git add <dir>`
+# and pytest collected the rest as duplicate modules. Never track them.
+* [0-9].py
+* [0-9].ts
+* [0-9].tsx
+* [0-9].json
+* [0-9].md
