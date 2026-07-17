@@ -320,3 +320,32 @@ read was live. Waiting for a tidier tree would have meant more leaking.
 **Corrected my analysis (agent was right):** `chat/service.py:282` `question=message` is
 NOT a telemetry site — it is AgentTask construction, the graph's legitimate input
 contract. The egress was entirely the three supervisor sites consuming that field.
+
+## Issue 37 — P1: the no-invention gate blesses invented values (PRE-EXISTING)
+
+Surfaced by the wrapped-cell agent, then reproduced by me directly at HEAD with the
+value's tail ENTIRELY absent from the token list:
+
+  toks = ['40','mg','PO','QHS','(once','daily,']       # no 'bedtime)' anywhere
+  reconcile_value('40 mg PO QHS (once daily, bedtime)', toks)
+    -> supported=True  conf=0.8220  bbox=[0.1, 0.5, 0.36, 0.01]
+
+`supported` is THE no-invention gate — it means "I located this verbatim on the page,
+here is its bbox". It said that for a value whose tail exists nowhere, and handed back a
+box that does not cover the missing tail.
+
+Root cause: SequenceMatcher.ratio() is SYMMETRIC (2*matched/(len_a+len_b)), and
+_MIN_LEN_RATIO = 0.8/(2-0.8) = 0.667 — so any span that is a two-thirds-length PREFIX of
+the value scores >= _MATCH_MIN and passes. Nothing requires the span to ACCOUNT FOR the
+whole value.
+
+Concretely: the model hallucinates "Metformin 500 mg PO BID" where the page prints
+"Metformin 500 mg PO". The gate marks it supported and gives the UI a citation box that
+does not contain "BID". The clinician clicks the highlight to check the schedule and sees
+a box that never says it — the exact failure the gate exists to prevent, dressed as
+verification.
+
+Pre-existing (predates the n-gram and wrapped-cell work; HEAD~ byte-identical). DISPATCHED:
+require asymmetric COVERAGE (matched_chars / len(value)) in ADDITION to similarity. The
+supported rate SHOULD drop — some current supports are false. Explicitly told the agent not
+to tune the threshold to preserve the numbers.
