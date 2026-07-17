@@ -137,3 +137,31 @@ def test_a_missing_required_field_still_fails() -> None:
     payload = {"facts": [{"field_path": "demographic.0", "category": "demographic"}]}
     with pytest.raises(ValidationError):
         _extract(payload, DocumentType.intake_form)
+
+
+def test_a_us_format_completion_date_no_longer_destroys_the_extraction() -> None:
+    # Observed live on the real demo intake form, which prints "07/13/2026":
+    #   completed_at: Input should be a valid datetime or date,
+    #     invalid character in year [input_value='07/13/2026']
+    # One unreadable header date discarded all 46 facts. `completed_at` was a
+    # datetime while the prompt orders the model to copy verbatim and never
+    # normalize -- the prompt and the type were in direct conflict.
+    payload = _intake_payload({})
+    payload["completed_at"] = "07/13/2026"
+
+    result = _extract(payload, DocumentType.intake_form)
+
+    assert result.completed_at == "07/13/2026", "kept verbatim, exactly as printed"
+    assert len(result.facts) == 2, "a header date must never cost us the page's facts"
+
+
+def test_an_ambiguous_date_is_never_silently_reinterpreted() -> None:
+    # The real reason this is a str: "03/11/1958" is March 11 or 11 March, and
+    # nothing on the page says which. A parser would have to guess. Guessing a date
+    # on a clinical record is exactly the silent coercion this codebase refuses.
+    payload = _intake_payload({})
+    payload["completed_at"] = "03/11/1958"
+
+    result = _extract(payload, DocumentType.intake_form)
+
+    assert result.completed_at == "03/11/1958"

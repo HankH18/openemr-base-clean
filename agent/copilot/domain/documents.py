@@ -219,7 +219,9 @@ class IntakeForm(BaseModel):
     facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
     date_of_birth: str | None = None
-    completed_at: datetime | None = Field(default=None, strict=False)
+    #: Verbatim, as printed — a string for the same reason ``date_of_birth`` is one.
+    #: See :class:`MedicationListDocument.completed_at` for the argument.
+    completed_at: str | None = None
 
     @property
     def categories_present(self) -> frozenset[IntakeCategory]:
@@ -261,7 +263,32 @@ class MedicationListDocument(BaseModel):
 
     facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
-    completed_at: datetime | None = Field(default=None, strict=False)
+    #: Verbatim page text, NOT a parsed instant — deliberately a ``str``.
+    #:
+    #: This was a ``datetime``, and it destroyed real extractions. Observed live
+    #: against real Claude vision on the real demo intake form, which prints
+    #: ``07/13/2026``::
+    #:
+    #:     completed_at: Input should be a valid datetime or date,
+    #:       invalid character in year [input_value='07/13/2026']
+    #:
+    #: One unreadable header date discarded all 46 facts on the page. The extraction
+    #: prompt orders the model to "copy each value character-for-character — never
+    #: normalize", so a ``datetime`` here asked it to do the one thing it was told
+    #: not to: the prompt and the type were in direct conflict, and the type lost
+    #: every time a form printed a US-format date.
+    #:
+    #: A parser would be worse, not better. ``07/13/2026`` is unambiguous only by
+    #: luck (13 > 12); the same form's ``date_of_birth: 03/11/1958`` is NOT — March
+    #: 11 and 11 March are both readable, and nothing on the page says which. That
+    #: is precisely why ``date_of_birth`` is already a ``str``. Guessing a date on a
+    #: clinical record is the silent coercion this codebase exists to refuse, so the
+    #: honest type for "what the page says" is the text the page says.
+    #:
+    #: Nothing reads this field — no consumer in ``copilot/``, the tests, the web
+    #: client, or the acceptance harness. A caller that one day needs an instant can
+    #: parse it where the document's locale is known, and fail loudly on ambiguity.
+    completed_at: str | None = None
 
     @model_validator(mode="after")
     def _keep_only_medications(self) -> MedicationListDocument:
