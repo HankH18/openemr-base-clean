@@ -100,7 +100,10 @@ class FhirReference(BaseModel):
 
     ``field`` and ``value`` are the extracted (path, value) pair the claim
     is asserting — those are what the deterministic numeric-match gate
-    compares against.
+    compares against. ``unit`` carries the dimension of ``value`` when the
+    cited field is a quantity, so the gate compares a QUANTITY and not a bare
+    number: without it a claim of "2.34 ng/mL" verifies clean against a record
+    of 2.34 ng/L, a thousand-fold error the value match alone cannot see.
 
     ``source_type`` is the union discriminator, fixed to ``fhir``; a persisted
     Week-1 claim carries no ``source_type`` and rehydrates to this default, so
@@ -132,6 +135,17 @@ class FhirReference(BaseModel):
         ),
     )
     value: str = Field(description="The extracted value as a string, verbatim from source.")
+    unit: str | None = Field(
+        default=None,
+        description=(
+            "Unit of `value` when the cited field is a quantity — e.g. 'ng/mL' from "
+            "an Observation's `valueQuantity.unit`. Grounded verbatim from source and "
+            "re-compared on live re-fetch, so `value` is gated as a QUANTITY rather "
+            "than a bare number. Optional: most grounded fields are not quantities "
+            "(a medication name, a date), and a record may carry a unit-less "
+            "quantity; None means 'no unit was grounded', not 'dimensionless'."
+        ),
+    )
     last_updated: datetime | None = Field(
         default=None,
         description="`meta.lastUpdated` of the cited resource at synthesis time.",

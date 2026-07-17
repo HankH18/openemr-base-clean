@@ -76,6 +76,29 @@ def describe_resource(resource: Mapping[str, Any]) -> tuple[str, str, str] | Non
     return None
 
 
+def extract_unit(resource: Mapping[str, Any]) -> str | None:
+    """The unit of a resource's quantity value, as a raw verbatim string.
+
+    ``valueQuantity.unit`` for an ``Observation``; ``None`` for every other
+    resource type (a medication name and a date have no dimension). Read through
+    the verification layer's own ``extract_field_value`` — the *same* extractor
+    the gate uses — so a unit grounded here agrees byte-for-byte with what a live
+    re-fetch re-derives.
+
+    Returns ``None`` when the field is absent, so a unit-less claim is left
+    untouched by the unit gate (the same short-circuit ``extract_temporal`` gets:
+    nothing grounded ⇒ nothing to re-verify).
+
+    Grounded as a sibling of the value rather than folded into it because
+    ``FhirReference.value`` must keep matching ``extract_field_value(resource,
+    ref.field)`` verbatim — appending a unit to it would break the value gate it
+    is meant to strengthen.
+    """
+    if resource.get("resourceType") == "Observation":
+        return extract_field_value(resource, "valueQuantity.unit")
+    return None
+
+
 def extract_temporal(resource: Mapping[str, Any]) -> str | None:
     """The clinically meaningful timestamp of a resource, as a raw ISO string.
 
@@ -141,7 +164,7 @@ def humanize_label(label: str) -> str:
     return " ".join(_cap(word) for word in label.strip().replace("_", " ").split())
 
 
-def claim_text(resource_type: str, display: str, value: str) -> str:
+def claim_text(resource_type: str, display: str, value: str, unit: str | None = None) -> str:
     """A short factual sentence naming the resource and its value.
 
     The type prefix and concept label are humanized so emitted text reads
@@ -149,9 +172,22 @@ def claim_text(resource_type: str, display: str, value: str) -> str:
     "Observation Oxygen Saturation: 98." not "... oxygen_saturation: 98."). The
     numeric ``value`` is kept verbatim — it comes straight from the resource, so
     the verification numeric check always finds it in source.
+
+    ``unit`` (from :func:`extract_unit`) renders the reading as a QUANTITY —
+    "Observation Troponin I: 2.34 ng/mL." rather than a dimensionless
+    "Observation Troponin I: 2.34." A clinician cannot judge a lab from a bare
+    number, and the number is the part the gate verifies.
+
+    It is optional and defaults to ``None`` because this same function writes
+    non-quantity claims (a medication name, a condition) and unit-less
+    Observations: an absent or blank unit renders the value alone, never the
+    string "None". Like ``value``, the unit is emitted VERBATIM and never passed
+    through :func:`humanize_label` — that would title-case "mg" into "Mg",
+    turning milligrams into megagrams.
     """
     type_label = humanize_label(resource_type)
     concept = humanize_label(display)
     if resource_type == "Observation":
-        return f"{type_label} {concept}: {value}."
+        quantity = f"{value} {unit.strip()}" if unit and unit.strip() else value
+        return f"{type_label} {concept}: {quantity}."
     return f"{type_label}: {concept}."

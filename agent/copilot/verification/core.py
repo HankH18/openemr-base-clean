@@ -10,6 +10,25 @@ For each claim in the memory-file summary:
    pull every numeric literal out of ``claim.text`` and require each to
    appear either in that resource's flattened text or in its numeric
    fields.  This catches "we said 2.34 but the record shows 0.23".
+3. **Unit match.** A number is not a fact: "2.34 ng/mL" against a record
+   of 2.34 ng/L matches on value and is a thousand-fold error.  So when
+   the claim grounded a ``source_ref.unit``, the unit is re-extracted from
+   the live resource and must match too (see ``_units_equal`` for why no
+   equivalence table is applied), or the claim fails.
+
+   **Policy — a claim with NO unit is not gated on units.**  A ``None``
+   unit short-circuits the check entirely, exactly as a ``None``
+   ``timestamp`` short-circuits the temporal gate: nothing was grounded,
+   so there is nothing to re-verify.  The alternative — failing every
+   unit-less claim against a record that has a unit — would withhold every
+   lab answer the product gives, including every claim persisted before
+   ``unit`` existed, which rehydrates with ``unit=None``.  The cost is
+   real and stated plainly: this gate constrains claims that DO carry a
+   unit, and cannot catch a unit error in a claim that asserts no unit.
+   Closing that half is the grounding layer's job, not the gate's — every
+   quantity claim must ground its unit (``grounding.extract_unit``) so
+   that ``None`` means "no unit in the record", never "unit dropped on the
+   way here".
 
 The gate is intentionally **not promptable**: a claim injected via a
 free-text note field still has to point at a resource and match a
@@ -241,6 +260,27 @@ class Verifier:
                 reason=(f"value mismatch at {ref.field}: source={extracted!r} claim={ref.value!r}"),
             )
 
+        # Unit match — the value gate above compares NUMBERS; a number is not a
+        # fact. "2.34 ng/mL" against a record of 2.34 ng/L matches on value and is
+        # a thousand-fold error, so the dimension must be re-checked too. Same
+        # extractor the grounding used, so an honest claim agrees byte-for-byte.
+        # Imported locally to break the grounding<->core module cycle.
+        if ref.unit is not None:
+            from copilot.agent.grounding import extract_unit
+
+            refetched_unit = extract_unit(resource)
+            if refetched_unit is None or not _units_equal(refetched_unit, ref.unit):
+                return VerificationClaimResult(
+                    text=claim.text,
+                    source_ref=ref,
+                    attribution_ok=True,
+                    value_match=False,
+                    reason=(
+                        f"unit mismatch at {ref.field}: source={refetched_unit!r} "
+                        f"claim={ref.unit!r}"
+                    ),
+                )
+
         # Numeric literals in the claim text must appear in the resource.
         missing = _numbers_not_in_resource(claim.text, resource)
         if missing:
@@ -470,6 +510,33 @@ def _values_equal(source: str, claimed: str) -> bool:
         return float(source) == float(claimed)
     except (TypeError, ValueError):
         return False
+
+
+def _units_equal(source: str, claimed: str) -> bool:
+    """Compare unit strings: exact match after trimming surrounding whitespace.
+
+    **Deliberately NOT case-folded, and deliberately without an equivalence
+    table.** UCUM — the unit code system FHIR's ``Quantity`` uses — is
+    case-sensitive by design: ``m`` is milli- but ``M`` is mega-, so ``mg`` is a
+    milligram and ``Mg`` a megagram, a 1e9 difference. Case-folding units would
+    therefore manufacture exactly the class of silent magnitude error this gate
+    exists to catch.
+
+    Trimming surrounding whitespace is the only normalization applied: it is
+    lossless (padding carries no unit semantics). Nothing else is normalized.
+    Recognizing ``ng/mL`` ≡ ``nanogram per milliliter``, or converting ``ng/L``
+    to ``ng/mL``, needs a real UCUM parser and conversion table; hand-rolling one
+    here would put invented equivalences inside the product's central safety
+    mechanism, and a WRONG equivalence is strictly worse than the bug — it
+    would launder a unit error into a "verified" claim. Until such a table is
+    sourced from a real UCUM library, an unrecognized-but-equivalent spelling
+    fails closed: the claim is withheld, which is safe, not served wrongly.
+
+    Both sides are grounded by the same extractor from the same field, so an
+    honest claim matches exactly; a mismatch means the claimed unit did not come
+    from this record.
+    """
+    return source.strip() == claimed.strip()
 
 
 def _numbers_not_in_resource(text: str, resource: Mapping[str, Any]) -> list[str]:

@@ -23,7 +23,7 @@ from copilot.agent.base import (
     render_document_facts,
     render_guideline_evidence,
 )
-from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
+from copilot.agent.grounding import claim_text, describe_resource, extract_temporal, extract_unit
 from copilot.domain.contracts import Claim
 from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
@@ -115,15 +115,17 @@ class StubAgent:
             rtype = res.get("resourceType")
             if not isinstance(rid, str) or not isinstance(rtype, str):
                 continue
+            unit = extract_unit(res)
             claims.append(
                 Claim(
-                    text=claim_text(rtype, display, value),
+                    text=claim_text(rtype, display, value, unit),
                     source_ref=FhirReference(
                         resource_type=ResourceType(rtype),
                         resource_id=rid,
                         field=field,
                         value=value,
                         timestamp=extract_temporal(res),
+                        unit=unit,
                     ),
                 )
             )

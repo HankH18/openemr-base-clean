@@ -25,7 +25,7 @@ from copilot.agent.base import (
     render_document_facts,
     render_guideline_evidence,
 )
-from copilot.agent.grounding import claim_text, describe_resource, extract_temporal
+from copilot.agent.grounding import claim_text, describe_resource, extract_temporal, extract_unit
 from copilot.config import Settings
 from copilot.domain.contracts import Claim
 from copilot.domain.documents import ExtractedFact
@@ -246,15 +246,17 @@ class ClaudeAgent:
                 rtype = ResourceType(c.resource_type)
             except ValueError:
                 continue
+            unit = extract_unit(resource)
             claims.append(
                 Claim(
-                    text=claim_text(c.resource_type, display, value),
+                    text=claim_text(c.resource_type, display, value, unit),
                     source_ref=FhirReference(
                         resource_type=rtype,
                         resource_id=c.resource_id,
                         field=field,
                         value=value,
                         timestamp=extract_temporal(resource),
+                        unit=unit,
                     ),
                 )
             )
