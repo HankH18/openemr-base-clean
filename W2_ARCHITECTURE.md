@@ -345,9 +345,14 @@ deliberate call:)
 
 ## Assumptions & open questions
 
-- The real Claude vision **model id** must be confirmed (repo default `claude-sonnet-5` is a
-  placeholder); pricing table must add the vision model + Voyage + Cohere rates or costs will be
-  wrong-but-nonzero.
+- **Model ids and cost rates are settled — DONE.** `claude-sonnet-5` is the real configured model,
+  not a placeholder: it is the default for both synthesis/chat (`copilot/config.py:242`) and vision
+  extraction (`copilot/config.py:249`), with gating on `claude-haiku-4-5-20251001`
+  (`copilot/config.py:245`). Every model the agent calls has an explicit row in
+  `copilot/observability/pricing.py:33-37` — `claude-sonnet-5` (3.0/15.0), `claude-haiku-4-5-20251001`
+  (1.0/5.0), `voyage-3.5` (0.06/0.0), `rerank-v3.5` (0.25/0.0, a documented per-search-unit
+  normalization) — so no call resolves the unknown-model fallback. These are the rates
+  `COST_ANALYSIS.md` is sourced from.
 - Guideline **corpus content**: curate a small hospitalist-relevant set (e.g., DKA, sepsis, AKI,
   anticoagulation) from openly licensed sources; store source files + ingest script in-repo.
   License each chunk.
@@ -357,18 +362,19 @@ deliberate call:)
   step, already documented in the Week 1 deploy runbook.
 - Page-image storage is agent-DB `bytea` for demo scale; MinIO object store is the noted scale path,
   not built.
-- **`document_ingestion_enabled` is dead config — slated for deletion.** The setting is declared at
-  `copilot/config.py:315` and describes itself as the "Master switch for the Week-2
-  document-ingestion HTTP surface… Gates the API surface", defaulting `False`. **It is never read
-  anywhere.** `register_routers` (`copilot/api/app.py:39-58`) auto-discovers and mounts every module
-  with a `router` attribute **unconditionally** — nothing branches on the flag, so toggling it has
-  no effect and the ingestion routes are mounted whenever the agent runs. The routes are not
-  *unprotected* (session auth + rounding-list RBAC gate them like every PHI route), but they are
-  **not flag-gated**, and any doc or runbook that says otherwise is wrong. Two honest resolutions,
-  both deferred: **delete** the field (preferred — the key gate already delivers the
-  $0/no-egress-by-default property the flag was invented for), or **wire** it into
-  `register_routers` if a genuine mount-level kill switch is wanted. Until then the docs must not
-  cite it as a control — `COST_ANALYSIS.md` §1d previously did and has been corrected.
+- **`document_ingestion_enabled` is a real ingestion kill switch, on by default — DONE.** Declared at
+  `copilot/config.py:315` with `default=True`, and genuinely enforced at
+  `copilot/api/routes/documents.py:126`: when false, `POST /v1/documents` returns **503**
+  (`_INGESTION_DISABLED_DETAIL`, `documents.py:55`) and no document is accepted or stored. It gates
+  the **upload surface only** — the pipeline service stays directly invocable (tests, CLI,
+  background jobs) and already-ingested documents remain readable. It defaults `True` because
+  ingestion is a core Week-2 capability that is already live; the flag exists so an operator can
+  actually stop intake (e.g. pending an incident). Plumbed through deploy as
+  `COPILOT_DOCUMENT_INGESTION_ENABLED` (`docker-compose.deploy.yml:199`, defaulting `true`), and
+  locked by two tests (`agent/tests/test_vision_contract.py:150` asserts the default is on; `:161`
+  asserts a disabled deployment 503s). The routes remain protected as before by session auth +
+  rounding-list RBAC, like every PHI route. **History:** this field previously defaulted `False` and
+  was read nowhere — a phantom switch. That defect is fixed; docs may cite the flag as a control.
 - **Intake schema ↔ OpenEMR record types — DONE.** Each intake fact is tagged with a typed
   `IntakeCategory` (`demographic` → `patient_data`, `chief_complaint` → `form_encounter.reason`,
   `medication`/`allergy`/`medical_problem` → `lists.type`, `family_history` → `history_data`) via an
