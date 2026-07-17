@@ -91,9 +91,7 @@ async def verify_answer(
         # fhir variant re-fetches a live FHIR resource by id; document/guideline
         # variants re-read the agent store (labs/guidelines are not FHIR-writable
         # — the agent DB is authoritative). Each is dropped fail-closed by the
-        # gate when its source cannot be re-materialized. NB: ref is statically
-        # the fhir variant (SkipValidation), so the non-fhir guards read as
-        # unreachable to mypy but fire for real non-fhir citations at runtime.
+        # gate when its source cannot be re-materialized.
         if isinstance(ref, DocumentCitation):
             doc_citations.append(ref)
             continue

@@ -27,7 +27,7 @@ from copilot.agent.base import AgentAnswer, ConversationTurn
 from copilot.agent.factory import build_agent
 from copilot.config import Settings
 from copilot.domain.contracts import Claim, VerificationAction, VerificationResult
-from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.domain.primitives import ClinicianId, FhirReference, PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
 from copilot.graph.contracts import AgentTask
@@ -271,6 +271,11 @@ class ChatService:
         an error. The write runs in its own transaction; any failure is logged
         and swallowed. ``resources_returned`` is the set of FHIR resources the
         answer actually cited (empty when the turn was withheld).
+
+        Only fhir-cited claims contribute: the row records which *FHIR* records
+        this read touched, and a document/guideline citation names an agent-store
+        row, not a FHIR resource — listing its id here would misreport the PHI
+        access trail.
         """
         try:
             async with session_scope() as session:
@@ -279,7 +284,11 @@ class ChatService:
                     action="chat",
                     patient_id=patient_id,
                     clinician_id=clinician_id.value,
-                    resources_returned=[claim.source_ref.resource_id for claim in claims],
+                    resources_returned=[
+                        claim.source_ref.resource_id
+                        for claim in claims
+                        if isinstance(claim.source_ref, FhirReference)
+                    ],
                 )
         except Exception:
             _logger.exception(
