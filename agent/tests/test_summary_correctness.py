@@ -259,9 +259,31 @@ class TestMixedUnits:
         assert "no trend" in text
         assert "°C" in text  # the prior reading's unit, named
 
-    def test_mixed_units_are_not_a_reportable_change(self) -> None:
-        # A re-recorded unit is not a clinical change; it must not surface as one.
-        assert build_change_claims(self._temp_cohort()) == []
+    def test_mixed_units_report_no_false_trend_but_still_surface(self) -> None:
+        # Was: `assert build_change_claims(self._temp_cohort()) == []`, on the
+        # rationale "a re-recorded unit is not a clinical change; it must not
+        # surface as one". That assertion encoded the defect it was meant to guard.
+        #
+        # It credits this module with knowledge it does not have. summary.py does
+        # not convert units (`_trusted_pair`: "No unit conversion is attempted"),
+        # so 37.0 Cel -> 98.6 degF (a re-record) and 37.0 Cel -> 104.0 degF (a
+        # fever) are the SAME input to it: "not comparable". `== []` dropped both
+        # -- and the UI renders an empty change card as the affirmative "No
+        # recorded changes since your last review". Verified on the pre-fix code:
+        # the 104.0 degF fever returned [] too. The fixture is a re-record, but the
+        # rule the test named ("mixed units are not a reportable change") is false
+        # the moment the value actually moves, and nothing in the fixture could
+        # have caught that.
+        #
+        # The corrected contract, per this module's own rule at summary.py:95-98
+        # ("withholds visibly or not at all"): a pair we cannot compare SURFACES,
+        # carrying text that names why -- and still asserts no false trend, which
+        # is what this test was really protecting.
+        claims = build_change_claims(self._temp_cohort())
+        assert len(claims) == 1, "an uncomparable pair must be shown, not silently dropped"
+        text = claims[0].text
+        assert "61.6" not in text and "↑" not in text and "↓" not in text, text
+        assert "no trend" in text, text
 
     def test_unit_spelling_variants_are_the_same_unit(self) -> None:
         # degC and Cel are one unit; comparing them must still trend normally.
@@ -322,6 +344,134 @@ class TestSameUnitTrendUnchanged:
             },
         ]
         assert "↑3" in _only_text(resources)
+
+
+# --- Defect 4: the unit-safety fix dropped the row instead of showing it -------
+
+
+def _obs_no_unit(rid: str, name: str, value: float, when: str) -> dict[str, Any]:
+    """An Observation whose valueQuantity carries NO unit key at all."""
+    return {
+        "resourceType": "Observation",
+        "id": rid,
+        "code": {"coding": [{"display": name}]},
+        "valueQuantity": {"value": value},
+        "effectiveDateTime": when,
+    }
+
+
+class TestUncomparablePairStillSurfaces:
+    """A pair we cannot compare must be SHOWN, never dropped.
+
+    The unit-safety fix (397a39e) stopped the card asserting a false cross-unit
+    trend — correctly. But it withheld the *row*, not just the trend: the row gate
+    in ``build_change_claims`` required abnormal-or-changed-or-future, and a
+    mixed-unit pair is none of those, so the row never reached the change card. An
+    empty change card renders in ``PatientHero.tsx`` as the affirmative "No
+    recorded changes since your last review" — so a real, unexaminable change was
+    replaced by a sentence denying it. The "· prior in X — no trend" text existed
+    to defeat exactly this, and was unreachable in the case it was written for.
+
+    These pin BOTH halves of "withholds visibly or not at all": the trend stays
+    withheld, and the withholding is visible on the card the physician reads.
+    """
+
+    def _glucose_rise(self, prior_unit: str) -> list[dict[str, Any]]:
+        # A REAL 80-point rise: 100 -> 180 mg/dL. Not a re-record — the value moved.
+        return [
+            _obs("glu-1", "Glucose", 100, "2026-07-10T00:00:00Z", prior_unit),
+            _obs("glu-2", "Glucose", 180, "2026-07-10T05:00:00Z", "mg/dL"),
+        ]
+
+    def test_real_rise_survives_a_trailing_space_on_the_prior_unit(self) -> None:
+        # THE HEADLINE. 'mg/dL ' and 'mg/dL' are the same unit; only an unstripped
+        # _unit() made them differ, and that spurious mismatch withheld a real
+        # 80-point rise from the change card entirely.
+        #
+        # Note this is NOT a mixed-unit case once normalized — so the correct
+        # outcome is the RECOVERED ↑80, not the "no trend" text. Anything that
+        # renders "no trend" here has papered over the mismatch instead of fixing
+        # it: the pair is comparable and the delta is real.
+        claims = build_change_claims(self._glucose_rise("mg/dL "))
+        assert len(claims) == 1, "an 80-point glucose rise must not vanish over whitespace"
+        assert "↑80" in claims[0].text, claims[0].text
+        assert "no trend" not in claims[0].text, "the units match after stripping"
+
+    def test_real_rise_with_an_unlabelled_prior_surfaces_saying_why(self) -> None:
+        # Genuinely uncomparable (a labelled reading vs an unlabelled one), so the
+        # trend is correctly withheld — but the ROW must still reach the change
+        # card, naming the reason, rather than being dropped into "nothing changed".
+        claims = build_change_claims(self._glucose_rise(""))
+        assert len(claims) == 1, "an uncomparable pair must be shown, not dropped"
+        text = claims[0].text
+        assert "no trend" in text, text
+        assert "180" in text, "the physician must still see the current value"
+        assert "↑" not in text and "↓" not in text, "no trend may be asserted across units"
+
+    def test_a_mixed_unit_row_surfaces_even_when_not_independently_abnormal(self) -> None:
+        # THE EXACT HOLE. The "no trend" text was only ever reachable when the
+        # reading was independently abnormal or future-dated — i.e. when something
+        # ELSE opened the gate. A perfectly in-range reading whose prior is in
+        # another unit had no such escape hatch and vanished. 96 mg/dL is normal,
+        # carries no interpretation flag, and is not future-dated.
+        resources = [
+            _obs_no_unit("glu-1", "Glucose", 92, "2026-07-10T00:00:00Z"),
+            _obs("glu-2", "Glucose", 96, "2026-07-10T05:00:00Z", "mg/dL"),
+        ]
+        claims = build_change_claims(resources)
+        assert len(claims) == 1, "mixed units alone must open the row gate"
+        assert "no trend" in claims[0].text, claims[0].text
+
+    def test_unit_case_variants_are_the_same_unit(self) -> None:
+        # The UCUM case-insensitive code set (CEL) denotes the same unit as the
+        # case-sensitive one (Cel); a feed emitting it must still trend normally
+        # rather than read as a unit change.
+        resources = [
+            _obs("t1", "Body temperature", 37.0, "2026-07-10T03:00:00Z", "CEL"),
+            _obs("t2", "Body temperature", 38.5, "2026-07-10T05:00:00Z", "Cel"),
+        ]
+        text = _only_text(resources)
+        assert "↑1.5" in text, text
+        assert "no trend" not in text
+
+    def test_case_folding_never_merges_ucum_units_that_differ_by_case(self) -> None:
+        # The guard on the casefold. UCUM is case-sensitive: 'mg' is a milligram,
+        # 'Mg' a megagram — a 1e9 difference. Neither is in _UNIT_DISPLAY, so both
+        # take the passthrough, which must preserve case. If folding ever leaked
+        # into the returned value, these would compare equal and the card would
+        # assert a trend across a millionfold unit change.
+        resources = [
+            _obs("d1", "Some drug level", 5.0, "2026-07-10T03:00:00Z", "mg"),
+            _obs("d2", "Some drug level", 7.0, "2026-07-10T05:00:00Z", "Mg"),
+        ]
+        claims = build_change_claims(resources)
+        assert len(claims) == 1, "an uncomparable pair must still surface"
+        text = claims[0].text
+        assert "no trend" in text, text
+        assert "↑2" not in text, "mg and Mg are different units — no trend is derivable"
+
+
+class TestIdenticalUnitRowsUnaffected:
+    """The gate must open for mixed units WITHOUT dragging in ordinary rows."""
+
+    def test_unremarkable_same_unit_row_is_still_not_a_change(self) -> None:
+        # The regression guard on the gate: an in-range, unflagged, unchanged
+        # reading in a consistent unit is still not "a change since last review".
+        # If this goes red, the mixed-unit term is over-broad.
+        resources = [
+            _obs("hr-1", "Heart rate", 72, "2026-07-10T00:00:00Z"),
+            _obs("hr-2", "Heart rate", 72, "2026-07-10T05:00:00Z"),
+        ]
+        assert build_change_claims(resources) == []
+
+    def test_same_unit_real_change_still_reports_its_trend(self) -> None:
+        resources = [
+            _obs("hr-1", "Heart rate", 72, "2026-07-10T00:00:00Z"),
+            _obs("hr-2", "Heart rate", 92, "2026-07-10T05:00:00Z"),
+        ]
+        claims = build_change_claims(resources)
+        assert len(claims) == 1
+        assert "↑20" in claims[0].text and "no trend" not in claims[0].text
 
 
 # --- Defect 3 (series endpoint): a point is never labelled with another's unit ---

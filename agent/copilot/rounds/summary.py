@@ -84,10 +84,17 @@ def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 1
     Anchored to the patient's own timeline: the reference "now" is the latest
     observation time, and a metric is reported only if its latest reading falls
     within ``hours`` of that AND is notable — either abnormal (an interpretation
-    flag / OpenEMR ``abnormal``), moved vs the prior reading, or dated in the
-    future (a record whose own clock is wrong is worth a physician's eyes, and
-    must never be dropped quietly). Returns ``[]`` when the data carries no
-    timestamps to anchor the window.
+    flag / OpenEMR ``abnormal``), moved vs the prior reading, dated in the future
+    (a record whose own clock is wrong is worth a physician's eyes, and must never
+    be dropped quietly), or recorded in a **different unit from its prior**.
+    Returns ``[]`` when the data carries no timestamps to anchor the window.
+
+    The mixed-unit term is not a nicety. This module does not convert units (see
+    :func:`_trusted_pair`), so ``37.0 Cel`` → ``98.6 degF`` (unchanged) and
+    ``37.0 Cel`` → ``104.0 degF`` (a fever) are indistinguishable to it: both are
+    simply "not comparable". Gating the row on a derivable change therefore drops
+    the fever too — silently, behind "No recorded changes". A pair we cannot
+    compare is a row we must SHOW, carrying the "no trend" text that names why.
 
     The anchor is never a reading dated after now. A single mistyped year (2027),
     a device clock running ahead, or a future ``issued`` would otherwise drag the
@@ -115,7 +122,12 @@ def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 1
         latest_time = _effective(group[0])
         if latest_time is None or latest_time < window_start:
             continue  # not measured within the window — nothing new to report
-        if not (_is_abnormal(group[0]) or _changed(group) or _is_future(group[0])):
+        if not (
+            _is_abnormal(group[0])
+            or _changed(group)
+            or _is_future(group[0])
+            or _mixed_unit_prior(group) is not None
+        ):
             continue  # measured recently but unremarkable
         claim = _observation_claim(group)
         if claim is not None:
@@ -375,11 +387,16 @@ def _is_abnormal(res: Mapping[str, Any]) -> bool:
 def _changed(group: list[Mapping[str, Any]]) -> bool:
     """True when the latest numeric reading differs from the prior one.
 
-    False whenever the two are not comparable (:func:`_trusted_pair`) — a
-    re-recorded unit is not a clinical change, and an unreliable ordering cannot
-    establish one. A group that is only "notable" because of a future-dated
-    record is surfaced by :func:`build_change_claims` on its own terms, so
-    nothing is dropped silently here.
+    False whenever the two are not comparable (:func:`_trusted_pair`) — an
+    unreliable ordering cannot establish a change, and neither can a pair of
+    readings in different units.
+
+    False here means "no change is *derivable*", NOT "nothing changed". The
+    distinction is the whole point: a group that is notable only because of a
+    future-dated record (:func:`_is_future`) or a mixed-unit pair
+    (:func:`_mixed_unit_prior`) is surfaced by :func:`build_change_claims` on its
+    own terms. Every caller that treats this as "nothing changed" must carry those
+    terms too, or it will report an unexaminable change as no change at all.
     """
     pair = _trusted_pair(group)
     if pair is None:
@@ -413,6 +430,10 @@ def _sort_key(res: Mapping[str, Any]) -> datetime:
 
 # OpenEMR emits UCUM codes in valueQuantity.unit; map the common vitals ones to
 # the display a clinician expects. Anything unmapped passes through verbatim.
+# Keys are matched case-insensitively (see :func:`_unit`), which also picks up the
+# UCUM *case-insensitive* code set (``CEL``, ``[DEGF]``, ``[IN_I]``, ``[LB_AV]``)
+# that some feeds emit — every one of those denotes the same unit as its
+# case-sensitive spelling here.
 _UNIT_DISPLAY: dict[str, str] = {
     "in_i": "in",
     "[in_i]": "in",
@@ -424,13 +445,48 @@ _UNIT_DISPLAY: dict[str, str] = {
     "degC": "°C",
 }
 
+# The lookup table _unit() actually reads: the same map re-keyed case-folded, so a
+# folded probe hits it. Derived rather than hand-written — hand-folding the literal
+# above would lose the canonical UCUM spellings that make it readable, and keying it
+# by hand invites a silent miss (a folded probe against an unfolded key simply
+# returns the input, quietly disabling the whole table). The assert makes a
+# collision — two keys folding together with different displays — a startup failure
+# rather than a wrong unit on a card.
+_UNIT_DISPLAY_FOLDED: dict[str, str] = {k.casefold(): v for k, v in _UNIT_DISPLAY.items()}
+assert len(_UNIT_DISPLAY_FOLDED) == len(_UNIT_DISPLAY), "case-folded unit keys collide"
+
 
 def _unit(res: Mapping[str, Any]) -> str:
+    """The reading's unit as a *display label*, normalized so equal units compare equal.
+
+    Two normalizations, each lossless for a label:
+
+    - **Strip surrounding whitespace.** Padding carries no unit semantics. Returning
+      it unstripped made ``'mg/dL '`` and ``'mg/dL'`` unequal, which
+      :func:`_trusted_pair` cannot tell from a genuine unit mismatch — so a real
+      80-point glucose rise was withheld as "no trend" over a trailing space.
+      (Stripping before the ``"1"`` check also catches a padded UCUM unity unit.)
+    - **Case-fold the map LOOKUP KEY** — never the returned value.
+
+    Case-folding is safe *here* and is deliberately refused in
+    :func:`copilot.verification.core._units_equal`; the difference is what is being
+    compared. That function tests two **arbitrary, open-set** unit strings for
+    equivalence, where folding would make ``mg`` (milligram) equal ``Mg``
+    (megagram) — a 1e9 error, the exact hazard it exists to catch. This function
+    only *looks up* a **closed set** of eight display labels for inch, pound,
+    Fahrenheit and Celsius. A miss returns the stripped original with its case
+    intact, so ``mg`` and ``Mg`` never reach the map and stay distinct — the UCUM
+    case-sensitivity that matters is preserved downstream. Within the map no two
+    keys fold together, and every case-variant of a key (``Cel``/``cel``/``CEL``,
+    ``degF``/``[DEGF]``) denotes the *same* unit in both UCUM code sets, so a
+    folded hit can never be a different unit. :func:`copilot.rounds.ranges.vitals_range`
+    already folds this same closed temperature set for the same reason.
+    """
     q = res.get("valueQuantity")
     if isinstance(q, Mapping):
         unit = q.get("unit")
-        if isinstance(unit, str) and unit.strip() and unit != "1":
-            return _UNIT_DISPLAY.get(unit, unit)
+        if isinstance(unit, str) and (stripped := unit.strip()) and stripped != "1":
+            return _UNIT_DISPLAY_FOLDED.get(stripped.casefold(), stripped)
     return ""
 
 
@@ -498,6 +554,29 @@ def _trusted_pair(
     return (latest, prior)
 
 
+def _mixed_unit_prior(group: list[Mapping[str, Any]]) -> str | None:
+    """The prior reading's unit when latest & prior are numeric but in DIFFERENT units.
+
+    ``None`` when there is no such pair, or when the two agree (after
+    :func:`_unit` normalization) and are therefore comparable. The empty string is
+    a *hit*, not a miss — an unlabelled prior is still a unit mismatch against a
+    labelled latest — so callers must test ``is not None``, never truthiness.
+
+    The single definition of "mixed unit", shared by the row gate in
+    :func:`build_change_claims` and the card text in :func:`_trend`. They must
+    agree: if the gate can drop a row the text was written to explain, the
+    explanation is unreachable in the one case it exists for — which is exactly how
+    a real change came to vanish behind "No recorded changes since your last
+    review".
+    """
+    if len(group) < 2:
+        return None
+    latest, prior = _numeric(group[0]), _numeric(group[1])
+    if latest is None or prior is None or latest[1] == prior[1]:
+        return None
+    return prior[1]
+
+
 def _decimals(x: float) -> int:
     """How many decimal places a source value states (0 for a whole number).
 
@@ -559,10 +638,12 @@ def _trend(group: list[Mapping[str, Any]]) -> str:
     tail = f" · {gap} since prior" if gap else ""
     pair = _trusted_pair(group)
     if pair is None:
-        lv, pv = _numeric(latest), _numeric(prior)
-        if lv is not None and pv is not None and lv[1] != pv[1]:
+        prior_unit = _mixed_unit_prior(group)
+        if prior_unit is not None:
             # Same metric, two units: the delta between the raw floats is fiction.
-            return f"  · prior in {pv[1] or 'no unit'} — no trend{tail}"
+            # build_change_claims gates on this same predicate, so this sentence is
+            # reachable on the change card, not just the summary card.
+            return f"  · prior in {prior_unit or 'no unit'} — no trend{tail}"
         return f" · updated{tail}" if tail else ""
     (lv_value, _), (pv_value, _) = pair
     delta = lv_value - pv_value
