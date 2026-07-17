@@ -1038,8 +1038,18 @@ paths:
         name: conversation_id
         required: true
         schema:
+          exclusiveMinimum: 0
           title: Conversation Id
           type: integer
+      - in: query
+        name: clinician_id
+        required: false
+        schema:
+          anyOf:
+          - exclusiveMinimum: 0
+            type: integer
+          - type: 'null'
+          title: Clinician Id
       responses:
         '200':
           content:

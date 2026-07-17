@@ -314,8 +314,17 @@ class TestChat:
         assert second.status_code == 200
         assert second.json()["conversation_id"] == conv_id
 
-        hist = client.get(f"/v1/conversations/{conv_id}")
-        assert hist.status_code == 200
+        # Was: `client.get(f"/v1/conversations/{conv_id}")` with NO identity at all,
+        # asserting 200. That assertion encoded a defect as the contract: it claimed
+        # an *unauthenticated* caller may read a patient's free-text clinical Q&A.
+        # It was wrong independently of any change here — the read route now resolves
+        # identity like every other PHI route, so the owning clinician must identify
+        # themselves. The rest of this test (ordering + content) is the real contract
+        # and is unchanged; only the identity-free call was corrected.
+        hist = client.get(f"/v1/conversations/{conv_id}", params={"clinician_id": CLIN})
+        assert hist.status_code == 200, (
+            f"the owning clinician must still read their own thread, got {hist.status_code}"
+        )
         messages = hist.json()["messages"]
         assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
         assert messages[0]["content"] == "What is the latest troponin?"
@@ -342,11 +351,57 @@ class TestChat:
         b = _chat(client, "What is the latest troponin?").json()["conversation_id"]
         assert a != b, "each fresh chat (no conversation_id) opens a new thread"
 
-    def test_unknown_conversation_reads_empty(self, _db_file: str) -> None:
+    def test_unknown_conversation_is_not_found(self, _db_file: str) -> None:
+        # Was: `test_unknown_conversation_reads_empty` — an unauthenticated GET of an
+        # unknown id asserting `200 {"messages": []}`. Wrong on two counts, both
+        # independent of any change here: (1) it asserted an identity-free read of a
+        # PHI route succeeds; (2) `200 {"messages": []}` for a *missing* id versus a
+        # populated 200 for a live one is a clean enumeration oracle — walk 1..N and
+        # the empty-vs-nonempty split maps exactly which conversations exist. The
+        # correct contract is a refusal that reveals nothing.
         client = _client()
-        r = client.get("/v1/conversations/999999")
-        assert r.status_code == 200
-        assert r.json() == {"messages": []}
+        r = client.get("/v1/conversations/999999", params={"clinician_id": CLIN})
+        assert r.status_code == 404, (
+            f"an unknown conversation id must not be readable, got {r.status_code}"
+        )
+        assert "messages" not in r.json(), "a refusal must not carry a messages body"
+
+    def test_conversation_read_requires_identity(self, _db_file: str) -> None:
+        # The live defect, pinned: the handler took no Request and never resolved
+        # identity, so `GET /v1/conversations/1` with no cookie and no clinician_id
+        # returned 200 with another clinician's Q&A about their patient. Identity is
+        # now resolved before any store read, so an identity-free call is refused
+        # (400 in disabled mode / 401 in smart mode) and never reaches the DB.
+        client = _client()
+        conv_id = _chat(client, "What is the latest troponin?").json()["conversation_id"]
+
+        r = client.get(f"/v1/conversations/{conv_id}")
+        assert r.status_code in (400, 401), (
+            f"an identity-free read of a conversation must be refused, got {r.status_code}"
+        )
+        assert "messages" not in r.json(), "a refusal must not carry a messages body"
+
+    def test_other_clinician_cannot_read_another_clinicians_conversation(
+        self, _db_file: str
+    ) -> None:
+        # A DIFFERENT clinician, authenticated but with no round established on this
+        # thread's patient, must not read it — and must not learn it exists either.
+        client = _client()
+        conv_id = _chat(client, "Is she on aspirin?").json()["conversation_id"]
+
+        other = CLIN + 1  # never called /v1/rounds/start -> empty authorized set
+        r = client.get(f"/v1/conversations/{conv_id}", params={"clinician_id": other})
+        assert r.status_code == 404, (
+            f"an off-round clinician must not read another's thread, got {r.status_code}"
+        )
+        body = r.json()
+        assert "messages" not in body, "a refusal must not carry a messages body"
+        # Existence must not leak: byte-identical to an id that does not exist at all,
+        # so the response cannot be used to distinguish "not yours" from "not there".
+        unknown = client.get("/v1/conversations/999999", params={"clinician_id": other})
+        assert (r.status_code, body) == (unknown.status_code, unknown.json()), (
+            "'not yours' and 'not there' must be indistinguishable to an unauthorized caller"
+        )
 
     def test_served_chat_emits_span_and_verification(self, _db_file: str) -> None:
         spy = _RecordingObservability()

@@ -181,6 +181,20 @@ class MemoryRepository:
         self._session.add(MessageRow(conversation_id=conversation_id, role=role, content=content))
         await self._session.flush()
 
+    async def get_conversation(self, conversation_id: int) -> ConversationRow | None:
+        """The conversation row itself, or ``None`` when the id does not exist.
+
+        Carries the owning ``clinician_id``/``patient_id`` —
+        :func:`~copilot.memory.repository.MemoryRepository.get_conversation_messages`
+        filters on ``conversation_id`` alone, so it cannot tell a caller *whose*
+        thread it just read. The read route needs the owning patient to run the
+        rounding-list authorization boundary before serving any turn.
+        """
+        result = await self._session.execute(
+            select(ConversationRow).where(ConversationRow.id == conversation_id)
+        )
+        return result.scalar_one_or_none()
+
     async def get_conversation_messages(self, conversation_id: int) -> list[ConversationMessage]:
         """Read back a conversation's turns, oldest first (created_at, then id)."""
         result = await self._session.execute(

@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from copilot.api.deps import resolve_acting_context
@@ -35,6 +35,10 @@ from copilot.rag import build_retriever
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 _logger = logging.getLogger(__name__)
+
+# One detail string for BOTH "no such conversation" and "not yours" — the two are
+# deliberately indistinguishable to an unauthorized caller (see get_conversation).
+_CONVERSATION_NOT_FOUND_DETAIL = "Conversation not found"
 
 
 class ChatRequest(BaseModel):
@@ -176,8 +180,38 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
 
 
 @router.get("/conversations/{conversation_id}", summary="Read a conversation's turns in order")
-async def get_conversation(conversation_id: int) -> dict[str, Any]:
+async def get_conversation(
+    conversation_id: Annotated[int, Path(gt=0)],
+    request: Request,
+    clinician_id: Annotated[int | None, Query(gt=0)] = None,
+) -> dict[str, Any]:
+    # Identity FIRST, before any read: a conversation is free-text clinical Q&A
+    # about a named patient, at a guessable autoincrement id. This handler used to
+    # take no Request at all, so no auth could run and the session cookie was never
+    # touched — meaning auth_mode=smart could not mask it either. Same auth-mode
+    # contract as the chat/document/observations routes (smart → session cookie,
+    # 401 if none; disabled → an asserted clinician_id, 400 if absent).
+    acting = await resolve_acting_context(get_settings(), request, clinician_id)
+    cid = acting.clinician_id
+
     async with session_scope() as session:
         repo = MemoryRepository(session)
+        conversation = await repo.get_conversation(conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL)
         messages = await repo.get_conversation_messages(conversation_id)
+
+    # Authorization boundary (UC-6), identical to the document reads: the
+    # conversation's patient must be on the acting clinician's rounding list.
+    #
+    # 404 — NOT 403 — and deliberately the *same* 404 as the unknown-id branch
+    # above. An unauthorized caller must not be able to tell "this thread exists
+    # but is not yours" from "no such thread": distinct codes would turn the
+    # autoincrement id space into a clean enumeration oracle (walk 1..N, count the
+    # 403s, learn exactly how many conversations exist and which ids are live).
+    # Existence is itself PHI-adjacent here, so it is withheld from anyone not
+    # already entitled to the contents. The owner still gets a true 200.
+    if not await is_authorized(cid, PatientId(value=conversation.patient_id)):
+        raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL)
+
     return {"messages": [{"role": m.role, "content": m.content} for m in messages]}
