@@ -499,3 +499,27 @@ rejection BEFORE allocation rather than merely catching the raise. Now in LEARNE
 - A latent bug fixed en route: THE PROMPT NEVER MENTIONED PAGE NUMBERS, so on multi-page
   docs the model likely returned page_no=None and the reconciler defaulted every fact to
   page 1 — silently searching the wrong page.
+
+## Page attribution PROVEN on a real multi-page document (deployed build)
+
+The vision agent changed the extraction PROMPT (page labels) — exactly where
+fixture-shaped != reality-shaped bites — so I verified the real path myself.
+
+All three demo docs still extract cleanly through real Claude vision on the deployed
+build (intake 38, lab 37, medlist 12, all STRICT SCHEMA OK). vision_max_pages_per_call=20.
+
+Then, the falsifiable test: merged the three DIFFERENT demo pages into one real 3-page
+PDF (916 KB) and extracted it as intake_form:
+
+  page_no distribution over 3 real pages: {1: 35, 3: 9}
+
+Facts from page 3 are labelled 3, NOT defaulted to 1 — the page labels work on the real
+model. The gap at page 2 is CORRECT: page 2 is the lab report, and lab values fit no
+intake category, so the model rightly skipped them; page 3's medication list yielded 9
+medication facts.
+
+This is the latent bug the agent found doing real work: before, the prompt never mentioned
+page numbers and page_no carried no schema description, so the model returned None and the
+reconciler defaulted every fact to page 1 — those 9 page-3 facts would have been matched
+against PAGE 1's tokens, either failing verification or falsely matching something on the
+wrong page. On the single-page demo docs the bug was invisible.
