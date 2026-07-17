@@ -555,3 +555,73 @@ Only after a cycle finds nothing worth fixing, and only if tokens remain:
 
 Suggested order: variants first (cheaper, tests the schema's generality), then handwriting
 (which needs an answer to the OCR-bottleneck question above first).
+
+## Cycle 6 CLOSED — NINE defects, deployed and verified live (HEAD a4b0eb9)
+
+1177 tests green (from 871 at cycle-2 start), mypy clean, ingestion 8, pass_rate 97.83,
+gate 0, harness intact. Live: UI 200, conversations/1 -> 401, agent healthy, and /ready
+now runs GATING smart_config + pgvector + openemr_fhir + llm probes.
+
+Cycle 6 was the richest of the night, and the findings were PATIENT-SAFETY, not security:
+
+**#40 A doubling troponin printed as "↑0.0".** _fmt_num hardcoded .1f; troponin's band is
+<0.04, so EVERY clinically decisive troponin delta — the serial rise that rules in MI —
+rendered as "up by zero", and 0.01->0.04 additionally read trend=steady. Precision now
+derives from the operands. FIXED 397a39e.
+
+**#41 One future-dated reading silently emptied the card**, and the UI then rendered an
+affirmative "No recorded changes since your last review" while a new abnormal tachycardia
+sat in the record. Fail-OPEN in a fail-closed system. The future reading is now FLAGGED,
+not dropped (silent dropping is the bug's own failure mode), and because a future
+timestamp makes the ORDERING unknowable, trend/direction/changed all withhold. FIXED.
+
+**#42 Comparisons were unit-blind.** C-then-F charting read as "↑61.6 · improving"; the
+series chart plotted 37.0 and 98.6 on one °F axis (profound hypothermia). No conversions
+— a converted point would plot a number that exists in no record. FIXED.
+
+**#43 The verification gate compared NUMBERS, not QUANTITIES** — a claim saying ng/mL
+verified clean against a record of ng/L (1000x). And claim_text emitted a bare unitless
+number, so the number was verified and the unit beside it was not. FIXED b9834d7 —
+including the WIRING, which the building agent honestly reported it could not reach:
+"my tests are green and they'd be green even if the product were still fully broken."
+
+**#44 /ready and the Docker healthcheck were GREEN on a database with ZERO tables.** The
+documented rollout makes `alembic upgrade head` a separate manual step; skip it and the
+container reports healthy, Caddy routes to it, and every request 500s. FIXED 7f32f8a.
+
+**#45 The "startup check that refuses auth_mode=smart without https" DID NOT EXIST.**
+config.py promised it twice; ensure_smart_ready was never called from create_app, and
+never checked the client secret or the authorize URL. An operator following the docs got
+the physician's browser sent to http://openemr. FIXED.
+
+**#46 `${VAR:-}` — the standard compose idiom — HARD-BRICKED THE BOOT.** 8 of 9 knobs.
+I found this by nearly shipping it. FIXED 457814b + 27 unreachable settings surfaced.
+
+**#47 DEPLOY.md produced an EMPTY client secret.** The docs said COPILOT_SMART_APP_CLIENT_
+SECRET; compose interpolates ${SMART_APP_CLIENT_SECRET}. Following the procedure literally
+is what broke it. FIXED a4b0eb9; swept for siblings — none remain.
+
+**#48 patient_id pseudonymized before egress** (14bcc70) — but see the limit below.
+
+### Agents refusing my instructions, correctly — the best signal of the night
+- The readiness agent REFUSED my host-equality rule on two grounds: it contradicts the
+  repo's own split-host fixtures AND it is wrong in general (SMART routinely separates
+  the app from the EHR's auth server). It also refused the /ready healthcheck change with
+  a real argument: the live Caddyfile has no health_uri, so Caddy never consults Docker
+  health, and Docker health doesn't restart containers — it would buy a changed `docker ps`
+  string and take on DB-blip restart risk.
+- It SSH'd the droplet and corrected my analysis: the "unset client secret" was the LOCAL
+  default; live has it set (len 86). It verified the live config survives the new check
+  BEFORE shipping it.
+- The unit agent reported its own work as non-functional rather than claiming the P0.
+
+### Still open, carried forward
+- **The Langfuse pseudonym is NOT de-identification** (45 CFR 164.514(c)) — the dataset
+  remains PHI and still needs a BAA. Human decision.
+- **`health_uri /ready` belongs in the Caddyfile** — that is the real routing gate; the
+  Docker healthcheck is not.
+- **_distance_to_range treats the bound as inclusive**, so troponin 0.04 against "<0.04"
+  scores distance 0 and a 4x rise still classifies trend=steady despite severity=warning.
+  The card no longer lies about the number; "steady" is arguably its own defect.
+- Coverage counts characters (subsequence can pass); rasterize accumulates PNGs;
+  is_authorized gates a caller-supplied list; idempotency is in-process only.
