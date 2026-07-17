@@ -41,8 +41,14 @@ _LONG_DIGITS_RE = re.compile(r"\b\d{5,}\b")
 #: The trailing ``[:\-]`` requirement keeps it from eating ordinary prose like
 #: "the patient presented with…". The value is a run of Title-Case tokens; a
 #: comma or any non-name punctuation ends it.
+#: The ``(?i:...)`` is SCOPED to the label on purpose. A leading ``(?i)`` would
+#: apply case-insensitivity to the value too, so ``[A-Z]`` would match a lowercase
+#: letter and the greedy run would swallow ordinary clinical prose:
+#: ``"pt: severe sepsis with lactate elevation"`` collapsed to ``"patient"``,
+#: destroying the query before retrieval. The label matches in any case; the value
+#: must be genuinely Title-Case to be treated as a name.
 _LABELED_NAME_RE = re.compile(
-    r"(?i)\b(?:patient(?:\s+name)?|pt|name)\b\s*[:\-]\s*"
+    r"\b(?i:patient(?:\s+name)?|pt|name)\b\s*[:\-]\s*"
     r"[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)*"
 )
 
