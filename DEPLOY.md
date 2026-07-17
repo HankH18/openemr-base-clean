@@ -588,8 +588,15 @@ do (read; and, for writers, `encounters`/`patients-med`).
 
 ```bash
 COPILOT_AUTH_MODE=smart
-COPILOT_SMART_APP_CLIENT_ID=<printed client_id>
-COPILOT_SMART_APP_CLIENT_SECRET=<printed client_secret>   # secrets-manager only; never commit
+# NOTE the missing COPILOT_ prefix on these two. It is not a typo: compose
+# interpolates ${SMART_APP_CLIENT_ID} / ${SMART_APP_CLIENT_SECRET} from .env and
+# passes them through AS COPILOT_SMART_APP_CLIENT_ID / _SECRET. Writing the
+# prefixed names here means compose finds nothing, substitutes empty, and the
+# container gets an EMPTY client secret. (This block used to say COPILOT_ on both;
+# following it literally produced a silent login failure. It now refuses to boot
+# instead — see ensure_smart_ready — but the names still have to be right.)
+SMART_APP_CLIENT_ID=<printed client_id>
+SMART_APP_CLIENT_SECRET=<printed client_secret>   # secrets-manager only; never commit
 COPILOT_SESSION_ENC_KEY=<Fernet key from §14.1>
 COPILOT_PUBLIC_BASE_URL=https://agentforge.<your-domain>  # already set in §12.2
 # then:
