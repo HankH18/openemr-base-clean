@@ -309,6 +309,20 @@ Langfuse. The agent status page (`GET /status`) surfaces the current numbers.
 The p50 numbers are reported alongside p95 for context but are not the gate; the
 tail is what breaches an SLO.
 
+> **Where these thresholds come from.** `W2_ARCHITECTURE.md` §SLOs & alerting carries
+> the **defence** of the ingestion number (why **12 s** warn / **30 s** page and not some
+> other value) — grounded in the committed LLM-free floor
+> (`agent/artifacts/latency_report.json`: `doc_ingestion` **p50 36.0 ms / p95 151.5 ms**,
+> n=5) plus the vision-call-dominated real-path estimate in `COST_ANALYSIS.md` §9c
+> (≈ 5 s p50 / ≈ 10 s p95, so 12 s ≈ estimate + ~20% headroom). **The two documents carry
+> the same numbers; this table is the operational source of truth** — change it here first,
+> then reconcile the defence.
+>
+> **Honest labelling:** the floor is **measured** (stub path, n=5); the warn/page targets
+> are **SLO-anchored estimates** for the real path, because no production traces are
+> retained yet. They are starting points to tune against the first week of real document +
+> retrieval traffic — not validated production percentiles.
+
 ### 7.2 Week-2 alert definitions (with response actions)
 
 Each alert names the signal, threshold, why it matters, and the first on-call
@@ -338,10 +352,16 @@ document + retrieval traffic.
   quality/latency alert, not an availability page for the answer itself.
 - **First response (runbook):** check the `embedder`/`reranker` entries on
   `/ready` (graded — `ok` / `degraded` / `down`) and the Cohere/Voyage key
-  configuration; confirm the `pgvector` dependency is `ok` (a missing `vector`
-  extension forces dense retrieval to degrade). Inspect a slow
-  `guideline.retrieve` trace for which sub-step (embed vs. DB fusion vs. rerank)
-  dominates.
+  configuration; confirm the `pgvector` dependency is `ok` (`readiness.py:54-81`
+  probes only that the `vector` **extension** is installed — without it the
+  `embedding` column cannot be stored, so no chunk carries a vector and dense
+  ranking silently contributes nothing: `retriever.py:244-248` skips rows whose
+  `embedding is None`, leaving sparse-only retrieval). Inspect a slow
+  `guideline.retrieve` trace for which sub-step (embed vs. **in-Python** cosine
+  scan vs. rerank) dominates — note the scan is O(corpus) in the app process,
+  **not** an indexed DB search (see `W2_ARCHITECTURE.md` §RAG index), so a
+  retrieval slowdown that tracks corpus growth points there rather than at the
+  network hops.
 
 Routing follows §5: Alert 5 page-tier on the page condition (warn-tier
 otherwise), Alert 6 warn-tier for the fallback signal and page-tier for the

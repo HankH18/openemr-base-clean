@@ -53,9 +53,16 @@ New this week (authoritative design: [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md))
   document is stored in OpenEMR (`POST /api/patient/:pid/document`); derived extractions/facts are
   **append-only** in the agent DB. Every extracted fact carries a **per-fact citation with a page
   bbox**; a value that can't be located on the page is flagged `supported=false`, never invented.
-- **Hybrid RAG + rerank** over a small hospitalist guideline corpus — sparse (Postgres FTS) + dense
-  (pgvector, Voyage `voyage-3.5`) → **RRF fusion** → **Cohere `rerank-v3.5`**. Only
-  **de-identified** clinical-topic queries leave the deployment; guideline evidence is returned as a
+- **Hybrid RAG + rerank** over a small hospitalist guideline corpus (4 documents / 19 chunks) —
+  sparse (Postgres FTS) + dense (Voyage `voyage-3.5` embeddings; **pgvector stores** the vectors,
+  ranking is a **Python-side cosine over the loaded chunk set** — no vector operator, no ANN index,
+  honest at this corpus size, see [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md) §RAG index for the
+  scale path) → **RRF fusion** → **Cohere `rerank-v3.5`**. Only **scrubbed** clinical-topic queries
+  leave the deployment — never chart facts or document images — via a single `deidentify()` choke
+  point. *Stated honestly:* that scrub is a deterministic regex pass that strips structured
+  identifiers (MRN/SSN/DOB/phone/email) and label-gated names, **not** arbitrary free-text names;
+  it bounds egress but is not Safe Harbor de-identification (see
+  [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md) §Security). Guideline evidence is returned as a
   **separate, labeled block**, never mixed into patient-fact claims.
 - **Multi-agent graph** — a hand-rolled **supervisor** routes to two workers
   (**intake-extractor**, **evidence-retriever**) plus a **critic**, with typed logged handoffs and
@@ -147,10 +154,26 @@ Two **distinct** tiers — keep them straight:
    [`golden_dataset.jsonl`](agent/evals/golden_dataset.jsonl) (40) = 53 cases** against **5 boolean
    rubrics** — `schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`,
    `no_phi_in_logs` — stubbed and deterministic. It **exits nonzero on a >5% relative pass-rate
-   regression** vs [`gate_baseline.json`](agent/evals/gate_baseline.json) (baseline 100%). Enforced
-   two ways: a git **pre-push hook** ([`.githooks/pre-push`](.githooks/pre-push)) locally and the
-   GitLab CI **`agent:tests`** job. `python evals/gate.py --inject-regression` drops the pass rate to
-   0, proving the gate is non-vacuous.
+   regression** vs [`gate_baseline.json`](agent/evals/gate_baseline.json) (baseline 100%).
+   `python evals/gate.py --inject-regression` drops the pass rate to 0, proving the gate is
+   non-vacuous.
+
+   *What actually enforces it:* the **GitLab CI `agent:tests` job**
+   ([`.gitlab-ci.yml`](.gitlab-ci.yml)) is the enforcing backstop and the only automatic gate. It is
+   **path-gated** (`rules.changes: agent/**/*`), so it runs on every push **that touches `agent/`** —
+   deliberately not on the PHP monolith's churn, which cannot regress agent behavior. A git
+   **pre-push hook** ([`.githooks/pre-push`](.githooks/pre-push)) mirrors it locally, but is
+   **available, not active**: git ignores `.githooks/` until a developer opts in per clone, and
+   `core.hooksPath` is **unset in this repo**, so the hook is **inert until you run**:
+
+   ```bash
+   git config core.hooksPath .githooks    # one-time, per clone; bypass once with `git push --no-verify`
+   ```
+
+   The hook is a convenience that shortens the feedback loop; it is deliberately not self-installing
+   (it would otherwise mutate a shared clone's git config silently). Server-side branch protection
+   requiring `agent:tests` to pass before merge is a GitLab project setting — an operator step, not
+   configured in this repo. See [`.githooks/README.md`](.githooks/README.md).
 
    *Scope, stated honestly:* the gate scores **recorded rubric fixtures** — it verifies the rubric
    logic and the fixtures' consistency, and blocks a regression in that scored set. Coverage of the

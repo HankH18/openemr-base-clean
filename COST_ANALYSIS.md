@@ -99,11 +99,32 @@ is the single most important lever in every tier below.
 ### 1d. Week-2 multimodal paths — new model calls, same change-gated posture
 
 Week 2 adds two feature surfaces, each with its own model calls. Both are
-**flag-gated and key-gated**: `document_ingestion_enabled` defaults to `False`,
-and with no `VOYAGE_API_KEY` / `COHERE_API_KEY` the embedder and reranker fall
-back to deterministic **keyless stubs** (no outbound call, **$0**). So, exactly
-as with Week-1 synthesis, the Week-2 model spend is **$0 until an operator turns
-the surface on and wires real keys.**
+**key-gated**: with no `VOYAGE_API_KEY` / `COHERE_API_KEY` the embedder and
+reranker fall back to deterministic **keyless stubs** (no outbound call, **$0**),
+and with no `ANTHROPIC_API_KEY` the vision extractor falls back the same way
+(`build_vision` returns `StubVision()` — `agent/copilot/documents/vision.py:226-230`).
+So, exactly as with Week-1 synthesis, the Week-2 model spend is **$0 until an
+operator wires real keys.**
+
+> **Correction — the key gate is the *only* gate.** An earlier version of this
+> section also credited a `document_ingestion_enabled` flag defaulting to `False`
+> as a second, flag-level control on this spend. **That control does not exist.**
+> The setting is declared (`agent/copilot/config.py:315`, description: "Gates the
+> API surface") but is **never read anywhere in the codebase** — `register_routers`
+> (`agent/copilot/api/app.py:39-58`) mounts every module exposing a `router`
+> attribute **unconditionally**, with no reference to the flag. Setting it to
+> `True` or `False` changes nothing. The document-ingestion HTTP surface is
+> therefore **mounted and reachable whenever the agent runs**, gated by auth +
+> RBAC (as every PHI route is), *not* by a feature flag.
+>
+> **Cost consequence: none.** The real $0-by-default guarantee is the **key gate**,
+> which is load-bearing and verified: the reachable endpoint runs the deterministic
+> stub extractor and bills nothing until `ANTHROPIC_API_KEY` is set. **Exposure
+> consequence: real but bounded** — an operator who assumed the flag kept the
+> upload endpoint unmounted was mistaken; the endpoint is live and its actual
+> protection is the SMART session + rounding-list RBAC gate. The dead flag is
+> slated for deletion (tracked in `W2_ARCHITECTURE.md` §Assumptions & open
+> questions); no cost or exposure claim in this document rests on it.
 
 | Week-2 path | Model / tool | When it fires | Cost lever |
 |---|---|---|---|
@@ -114,6 +135,11 @@ the surface on and wires real keys.**
 
 PHI posture is preserved: document **images** go only to Claude (as in Week 1);
 a `deidentify()` choke-point strips identifiers before any Voyage or Cohere call.
+That scrub is **shape-based, with a known gap**: it removes structured identifiers
+(email/SSN/date/phone/5+-digit runs) and *label-gated* names (`Patient: <Name>`),
+but **not an arbitrary free-text name** typed into a question — see
+`W2_ARCHITECTURE.md` §Security. It bounds egress; it is not Safe Harbor
+de-identification, and no cost line here depends on it.
 Guideline retrieval is **fail-open** — a rerank/embed failure degrades evidence
 quality but never withholds the grounded patient answer — so it is a
 quality/latency surface, not an availability one.
