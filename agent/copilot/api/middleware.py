@@ -75,5 +75,27 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             )
             response.headers[CORRELATION_ID_HEADER] = correlation_id
             return response
+        except Exception:
+            # An unhandled exception used to emit NOTHING: the success log was the
+            # only one, so the very requests an error rate is computed FROM were
+            # the ones missing from the log. A dashboard fed by these records
+            # reported a healthy zero while the app was failing. Log the failure
+            # (status 500 — what the server will actually return) with the same
+            # shape and the correlation id still in context, then re-raise
+            # untouched so the app's error handling is unchanged.
+            #
+            # No exception message or traceback: this record is the PHI-free
+            # access trail, and an exception string can carry patient data. The
+            # correlation id is the join key to the full trace.
+            _access_logger.error(
+                "http.request",
+                extra={
+                    "http_method": request.method,
+                    "http_path": request.url.path,
+                    "http_status": 500,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
+            raise
         finally:
             correlation_id_var.reset(token)
