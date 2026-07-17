@@ -33,6 +33,7 @@ from copilot.memory import Base
 from copilot.memory.models import AuditLogRow
 from copilot.observability import correlation_id_var, current_correlation_id
 from copilot.observability.langfuse_backend import LangfuseObservability
+from copilot.observability.pseudonymize import PatientPseudonymizer
 from copilot.worker.poller import Poller, PollerTickOutcome
 
 pytestmark = pytest.mark.asyncio
@@ -98,9 +99,19 @@ class _FakeClient:
         return
 
 
+#: A pseudonym key, so these tests exercise the same egress path production does.
+#: Without one the backend correctly DROPS patient_id rather than emit an unstable
+#: per-process id, and every assertion here about the field would vanish.
+_PSEUDONYM_KEY = "test-pseudonym-key"
+
+
 def _langfuse(rec: _Recorder) -> LangfuseObservability:
     return LangfuseObservability(
-        host="https://x", public_key="pk", secret_key="sk", client=_FakeClient(rec)
+        host="https://x",
+        public_key="pk",
+        secret_key="sk",
+        client=_FakeClient(rec),
+        pseudonym_key=_PSEUDONYM_KEY,
     )
 
 
@@ -181,7 +192,18 @@ class TestPollerResultNesting:
 
         [event] = rec.nested_events
         assert event["metadata"]["outcome"] == PollerTickOutcome.no_change.value
-        assert event["metadata"]["patient_id"] == 1015
+        # CONTRACT CHANGED, deliberately. This asserted `== 1015` — the RAW patient id
+        # arriving at Langfuse. That is a bare HIPAA identifier egressing to a
+        # third-party SaaS, and the assertion encoded the leak as an expectation: it
+        # was wrong independent of any change, so the test was wrong, not the code.
+        # The test's stated purpose ("the payload that distinguishes ticks") is carried
+        # by the `outcome` assertion above; the id was incidental to it. Narrowed to
+        # assert the correct contract rather than deleted — the pseudonym must still
+        # ride the event, so a scrub that dropped the field entirely still fails here.
+        assert event["metadata"]["patient_id"] == PatientPseudonymizer(
+            _PSEUDONYM_KEY
+        ).pseudonym(1015)
+        assert event["metadata"]["patient_id"] != 1015
 
 
 # --- 2. the correlation-id join --------------------------------------------
