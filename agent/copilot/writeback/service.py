@@ -1,11 +1,17 @@
 """Serve-time write-back orchestration — the read-side gate, run in reverse.
 
 Keeps the route thin. One place parses a raw physician request into a typed,
-closed-set ``WriteCandidate``, runs the deterministic write verifier, records the
-``write_proposed`` audit and returns the structured echo-back (propose); then, on
-an explicit second transaction, re-verifies the identical candidate, commits it
-append-only through the ``OpenEmrWriteClient``, records ``write_committed`` /
-``write_failed``, and closes the loop with a fail-open read-back (commit).
+closed-set ``WriteCandidate``, runs the deterministic write verifier, **persists
+the proposed candidate** (``ProposalStore``, keyed by the server-issued
+idempotency key), records the ``write_proposed`` audit and returns the structured
+echo-back (propose); then, on an explicit second transaction, **binds the confirm
+to that persisted proposal** — rejecting an unknown key, a candidate that differs
+from the one proposed, or a confirm by a different clinician/patient — and commits
+the *stored* candidate append-only through the ``OpenEmrWriteClient``, records
+``write_committed`` / ``write_failed``, and closes the loop with a fail-open
+read-back (confirm → commit). The binding is what makes the echo-back review load
+bearing: without a server-side record of what was proposed, a tampered or
+fabricated confirm was indistinguishable from a faithful one.
 
 Mirrors ``chat/service.py`` in shape (settings + observability injected, its own
 FHIR client seam, audit fail-open) but never touches the read-only ``FhirClient``
@@ -207,6 +213,65 @@ def get_idempotency_store() -> IdempotencyStore:
     return IdempotencyStore()
 
 
+class ProposalStore:
+    """Server-side registry of *what was proposed*, keyed by ``idempotency_key``.
+
+    The propose→confirm gate's memory, and the binding the safety net was
+    missing. ``propose`` records the exact typed candidate it echoed back under
+    the server-issued key; ``confirm`` looks it up and refuses to commit anything
+    that does not match that record — an unknown key (no propose ever happened),
+    a candidate that differs from the one proposed, or a confirm by a different
+    clinician/patient than the proposal was bound to. Without this the server
+    kept *no* record of the reviewed value (``propose`` persisted nothing) and so
+    could not tell a faithful confirm from a tampered or fabricated one: the
+    physician's echo-back review protected nothing.
+
+    A proposal is retained after its key settles — never evicted on commit — so a
+    legitimate idempotent retry re-confirms the same key and still finds its
+    proposal to be admitted (dropping it would turn the retry into a spurious
+    "unknown key" rejection). Keys are single-use in practice (a fresh
+    ``secrets.token_urlsafe`` per propose), so entries never collide; the store
+    only grows, exactly like ``IdempotencyStore._committed``.
+
+    **In-process only — the same single-worker caveat as ``IdempotencyStore``,
+    and for the same reason.** The proposal lives in this interpreter's heap and
+    is visible to no other process: a second uvicorn worker, a replica, or a
+    restart between propose and confirm loses it, and a confirm routed to a
+    worker that never saw the propose is then rejected as an unknown key. That
+    failure is fail-*closed* — the safe direction: it refuses a genuine confirm
+    (the physician re-proposes) rather than admitting an unreviewed one. It is
+    acceptable today only because the container serves on one uvicorn worker (see
+    ``IdempotencyStore`` for the Dockerfile ``CMD`` note). Scaling past one worker
+    requires moving BOTH this store and the idempotency claim to a shared backend
+    (Redis / a uniquely-indexed DB row) together — a proposal store that a second
+    worker cannot read is exactly as fatal to the binding as an idempotency claim
+    it cannot see is to the dedupe.
+    """
+
+    def __init__(self) -> None:
+        self._proposals: dict[str, AnyWriteCandidate] = {}
+
+    def get(self, key: str) -> AnyWriteCandidate | None:
+        """The candidate proposed under ``key``, or ``None`` if none was."""
+        return self._proposals.get(key)
+
+    def put(self, key: str, candidate: AnyWriteCandidate) -> None:
+        """Record the candidate echoed back under ``key`` at propose time."""
+        self._proposals[key] = candidate
+
+
+@lru_cache(maxsize=1)
+def get_proposal_store() -> ProposalStore:
+    """The shared per-process proposal store.
+
+    Cached so a propose and a later confirm — separate requests, separate
+    ``WriteService`` instances built by the route per call — see the same
+    proposals; tests reset it with ``get_proposal_store.cache_clear()`` alongside
+    the idempotency store.
+    """
+    return ProposalStore()
+
+
 class WriteService:
     """Orchestrates one physician direct-edit through the propose→confirm gate."""
 
@@ -215,6 +280,7 @@ class WriteService:
         settings: Settings,
         observability: Observability | None = None,
         idempotency: IdempotencyStore | None = None,
+        proposals: ProposalStore | None = None,
         *,
         write_client_factory: Callable[[], OpenEmrWriteClient] | None = None,
         read_client_factory: Callable[[], FhirClient] | None = None,
@@ -222,6 +288,10 @@ class WriteService:
         self._settings = settings
         self._obs: Observability = observability or NoopObservability()
         self._idempotency = idempotency or get_idempotency_store()
+        # The propose→confirm binding store (defaults to the shared singleton so a
+        # propose and its later confirm — two separate ``WriteService`` instances
+        # the route builds per request — reach the same recorded proposal).
+        self._proposals = proposals or get_proposal_store()
         # Optional per-request client factories. In ``smart`` mode the route
         # injects factories that build the physician's delegated per-session write
         # + read-back clients (the physician's SMART token carries the
@@ -286,6 +356,15 @@ class WriteService:
                 raise WriteInputError("write candidate failed verification", details=verdict.errors)
             proposed = ProposedWrite(candidate=candidate, verdict=verdict)
 
+        # Persist what was proposed so the confirm step can BIND to it. This is the
+        # record the confirm re-checks against — without it the server keeps no
+        # memory of the reviewed value and cannot reject a tampered or fabricated
+        # confirm. Bound to the server-issued key and, via the candidate itself, to
+        # the proposing clinician/patient; ``confirm`` re-checks both. Stored only
+        # after verification passes (a blocked candidate raised above), so an
+        # unconfirmable value is never recorded as confirmable.
+        self._proposals.put(idempotency_key, candidate)
+
         # HIPAA §164.312(b): the proposal is a physician-attributed action on the
         # chart, so it leaves a trail. Fail-open — the echo-back is already built.
         # ``resource_id`` stays None: a proposal creates nothing, so the trail
@@ -301,7 +380,75 @@ class WriteService:
         )
         return proposed, idempotency_key
 
-    # --- commit -----------------------------------------------------------
+    # --- confirm (bound entry) --------------------------------------------
+
+    async def confirm(
+        self,
+        *,
+        clinician_id: ClinicianId,
+        patient_id: PatientId,
+        candidate: AnyWriteCandidate,
+        idempotency_key: str,
+    ) -> CommittedWrite:
+        """Bind the physician confirm to the server-persisted proposal, then commit.
+
+        The propose→confirm safety net, and the route's only entry into a write.
+        ``propose`` recorded the exact candidate it echoed back under
+        ``idempotency_key``; this refuses to commit anything that does not match
+        that record, so the value the physician reviewed on the echo-back is the
+        one — and the only one — that can reach the chart. Every rejection here is
+        a ``WriteInputError`` (route → 400) raised *before* any write client is
+        built, so nothing reaches OpenEMR:
+
+        - **unknown key** — no proposal was recorded under this key: a confirm
+          that skipped propose, or a fabricated key the server never issued. The
+          write was never proposed, so it is not confirmable.
+        - **owner mismatch** — the proposal was bound to a different clinician or
+          patient than this confirm's acting principal. A proposal made by
+          clinician A for patient P is not confirmable by clinician B, nor against
+          patient Q.
+        - **candidate mismatch** — the confirming candidate differs from the
+          stored one on any field (value, metric, unit, entry_mode, ids, source
+          …; frozen-model ``==`` compares them all, so a bare re-serialization
+          still matches). A tampered echo-back — a reviewed 72 mutated to 180 on
+          the way back — is refused here even though *both* values clear the
+          numeric verifier (180 bpm is only a soft warning).
+
+        On a match it commits the **stored** candidate, never the client-sent one:
+        should some future field ever escape the equality check above, the tamper
+        still cannot reach the chart, because the value written is the one the
+        server recorded at propose. A settled key re-confirmed with the identical
+        candidate matches, reaches ``commit``, and replays the original result —
+        the legitimate idempotent retry is preserved (see ``commit``/``run_once``).
+        """
+        stored = self._proposals.get(idempotency_key)
+        if stored is None:
+            # Closes the "confirm without propose / fabricated key" hole: the
+            # server has no reviewed candidate to stand behind this write.
+            raise WriteInputError("no matching proposal for this confirmation")
+
+        if (
+            stored.clinician_id.value != clinician_id.value
+            or stored.patient_id.value != patient_id.value
+        ):
+            raise WriteInputError(
+                "this proposal was made by a different clinician or for a different patient"
+            )
+
+        if stored != candidate:
+            # Closes the "confirm a mutated candidate under a real key" hole.
+            raise WriteInputError("the confirmed candidate does not match the proposed one")
+
+        # Commit the STORED candidate, not ``candidate``: the reviewed value is
+        # what reaches the chart, so a tamper the equality check missed cannot win.
+        return await self.commit(
+            clinician_id=clinician_id,
+            patient_id=patient_id,
+            candidate=stored,
+            idempotency_key=idempotency_key,
+        )
+
+    # --- commit (single-flight append primitive) --------------------------
 
     async def commit(
         self,
@@ -311,9 +458,15 @@ class WriteService:
         candidate: AnyWriteCandidate,
         idempotency_key: str,
     ) -> CommittedWrite:
-        """Re-verify the identical candidate, then commit it append-only.
+        """Re-verify the bound candidate, then commit it append-only, exactly once.
 
-        This is the explicit physician confirm — the only path that writes.
+        The single-flight append primitive. It is reached in production only via
+        :meth:`confirm`, which has already bound ``candidate`` to the recorded
+        proposal — so by the time control gets here, ``candidate`` *is* the
+        reviewed, server-persisted record, not raw client input. (The
+        concurrent-confirm tests drive this method directly to exercise the
+        single-flight/idempotency mechanism in isolation; the route never does.)
+
         Re-runs the same deterministic verification and refuses (``WriteInputError``
         → 400) if the candidate would now be blocked or its key does not match the
         confirm URL. Otherwise builds the guarded write client

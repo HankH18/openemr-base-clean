@@ -1,10 +1,16 @@
 """Physician write-back API — the propose→confirm gate (Phase 1b).
 
 ``POST /v1/writes`` parses a typed physician request over the closed writable
-metric set, verifies it deterministically, and returns a structured echo-back to
-confirm (never agent prose). ``POST /v1/writes/{idempotency_key}/confirm`` is the
-distinct, human-initiated second transaction that commits the identical candidate
-append-only through the guarded write client and returns proof of the write.
+metric set, verifies it deterministically, persists the proposed candidate
+server-side (keyed by the idempotency key it issues), and returns a structured
+echo-back to confirm (never agent prose). ``POST
+/v1/writes/{idempotency_key}/confirm`` is the distinct, human-initiated second
+transaction: it looks the persisted proposal back up and refuses to write unless
+the confirmed candidate matches it — same key, same clinician/patient, identical
+record — then commits the *stored* candidate append-only through the guarded
+write client and returns proof of the write. An unknown key, a mutated candidate,
+or a confirm by another clinician/patient is a 400 with no write attempted; the
+echo-back a physician reviewed is the only value that can reach the chart.
 
 Both endpoints enforce the same rounding-list authorization boundary as chat and
 observations (``is_authorized`` → **403**, no audit on the refusal) and both are
@@ -253,7 +259,7 @@ async def confirm_write(
             request.app.state.observability,
             write_client_factory=_write_factory(acting.session_id),
             read_client_factory=_read_factory(acting.session_id),
-        ).commit(
+        ).confirm(
             clinician_id=cid,
             patient_id=pid,
             candidate=candidate,

@@ -32,8 +32,6 @@ from sqlalchemy.orm import Session
 from copilot.auth.session import SessionCrypto, hash_session_id
 from copilot.chat.service import ChatService
 from copilot.config import Settings
-from copilot.domain.primitives import ClinicianId, PatientId
-from copilot.domain.writes import VitalWrite, WritableMetric, WriteCandidate, WriteKind
 from copilot.fhir.auth import (
     ResourceOwnerPasswordTokenProvider,
     SessionTokenProvider,
@@ -255,16 +253,29 @@ class TestSmartModeDelegatedToken:
         # unmatched request; its bearer is the physician's too.
         respx.get(f"{FHIR_BASE}/Observation").mock(return_value=Response(200, json=_bundle([])))
 
-        candidate = WriteCandidate(
-            kind=WriteKind.vital,
-            patient_id=PatientId(value=PID),
-            clinician_id=ClinicianId(value=cid),
-            idempotency_key="tok-1",
-            vital=VitalWrite(metric=WritableMetric.heart_rate, value=72, unit="bpm"),
+        # Propose FIRST, then confirm the server-issued candidate. This test used to
+        # POST straight to /confirm with a self-built candidate and no propose — which
+        # was probe B of the write-binding defect (confirm accepting an unproposed
+        # candidate) in smart mode. The real UI proposes before confirming; only this
+        # fixture skipped it. The binding now rejects an unproposed key, so the fixture
+        # is corrected to the real flow. The assertion under test — the write carries
+        # the physician's delegated token, not the system stub — is unchanged.
+        client = _authed_client()
+        proposed = client.post(
+            "/v1/writes",
+            json={
+                "clinician_id": cid,
+                "patient_id": PID,
+                "kind": "vital",
+                "metric": "heart_rate",
+                "raw_value": "72",
+                "unit": "bpm",
+            },
         )
-        r = _authed_client().post(
-            "/v1/writes/tok-1/confirm", json={"candidate": candidate.model_dump(mode="json")}
-        )
+        assert proposed.status_code == 200, proposed.text
+        body = proposed.json()
+        key = body["idempotency_key"]
+        r = client.post(f"/v1/writes/{key}/confirm", json={"candidate": body["candidate"]})
 
         assert r.status_code == 200
         assert vital_route.called

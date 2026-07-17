@@ -640,3 +640,180 @@ class TestConcurrentConfirm:
         stuck.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stuck
+
+
+# --- propose→confirm binding (the write-back safety net) --------------------
+#
+# The gate is only a safety net if the confirm is BOUND to what was proposed.
+# These drive the real route (propose → confirm) and assert that a confirm which
+# does not match the server-persisted proposal is refused with NOTHING written:
+# a tampered value (A), a fabricated/never-proposed key (B), and a divergent
+# candidate replayed under a settled key (C). The regression guards prove the
+# legitimate paths still work: the identical settled-key retry replays exactly
+# one write, and the happy path commits exactly once.
+
+
+def _tamper_vital_value(candidate: dict[str, Any], value: float) -> dict[str, Any]:
+    """A deep-ish copy of a vital candidate with its ``value`` mutated."""
+    tampered = dict(candidate)
+    tampered["vital"] = {**candidate["vital"], "value": value}
+    return tampered
+
+
+class TestConfirmBinding:
+    def test_confirm_rejects_tampered_value_and_writes_nothing(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        """A (the headline bug): propose 72, confirm a candidate mutated to 180.
+
+        180 bpm clears the numeric verifier (a soft warning, never a block), so
+        ONLY the binding stands between the tampered value and the chart. The
+        confirm must be refused and the write client must never be called.
+        """
+        client = _client()
+        body = _propose(client).json()  # heart_rate 72
+        key = body["idempotency_key"]
+
+        tampered = _tamper_vital_value(body["candidate"], 180.0)
+        r = _confirm(client, key, tampered)
+
+        assert r.status_code == 400
+        # The reviewed 72 was never written, and neither was the tampered 180.
+        assert writer.vitals == []
+
+    def test_confirm_rejects_never_proposed_key_and_writes_nothing(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        """B: a confirm under a key the server never issued (propose is skipped)."""
+        client = _client()
+        candidate = WriteCandidate(
+            kind=WriteKind.vital,
+            patient_id=PatientId(value=PID),
+            clinician_id=ClinicianId(value=CLIN),
+            idempotency_key="fabricated-key-never-proposed",
+            vital=VitalWrite(metric=WritableMetric.heart_rate, value=55, unit="bpm"),
+        ).model_dump(mode="json")
+
+        r = _confirm(client, "fabricated-key-never-proposed", candidate)
+
+        assert r.status_code == 400
+        assert writer.vitals == []
+
+    def test_confirm_different_candidate_on_settled_key_is_rejected_not_replayed(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        """C: after a key settles, a DIFFERENT candidate must not replay as success.
+
+        The buggy behaviour returned the first write's proof (a false success) and
+        silently dropped the edit. The binding must reject the divergent candidate
+        instead, and add no second append.
+        """
+        client = _client()
+        body = _propose(client).json()  # 72
+        key = body["idempotency_key"]
+
+        first = _confirm(client, key, body["candidate"])
+        assert first.status_code == 200
+        assert len(writer.vitals) == 1
+
+        different = _tamper_vital_value(body["candidate"], 200.0)  # in-range ⇒ not verifier-blocked
+        r = _confirm(client, key, different)
+
+        assert r.status_code == 400
+        # No false-success replay of the first write, and no second append.
+        assert len(writer.vitals) == 1
+
+    def test_confirm_identical_on_settled_key_replays_exactly_one_write(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        """Regression guard: the legitimate idempotent retry is preserved.
+
+        Same key + identical candidate, already committed → the original proof is
+        replayed and still exactly one write reaches OpenEMR.
+        """
+        client = _client()
+        body = _propose(client).json()
+        key = body["idempotency_key"]
+
+        first = _confirm(client, key, body["candidate"])
+        second = _confirm(client, key, body["candidate"])
+
+        assert first.status_code == second.status_code == 200
+        assert first.json()["new_id"] == second.json()["new_id"] == "vid-555"
+        assert len(writer.vitals) == 1
+
+    def test_happy_path_propose_then_confirm_same_candidate_commits_once(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        """The faithful confirm still commits exactly once."""
+        client = _client()
+        body = _propose(client).json()
+        confirmed = _confirm(client, body["idempotency_key"], body["candidate"])
+
+        assert confirmed.status_code == 200
+        assert confirmed.json()["new_id"] == "vid-555"
+        assert len(writer.vitals) == 1
+        assert writer.vitals[0]["vital"].value == 72.0
+
+
+class TestConfirmOwnerBinding:
+    """A proposal is bound to its clinician + patient; another actor cannot confirm it.
+
+    Driven at the service seam (``propose`` → ``confirm``) so the acting principal
+    can be varied independently of the candidate's own ids — the route derives the
+    actor from the session/candidate, so the owner check is exercised most
+    directly here.
+    """
+
+    async def test_proposal_is_not_confirmable_by_a_different_clinician_or_patient(
+        self, _db_file: str, writer: _FakeWriter
+    ) -> None:
+        from copilot.config import get_settings
+        from copilot.writeback.service import IdempotencyStore, ProposalStore, WriteInputError
+
+        other_clin = 9002
+        other_pid = 2020
+
+        svc = WriteService(
+            get_settings(), idempotency=IdempotencyStore(), proposals=ProposalStore()
+        )
+        proposed, key = await svc.propose(
+            clinician_id=ClinicianId(value=CLIN),
+            patient_id=PatientId(value=PID),
+            kind=WriteKind.vital,
+            raw_value="72",
+            metric="heart_rate",
+            unit="bpm",
+        )
+
+        # A different clinician cannot confirm clinician CLIN's proposal.
+        with pytest.raises(WriteInputError):
+            await svc.confirm(
+                clinician_id=ClinicianId(value=other_clin),
+                patient_id=PatientId(value=PID),
+                candidate=proposed.candidate,
+                idempotency_key=key,
+            )
+
+        # Nor can it be confirmed against a different patient.
+        with pytest.raises(WriteInputError):
+            await svc.confirm(
+                clinician_id=ClinicianId(value=CLIN),
+                patient_id=PatientId(value=other_pid),
+                candidate=proposed.candidate,
+                idempotency_key=key,
+            )
+
+        # Nothing reached the write client on either refusal.
+        assert writer.vitals == []
+
+        # ...and the rightful owner can still confirm it (the binding rejects
+        # impostors, not the genuine confirm).
+        committed = await svc.confirm(
+            clinician_id=ClinicianId(value=CLIN),
+            patient_id=PatientId(value=PID),
+            candidate=proposed.candidate,
+            idempotency_key=key,
+        )
+        assert committed.new_id == "vid-555"
+        assert len(writer.vitals) == 1
