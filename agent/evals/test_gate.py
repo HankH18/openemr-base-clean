@@ -251,3 +251,194 @@ def _pass_rate(results: list[dict[str, Any]]) -> float:
 
 def _to_map(results: list[dict[str, object]]) -> tuple[dict[str, dict[str, object]], None]:
     return {str(case["id"]): case for case in results}, None
+
+
+# --- the LIVE tier ----------------------------------------------------------
+#
+# The audited defect: this gate graded a pre-baked `record` field and never
+# imported the agent, so an auditor could turn `deidentify` into an identity
+# function (PHI scrubbing OFF) and `_passed_claims` into `[]` (every answer
+# uncited) and still get `no_phi_in_logs 53/53`, `citation_present 53/53`,
+# pass_rate 100.0, exit 0. These tests lock the tier that closes it: cases whose
+# graded value is produced by REAL copilot code at gate time. The sabotage tests
+# below are the in-process form of that proof — if either stops going red, the
+# gate has gone vacuous again.
+
+
+def test_fixture_tier_still_carries_the_full_committed_corpus() -> None:
+    """The live tier ADDS to the golden set; it must never shrink it.
+
+    Pins the property the 98.11 / 96.23 arithmetic above encodes — the fixture
+    corpus is 53 cases, comfortably over the spec's >=50 floor — so that the
+    audited-hole regression locks keep measuring what they were written to
+    measure.
+    """
+    fixture, rate = gate.evaluate(inject=False)
+    assert len(fixture) == 53
+    assert len(fixture) >= 50, "the spec's golden-set floor"
+    assert rate == 100.0
+    assert all(case["live"] is False for case in fixture)
+
+
+def test_live_tier_is_non_empty_and_green_on_healthy_code() -> None:
+    live, rate = gate.evaluate_live(inject=False)
+    assert live, "an empty live tier is the audited defect — the gate would grade fixtures only"
+    assert rate == 100.0, f"healthy code must score 100 on the live tier; got {rate}"
+    assert all(case["live"] is True for case in live)
+
+
+def test_live_tier_covers_every_rubric() -> None:
+    """At minimum one live case per rubric — no rubric may be fixture-only."""
+    live, _ = gate.evaluate_live(inject=False)
+    covered = {rubric for case in live for rubric in case["rubrics"]}
+    assert covered == set(RUBRICS), f"rubrics with no live case: {set(RUBRICS) - covered}"
+
+
+def test_every_live_case_emits_all_five_rubric_booleans() -> None:
+    live, _ = gate.evaluate_live(inject=False)
+    for case in live:
+        for rubric in RUBRICS:
+            assert isinstance(case[rubric], bool), f"{case['id']} missing bool {rubric}"
+
+
+def test_evaluate_all_merges_both_tiers() -> None:
+    fixture, _ = gate.evaluate(inject=False)
+    live, _ = gate.evaluate_live(inject=False)
+    merged, rate = gate.evaluate_all(inject=False)
+    assert len(merged) == len(fixture) + len(live)
+    assert rate == 100.0
+    assert sum(1 for c in merged if c["live"]) == len(live)
+
+
+def test_sabotaging_the_real_deidentify_turns_the_gate_red() -> None:
+    """PHI scrubbing OFF must fail `no_phi_in_logs`. The auditor's sabotage #1.
+
+    The live log line is the OUTPUT of the real scrub, so neutering the scrub
+    lets the probe's identifiers through and the gate's independent PHI detector
+    flags them. Before the live tier existed this exact sabotage scored 53/53.
+    """
+    import evals.live_cases as live_mod
+
+    original = live_mod.deidentify
+    try:
+        live_mod.deidentify = lambda text: text  # PHI scrubbing OFF
+        live, rate = gate.evaluate_live(inject=False)
+    finally:
+        live_mod.deidentify = original
+
+    assert rate < 100.0, "an identity `deidentify` must not score 100 on the live tier"
+    leaked = [c["id"] for c in live if not c["no_phi_in_logs"]]
+    assert leaked, "no_phi_in_logs must go red when the real scrub is disabled"
+    failures = gate.check_regressions(
+        100.0, dict.fromkeys(RUBRICS, 100.0), gate._load_baseline(None), live_results=live
+    )
+    assert failures, "rule (5) must block a failing live case even at a perfect fixture rate"
+
+
+def test_sabotaging_the_real_passed_claims_turns_the_gate_red() -> None:
+    """Every answer uncited must fail `citation_present`. The auditor's sabotage #2.
+
+    Patches the production symbol `copilot.chat.service._passed_claims`, which
+    `_answer_inline` resolves at call time — so this is the real function being
+    sabotaged in-process, not a stand-in.
+    """
+    import copilot.chat.service as chat_service
+
+    original = chat_service._passed_claims
+    try:
+        chat_service._passed_claims = lambda result: []  # every answer uncited
+        live, rate = gate.evaluate_live(inject=False)
+    finally:
+        chat_service._passed_claims = original
+
+    assert rate < 100.0, "an empty `_passed_claims` must not score 100 on the live tier"
+    uncited = [c["id"] for c in live if not c["citation_present"]]
+    assert uncited, "citation_present must go red when the real citation path returns no claims"
+
+
+def test_rule_5_blocks_a_failing_live_case_regardless_of_the_knobs() -> None:
+    """A live case is a binary assertion, so no tolerance/floor setting excuses it.
+
+    Rule (5) is what stops a loosened `--min-pass-rate` from buying a broken
+    live probe a pass: here the floor is disabled and the tolerance is wide open,
+    and the failing live case still blocks.
+    """
+    failing = [{"id": "live-x", "passed": False, **dict.fromkeys(RUBRICS, True), "no_phi_in_logs": False}]
+    failures = gate.check_regressions(
+        100.0,
+        dict.fromkeys(RUBRICS, 100.0),
+        gate.Baseline(path=Path("synthetic"), pass_rate=100.0),
+        tolerance=1.0,
+        min_pass_rate=0.0,
+        live_results=failing,
+    )
+    assert any("LIVE case 'live-x'" in f for f in failures)
+    assert any("no_phi_in_logs" in f for f in failures), "the failing rubric must be named"
+
+
+def test_rule_5_is_silent_when_every_live_case_passes() -> None:
+    """Not blocking-by-construction: a healthy live tier adds no failures."""
+    live, _ = gate.evaluate_live(inject=False)
+    failures = gate.check_regressions(
+        100.0, dict.fromkeys(RUBRICS, 100.0), gate._load_baseline(None), live_results=live
+    )
+    assert failures == []
+
+
+def test_check_regressions_without_live_results_is_unchanged() -> None:
+    """Rule (5) is opt-in: the four original rules behave exactly as before."""
+    baseline = gate.Baseline(path=Path("synthetic"), pass_rate=100.0)
+    assert gate.check_regressions(100.0, dict.fromkeys(RUBRICS, 100.0), baseline) == []
+    assert gate.check_regressions(100.0, dict.fromkeys(RUBRICS, 100.0), baseline, live_results=[]) == []
+
+
+def test_live_harness_error_fails_closed() -> None:
+    """A live tier that cannot run must BLOCK, never silently vanish.
+
+    An ImportError or a raised production exception collapsing the live tier to
+    "no cases" would restore the vacuous pass this tier exists to kill.
+    """
+    import evals.live_cases as live_mod
+
+    original = live_mod._build
+    try:
+
+        async def _boom() -> list[dict[str, Any]]:
+            raise RuntimeError("copilot exploded")
+
+        live_mod._build = _boom
+        cases = live_mod.live_cases()
+    finally:
+        live_mod._build = original
+
+    assert len(cases) == 1
+    assert cases[0]["id"] == "live-harness-error"
+    assert "copilot exploded" in cases[0]["error"]
+    booleans = evaluate_record(cases[0]["record"])
+    assert not booleans["schema_valid"], "an empty envelope must fail schema_valid"
+    assert not booleans["citation_present"], "an empty envelope must fail citation_present"
+
+
+def test_live_case_records_come_from_real_code_not_fixtures() -> None:
+    """Anti-vacuous: the live records must carry real agent output.
+
+    Guards against a future 'live' tier that quietly hardcodes its records —
+    the served claim's citation must be the real FHIR resource the fake record
+    holds, with the value read from it by the real extractor.
+    """
+    import evals.live_cases as live_mod
+
+    cases = live_mod.live_cases()
+    by_id = {case["id"]: case for case in cases}
+    served = by_id["live-citation-present"]["record"]
+    assert served["claims"], "the live served turn must carry real claims"
+    citation = served["claims"][0]["citation"]
+    assert citation["source_type"] == "fhir"
+    assert citation["resource_id"] == "trop-1"
+    assert citation["value"] == "2.34", "the cited value must come from the real resource"
+    assert served["claims"][0]["source_value"] == "2.34"
+    # The live log is the real scrub's output: the probe's PHI is gone.
+    assert count_phi(served["log"]) == 0
+    assert "Marisol" not in served["log"] and "123-45-6789" not in served["log"]
+    # And the probe itself is genuinely PHI-bearing — otherwise the scrub proves nothing.
+    assert count_phi(live_mod.PHI_PROBE) >= 3

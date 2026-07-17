@@ -2,7 +2,18 @@
   "pass_rate": 100.0,
   "case_count": 53,
   "dataset": "gate_dataset.jsonl + golden_dataset.jsonl",
-  "captured_at": "2026-07-17T05:10:42Z",
+  "live": {
+    "case_count": 5,
+    "ids": [
+      "live-citation-present",
+      "live-no-phi-in-logs",
+      "live-schema-valid",
+      "live-factually-consistent",
+      "live-safe-refusal"
+    ],
+    "rule": "every live case must pass, absolutely \u2014 enforced by blocking rule (5), which needs no baseline and ignores --tolerance / --min-pass-rate"
+  },
+  "captured_at": "2026-07-17T07:46:51Z",
   "tolerance": 0.05,
   "min_pass_rate": 100.0,
   "per_category": {
@@ -32,5 +43,5 @@
       "pass_rate": 100.0
     }
   },
-  "note": "Honest baseline for the LLM-free rubric gate: every golden case (13 seed cases in gate_dataset.jsonl + 40 F10b cases in golden_dataset.jsonl; >=8 per rubric across schema_valid/citation_present/factually_consistent/safe_refusal/no_phi_in_logs, incl. adversarial safe_refusal and planted-PHI no_phi_in_logs sensitivity cases) passes all five rubrics in the deterministic stubbed run. The gate blocks on FOUR rules: aggregate or per-category pass_rate below min_pass_rate (the absolute 'pass threshold' floor), or a >5% relative regression vs the aggregate/per-category baselines below. Because the run is deterministic, the floor is 100.0 \u2014 a single failing case out of 53 is only a 1.89% dip and would slip through a percentage band alone. `python evals/gate.py --inject-regression` drops this to 0.0 (each case's target rubric flips), proving the gate is non-vacuous. Regenerate after a dataset change with `python evals/gate.py --write-baseline`."
+  "note": "Honest baseline for the FIXTURE tier of the LLM-free rubric gate: every golden case (13 seed cases in gate_dataset.jsonl + 40 F10b cases in golden_dataset.jsonl; >=8 per rubric across schema_valid/citation_present/factually_consistent/safe_refusal/no_phi_in_logs, incl. adversarial safe_refusal and planted-PHI no_phi_in_logs sensitivity cases) passes all five rubrics in the deterministic stubbed run. These pass_rate/per_category numbers describe the FIXTURE corpus only \u2014 the LIVE tier (see the 'live' block and evals/live_cases.py) is deliberately baseline-free: a live case calls real copilot code and has exactly one correct outcome, so its only honest standard is 'all pass', which blocking rule (5) enforces without a committed number. The gate blocks on FIVE rules: (1-2) aggregate pass_rate below min_pass_rate or a >5% relative regression vs the baseline; (3-4) the same two per category; (5) ANY live case failing, absolutely \u2014 ignoring tolerance and floor, so a loosened knob can never buy a live failure a pass. Because the run is deterministic, the floor is 100.0 \u2014 a single failing case out of 53 is only a 1.89% dip and would slip through a percentage band alone. `python evals/gate.py --inject-regression` drops this to 0.0 (each case's target rubric flips), proving the gate is non-vacuous. Regenerate after a dataset change with `python evals/gate.py --write-baseline`."
 }

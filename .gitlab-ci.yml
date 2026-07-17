@@ -15,13 +15,15 @@
 #   lint      agent:lint           ruff (lint + format check)
 #             agent:typecheck      mypy --strict over copilot/
 #   test      agent:tests          pytest + the BLOCKING eval gate (PR-blocking)
+#             agent:phi            frozen phi_check over a generated corpus (D34)
 #   coverage  agent:coverage       pytest-cov + Cobertura report
 #   audit     agent:deps-audit     pip-audit over the resolved environment
 #   security  agent:security-scan  bandit static security scan
 #
-# Only agent:tests is allowed to block on a quality regression; the audit
-# and scan jobs report but do not gate (advisory), so a fresh upstream CVE
-# advisory cannot wedge unrelated PRs. The eval gate stays PR-blocking.
+# Only agent:tests and agent:phi are allowed to block on a quality regression;
+# the audit and scan jobs report but do not gate (advisory), so a fresh upstream
+# CVE advisory cannot wedge unrelated PRs. The eval gate stays PR-blocking, and
+# a PHI leak in captured output is never advisory.
 
 stages:
   - build
@@ -117,6 +119,65 @@ agent:tests:
       - eval-gate.json
     reports:
       junit: pytest.xml
+    expire_in: 7 days
+
+# --- privacy / PHI ----------------------------------------------------------
+
+# Spec D34 ("Privacy … verify it in CI with a PHI-detection check"). Runs the
+# frozen checker at .swarm-loop/acceptance/phi_check.py — RUN, never edited.
+#
+# THE VACUOUS-PASS PROBLEM, HANDLED: phi_check scans captured OUTPUT under
+# agent/{artifacts,var/capture,logs}. In CI those are empty, and phi_check
+# honestly prints 0 for an empty corpus — a pass that proves nothing. So this
+# job GENERATES a real corpus first: `gate.py --write-phi-corpus` emits the eval
+# gate's live-tier log lines, each one the product of the real
+# copilot.rag.deidentify scrub over a PHI-bearing probe. Verified to bite:
+# neutering deidentify to an identity function takes this corpus from 0 to 30
+# detected occurrences, failing this job. The `test -s` guard fails the job if
+# the corpus is ever empty, so the scan can never silently degrade back to
+# vacuous.
+#
+# HONEST SCOPE — this is real but NARROW. The corpus covers the chat/RAG scrub
+# egress only, so phi_check still WARNs that all five lifecycle event families
+# (doc.ingest, extraction.run, guideline.retrieve, worker.handoff,
+# verification.result) are absent: no full-pipeline capture exists to scan in a
+# keyless CI run. This job catches a broken scrub; it does NOT yet prove the
+# ingestion/graph paths are clean. That warning is echoed below on purpose —
+# read it, do not silence it. Widen the corpus once the pipeline writes captured
+# artifacts, and this job's number gets stronger for free.
+#
+# phi_check's exit-code contract: 0 + a bare number = a real measurement (so
+# exit 0 is NOT sufficient — the NUMBER is the verdict); 2 = usage error; 3 =
+# environment error / the scanner's own anti-vacuous self-proof failed.
+agent:phi:
+  extends: .agent-base
+  stage: test
+  script:
+    - python evals/gate.py --write-phi-corpus ../phi-corpus/live_chat_logs.jsonl
+    # A vacuous (empty) corpus must fail the job, never score a silent 0.
+    - test -s ../phi-corpus/live_chat_logs.jsonl
+    - |
+      export PHI_SCAN_CORPUS="${CI_PROJECT_DIR}/phi-corpus:${CI_PROJECT_DIR}/agent/artifacts"
+      if ! python ../.swarm-loop/acceptance/phi_check.py > ../phi-check.out 2> ../phi-check.err; then
+        echo "phi_check could not measure (exit 2 = usage, 3 = env error / self-proof failed):"
+        cat ../phi-check.err
+        exit 1
+      fi
+      # Surface the corpus-completeness WARNING loudly — a partial corpus must
+      # not read as a clean bill of health.
+      cat ../phi-check.err
+      leaks="$(tail -n 1 ../phi-check.out)"
+      echo "phi_check: ${leaks} PHI occurrence(s) in the captured corpus"
+      if [ "${leaks}" != "0" ]; then
+        echo "BLOCKED — PHI leaked into captured output; the de-identification path regressed."
+        exit 1
+      fi
+  artifacts:
+    when: always
+    paths:
+      - phi-corpus/
+      - phi-check.out
+      - phi-check.err
     expire_in: 7 days
 
 # --- coverage ---------------------------------------------------------------
