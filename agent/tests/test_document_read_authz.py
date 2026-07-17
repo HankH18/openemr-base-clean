@@ -77,6 +77,16 @@ async def _seed_document(patient_id: int) -> int:
         await repo.create_document_page(
             source_document_id=doc.id, page_no=1, width=10, height=10, image=b"png-bytes"
         )
+        # An extraction with a real fact. Without this, get_latest_extraction returns
+        # None, get_extracted_facts is never called at all, and any test spying on the
+        # fact-load path passes vacuously in BOTH arms — proving nothing.
+        extraction = await repo.create_extraction(
+            source_document_id=doc.id, correlation_id="c-authz", schema_version="w2-v1",
+            model="stub", status="ok"
+        )
+        await repo.create_extracted_fact(
+            extraction_id=extraction.id, field_path="hemoglobin", value="13.5"
+        )
         return int(doc.id)
 
 
@@ -115,3 +125,34 @@ class TestDocumentReadAuthorization:
             params = inspect.signature(handler).parameters
             assert "request" in params, f"{handler.__name__} must take Request to resolve identity"
             assert "clinician_id" in params, f"{handler.__name__} must accept a clinician_id"
+
+
+def test_an_unauthorized_read_loads_no_phi_at_all(_db_file: str, monkeypatch: object) -> None:
+    """The refusal must happen before any fact is read out of the database.
+
+    Authorizing AFTER loading the extraction and its facts meant an off-round caller
+    still caused every fact for that document to be pulled into memory. Nothing was
+    returned, so it was not a disclosure — but the refusal's latency then scaled with
+    how many facts the document has, which is itself a signal, and it does work on
+    behalf of a caller already known to be unwelcome. Fail closed, then do the work.
+    """
+    import anyio
+
+    from copilot.memory import repository as repo_mod
+
+    document_id = anyio.run(_seed_document, 4242)
+    loaded: list[str] = []
+
+    original = repo_mod.MemoryRepository.get_extracted_facts
+
+    async def _spy(self: object, extraction_id: int) -> object:  # type: ignore[no-untyped-def]
+        loaded.append("facts")
+        return await original(self, extraction_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(repo_mod.MemoryRepository, "get_extracted_facts", _spy)  # type: ignore[attr-defined]
+
+    client = _client()
+    r = client.get(f"/v1/documents/{document_id}", params={"clinician_id": 7})
+
+    assert r.status_code == 403
+    assert loaded == [], "an off-round caller must not cause a single fact to be loaded"

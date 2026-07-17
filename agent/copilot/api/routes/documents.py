@@ -187,13 +187,17 @@ async def get_document(
         doc = await repo.get_source_document(document_id)
         if doc is None:
             raise HTTPException(status_code=404, detail="Document not found")
+
+        # Authorization boundary (UC-6), identical to upload/chat/observations: the
+        # document's patient must be on the clinician's rounding list. Checked BEFORE
+        # reading the extraction and its facts — an unauthorized caller must not cause
+        # PHI to be loaded at all, and doing the work first made the refusal's latency
+        # scale with how many facts the document has, which is itself a signal.
+        if not await is_authorized(cid, PatientId(value=doc.patient_id)):
+            raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
+
         latest = await repo.get_latest_extraction(document_id)
         fact_rows = await repo.get_extracted_facts(latest.id) if latest is not None else []
-
-    # Authorization boundary (UC-6), identical to upload/chat/observations: the
-    # document's patient must be on the clinician's rounding list.
-    if not await is_authorized(cid, PatientId(value=doc.patient_id)):
-        raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
 
     facts = [_fact_body(f) for f in fact_rows]
     citations = [_citation_body(document_id, f) for f in fact_rows if f.supported]
