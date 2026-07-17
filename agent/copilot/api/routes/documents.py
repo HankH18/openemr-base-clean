@@ -109,7 +109,11 @@ async def upload_document(
     request: Request,
     file: Annotated[UploadFile, File(description="The scanned lab PDF / intake form.")],
     patient_id: Annotated[int, Form(gt=0)],
-    clinician_id: Annotated[int, Form(gt=0)],
+    # Optional on purpose, matching chat/observations/the document reads: in smart
+    # mode identity comes from the session cookie and the UI sends no clinician_id,
+    # so a REQUIRED field here 422s the upload before auth can run. In disabled mode
+    # resolve_acting_context still demands an asserted id (400 when absent).
+    clinician_id: Annotated[int | None, Form(gt=0)] = None,
     doc_type: Annotated[str, Form()] = "lab_pdf",
 ) -> dict[str, Any]:
     settings = get_settings()

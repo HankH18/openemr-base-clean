@@ -50,9 +50,11 @@ components:
     Body_upload_document_v1_documents_post:
       properties:
         clinician_id:
-          exclusiveMinimum: 0.0
+          anyOf:
+          - exclusiveMinimum: 0.0
+            type: integer
+          - type: 'null'
           title: Clinician Id
-          type: integer
         doc_type:
           default: lab_pdf
           title: Doc Type
@@ -69,7 +71,6 @@ components:
       required:
       - file
       - patient_id
-      - clinician_id
       title: Body_upload_document_v1_documents_post
       type: object
     ChatRequest:
