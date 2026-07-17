@@ -98,3 +98,52 @@ whose success matters; use `set -e` + unpiped commands.**
 
 Deploy verified live on `f9bc194`: eval_by_category=5 entries, error_rate 0.0,
 p95 151ms, UI 200. Public host is `agentforge.hankholcomb.com` (NOT copilot.*).
+
+## Cycle 3 — audit findings (issues 25–30)
+
+Two independent read-only auditors, every finding backed by a live probe.
+
+**#25 — REAL VISION BREAKS THE FLAGSHIP DEMO DOC (found by me, live).** Ran the three
+real demo PDFs through real Claude vision inside the DEPLOYED container. Lab (37 facts)
+and med list (12) passed; `sample_intake_form.pdf` FAILED:
+`facts.22.value_frequency: Extra inputs are not permitted [input_value=None]`.
+The model invented a key that exists in NO schema, with a None value, on 1 fact of 42 —
+and `extra="forbid"` discarded the whole extraction. A re-run was clean: INTERMITTENT.
+Fixed `67f9801` (drop null-valued extras; a valued extra still raises).
+
+**#26 — The graph didn't own its own withhold. LIVE METRIC CORRUPTION.** Graph returned
+`served/passed=True` + full prose on turns its critic called unsafe; the withhold lived
+only in ChatService. `record_verification` fired on the un-withheld verification, so
+every unsafe withhold was logged to the safety dashboard as `served` — the metric that
+proves the safety pass fires reported its opposite. Graph mode IS on in prod (verified
+`chat_graph_enabled: True`). Fixed `dfb1b8e`.
+
+**#27 — Reconciliation cannot match ANY multi-word value.** `reconcile.py` scores one
+OCR token at a time, but Tesseract emits WORD-level tokens. "Marisol Quintanilla",
+"Shortness of breath" -> supported=False, bbox=None. So honest, on-the-page extractions
+are reported UNVERIFIED, the bbox overlay draws nothing for intake/med docs, and live
+`extraction_field_pass_rate` sits at 0.606. lab_pdf escapes because "13.5" is one token
+— which is why the demo path looked fine. `reconcile_value` had ZERO direct tests.
+DISPATCHED.
+
+**#28 — Browser upload 400s on the DEFAULT config.** The web client never sends
+`clinician_id`; `deps.py` 400s without it. `auth_mode=smart` (the live host) masks it via
+cookie — the documented bare-IP demo (`disabled`, the default) is 100% broken through the
+UI. The GET route was fixed for this exact class; the POST was left behind. DISPATCHED.
+
+**#29 — Dense retrieval leg unguarded -> HTTP 500.** `retriever.py:176` embeds bare while
+both siblings guard. In graph mode (ON in prod) a Voyage outage 500s every guideline
+question, where sparse-only could have served. DISPATCHED.
+
+**#30 — Poller telemetry orphaned + correlation id always empty.** `poller.result` is
+emitted after its span closes (root-level orphan); `correlation_id_var` is only ever set
+by HTTP middleware, so every background tick's audit-row id points at nothing. Hardest
+failures emit no result event at all — self-concealing. DISPATCHED.
+
+**Process lesson (mine).** Writing the test for #26 I built an `_UnsafeCritic` that
+mapped over the claims it was handed — but the keyless agent grounds no claims, so it
+condemned nothing, returned an empty unsafe set, and the test PASSED while proving
+nothing. I caught it only because I sabotaged the fix and the test stayed green-ish.
+A fixture that derives its output from its input goes vacuous exactly where the input is
+empty. Also: my not-guilty verdict on `feat_ingestion` came from measuring, not from
+reading the diff.
