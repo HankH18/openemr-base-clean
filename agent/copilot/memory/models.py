@@ -172,6 +172,14 @@ class AuditLogRow(Base):
     # 'agent_proposed_physician_confirmed' (Phase 2). Nullable — reads and all
     # pre-write-back rows leave it NULL, so the column is fully backward-compatible.
     entry_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Write-back provenance: the serialized ``WriteSource`` (source_document_id +
+    # extracted_fact_id + enough to rebuild the DocumentCitation) a derived write
+    # descends from. Distinct from ``resources_returned``, which names the FHIR
+    # resources an action RETURNED/created — a source document is an agent-store
+    # input, and naming it there would misreport the PHI access trail (the same
+    # rule chat/service.py follows). NULL for reads and physician-direct writes,
+    # which honestly have no source document.
+    source_ref: Mapped[dict[str, Any] | None] = mapped_column(JSONType, nullable=True)
     at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_utc_default, server_default=text("CURRENT_TIMESTAMP")
     )

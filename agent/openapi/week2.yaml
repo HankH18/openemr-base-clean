@@ -201,7 +201,23 @@ components:
 
         requires the separate physician confirm transaction in
 
-        ``writeback/service.py`` — the agent structurally cannot self-commit.'
+        ``writeback/service.py`` — the agent structurally cannot self-commit.
+
+
+        ``source`` is the (document, fact) provenance the intake bridge populates
+        —
+
+        the link the spec requires from every derived fact back to the scanned page
+
+        it was read off. It stays optional here (rather than required on the
+
+        agent-proposed type) so the confirm route can still parse a candidate minted
+
+        before this field existed, and so an issue write proposed by some future
+
+        non-document path is expressible; ``None`` honestly means "no source
+
+        document", never a fabricated one.'
       properties:
         allergy:
           anyOf:
@@ -229,6 +245,10 @@ components:
           - type: 'null'
         patient_id:
           $ref: '#/components/schemas/PatientId'
+        source:
+          anyOf:
+          - $ref: '#/components/schemas/WriteSource'
+          - type: 'null'
       required:
       - kind
       - patient_id
@@ -691,7 +711,20 @@ components:
 
         ``patient_id`` / ``clinician_id`` scope the write; the route enforces
 
-        ``is_authorized`` before a candidate is trusted.'
+        ``is_authorized`` before a candidate is trusted.
+
+
+        ``source`` is the optional (document, fact) provenance. It lives on the
+
+        *candidate* rather than only on ``ProposedWrite`` because the candidate is
+
+        the object that round-trips through the physician''s confirm request — the
+
+        confirm body echoes it back verbatim, so this is the only place provenance
+
+        can survive propose → confirm and still reach the ``write_committed`` audit
+
+        row. It defaults to ``None``, leaving the physician-direct path untouched.'
       properties:
         clinician_id:
           $ref: '#/components/schemas/ClinicianId'
@@ -715,6 +748,10 @@ components:
           - type: 'null'
         patient_id:
           $ref: '#/components/schemas/PatientId'
+        source:
+          anyOf:
+          - $ref: '#/components/schemas/WriteSource'
+          - type: 'null'
         vital:
           anyOf:
           - $ref: '#/components/schemas/VitalWrite'
@@ -767,6 +804,87 @@ components:
       - allergy
       title: WriteKind
       type: string
+    WriteSource:
+      description: 'Where an agent-proposed write came from — its (document, fact)
+        provenance.
+
+
+        The write-side analogue of the read side''s ``DocumentCitation``: the spec
+
+        requires every derived fact to link back to its source document, and the
+
+        agent store already guarantees that internally (a NOT NULL FK chain
+
+        ``extracted_fact.extraction_id → extraction.source_document_id →
+
+        source_document``). This type is what carries that guarantee **across the
+
+        OpenEMR write boundary**, where it was previously dropped: without it a
+
+        physician-confirmed intake-derived allergy lands in OpenEMR as an untraceable
+
+        record, with nothing tying it to the scanned page it was read off.
+
+
+        Deliberately *optional* everywhere it appears (``… | None = None``): the
+
+        physician-direct path (``entry_mode=human_direct``) has no source document,
+
+        and a typed-in vital must stay expressible with no provenance at all. A
+
+        ``WriteSource`` therefore means "this write descends from a document"; its
+
+        absence means "a human typed this", and the two are never conflated.
+
+
+        The ids are the agent store''s own row ids (``source_document.id`` /
+
+        ``extracted_fact.id``), not OpenEMR ids — they are the durable end of the
+
+        provenance chain, and they are what ``to_citation`` re-materializes.'
+      properties:
+        bbox:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          description: Normalized [x, y, w, h] of the reconciled OCR span.
+          title: Bbox
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          description: OCR-reconciliation match confidence in [0, 1].
+          title: Confidence
+        extracted_fact_id:
+          description: extracted_fact row id.
+          exclusiveMinimum: 0.0
+          title: Extracted Fact Id
+          type: integer
+        page_no:
+          anyOf:
+          - minimum: 1.0
+            type: integer
+          - type: 'null'
+          description: 1-based page the fact was found on, when reconciled.
+          title: Page No
+        quote:
+          description: Verbatim extracted value the write was derived from.
+          minLength: 1
+          title: Quote
+          type: string
+        source_document_id:
+          description: source_document row id.
+          exclusiveMinimum: 0.0
+          title: Source Document Id
+          type: integer
+      required:
+      - source_document_id
+      - extracted_fact_id
+      - quote
+      title: WriteSource
+      type: object
 info:
   title: Clinical Co-Pilot
   version: 0.1.0

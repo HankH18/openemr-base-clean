@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from copilot.domain.primitives import ClinicianId, PatientId
+from copilot.domain.primitives import ClinicianId, DocumentCitation, PatientId
 
 
 class WritableMetric(StrEnum):
@@ -150,6 +150,86 @@ class AllergyWrite(BaseModel):
     reaction: str | None = Field(default=None, description="Optional reaction description.")
 
 
+class WriteSource(BaseModel):
+    """Where an agent-proposed write came from — its (document, fact) provenance.
+
+    The write-side analogue of the read side's ``DocumentCitation``: the spec
+    requires every derived fact to link back to its source document, and the
+    agent store already guarantees that internally (a NOT NULL FK chain
+    ``extracted_fact.extraction_id → extraction.source_document_id →
+    source_document``). This type is what carries that guarantee **across the
+    OpenEMR write boundary**, where it was previously dropped: without it a
+    physician-confirmed intake-derived allergy lands in OpenEMR as an untraceable
+    record, with nothing tying it to the scanned page it was read off.
+
+    Deliberately *optional* everywhere it appears (``… | None = None``): the
+    physician-direct path (``entry_mode=human_direct``) has no source document,
+    and a typed-in vital must stay expressible with no provenance at all. A
+    ``WriteSource`` therefore means "this write descends from a document"; its
+    absence means "a human typed this", and the two are never conflated.
+
+    The ids are the agent store's own row ids (``source_document.id`` /
+    ``extracted_fact.id``), not OpenEMR ids — they are the durable end of the
+    provenance chain, and they are what ``to_citation`` re-materializes.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_document_id: int = Field(gt=0, description="source_document row id.")
+    extracted_fact_id: int = Field(gt=0, description="extracted_fact row id.")
+    quote: str = Field(
+        min_length=1, description="Verbatim extracted value the write was derived from."
+    )
+    page_no: int | None = Field(
+        default=None, ge=1, description="1-based page the fact was found on, when reconciled."
+    )
+    bbox: list[float] | None = Field(
+        default=None, description="Normalized [x, y, w, h] of the reconciled OCR span."
+    )
+    confidence: float | None = Field(
+        default=None, description="OCR-reconciliation match confidence in [0, 1]."
+    )
+
+    def to_citation(self) -> DocumentCitation | None:
+        """Re-materialize the read-side ``DocumentCitation`` this write descends from.
+
+        Proves the "enough to reconstruct the citation" contract in code rather
+        than in a comment: every field ``DocumentCitation`` requires is carried
+        here. Returns ``None`` — never a fabricated page — when ``page_no`` is
+        absent, because a fact whose OCR span was never reconciled has no page to
+        cite and ``DocumentCitation.page_or_section`` is required (``ge=1``).
+        Inventing a page number to satisfy the type would be exactly the
+        no-invention violation the citation contract exists to prevent.
+        """
+        if self.page_no is None:
+            return None
+        return DocumentCitation(
+            source_id=str(self.source_document_id),
+            page_or_section=self.page_no,
+            field_or_chunk_id=str(self.extracted_fact_id),
+            quote_or_value=self.quote,
+            bbox=self.bbox,
+            confidence=self.confidence,
+        )
+
+    def provenance_note(self) -> str:
+        """A short, human-readable provenance line for a chart record's comment.
+
+        Written for the physician reading the row in OpenEMR months later: it
+        names the source document, the page (when known), and the exact
+        ``extracted_fact`` row, so the record can be traced to the scanned page
+        it came from without leaving the chart. Deliberately terse and
+        non-clinical — it is attribution, never a clinical assertion, and it
+        never restates the value as though it were independently observed.
+        """
+        page = f", page {self.page_no}" if self.page_no is not None else ""
+        return (
+            f"Source: AgentForge intake document #{self.source_document_id}{page} "
+            f"(extracted_fact #{self.extracted_fact_id}); "
+            "agent-proposed, physician-confirmed."
+        )
+
+
 class WriteCandidate(BaseModel):
     """A parsed, typed write request over the closed writable surface.
 
@@ -160,6 +240,13 @@ class WriteCandidate(BaseModel):
     a retried/double-clicked confirm cannot create a duplicate record.
     ``patient_id`` / ``clinician_id`` scope the write; the route enforces
     ``is_authorized`` before a candidate is trusted.
+
+    ``source`` is the optional (document, fact) provenance. It lives on the
+    *candidate* rather than only on ``ProposedWrite`` because the candidate is
+    the object that round-trips through the physician's confirm request — the
+    confirm body echoes it back verbatim, so this is the only place provenance
+    can survive propose → confirm and still reach the ``write_committed`` audit
+    row. It defaults to ``None``, leaving the physician-direct path untouched.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -171,6 +258,7 @@ class WriteCandidate(BaseModel):
     entry_mode: WriteEntryMode = WriteEntryMode.human_direct
     vital: VitalWrite | None = None
     medication: MedicationWrite | None = None
+    source: WriteSource | None = None
 
     @model_validator(mode="after")
     def _exactly_one_payload(self) -> WriteCandidate:
@@ -194,6 +282,14 @@ class IssueWriteCandidate(BaseModel):
     The agent may only *construct and propose* one of these; committing it
     requires the separate physician confirm transaction in
     ``writeback/service.py`` — the agent structurally cannot self-commit.
+
+    ``source`` is the (document, fact) provenance the intake bridge populates —
+    the link the spec requires from every derived fact back to the scanned page
+    it was read off. It stays optional here (rather than required on the
+    agent-proposed type) so the confirm route can still parse a candidate minted
+    before this field existed, and so an issue write proposed by some future
+    non-document path is expressible; ``None`` honestly means "no source
+    document", never a fabricated one.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -205,6 +301,7 @@ class IssueWriteCandidate(BaseModel):
     entry_mode: WriteEntryMode = WriteEntryMode.agent_proposed_physician_confirmed
     medical_problem: MedicalProblemWrite | None = None
     allergy: AllergyWrite | None = None
+    source: WriteSource | None = None
 
     @model_validator(mode="after")
     def _exactly_one_payload(self) -> IssueWriteCandidate:
@@ -260,6 +357,18 @@ class ProposedWrite(BaseModel):
     notice: str = Field(
         default="This creates a NEW record dated now; it does not overwrite prior values.",
     )
+
+    @property
+    def source(self) -> WriteSource | None:
+        """The provenance of the record being proposed, or ``None`` if typed by a human.
+
+        A read-only delegation to ``candidate.source`` rather than a second
+        field: the candidate is what the physician confirms and what the commit
+        audits, so duplicating provenance here would create two copies that could
+        disagree — and the echo-back is exactly where a disagreement would be
+        invisible.
+        """
+        return self.candidate.source
 
 
 class CommittedWrite(BaseModel):
