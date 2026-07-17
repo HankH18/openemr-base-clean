@@ -13,9 +13,18 @@ extraction. A re-run came back clean: the failure is INTERMITTENT, so a green ru
 proves nothing. Every keyless test missed it because ``StubVision`` replays a
 recording that never invents a key — fixture-shaped != reality-shaped.
 
-These tests pin the boundary's two halves, which is the whole point: a null extra
-is dropped (it carries no information), and an extra that carries a VALUE still
-raises (that is real data the schema does not model — we want it loud).
+Measured over 4 real runs of the same document, the model's decoration is
+intermittent and NOT limited to nulls::
+
+    run 0: 46 facts, 0 invented keys
+    run 1: 39 facts, 0 invented keys
+    run 2: 47 facts, 0 invented keys
+    run 3: 46 facts, 2 invented keys   field_path_note='Dose', value_confidence=None
+
+So these tests pin the boundary that survives contact with the real model: an
+invented key is DROPPED (null or valued), and a valued one is LOGGED so genuine
+schema drift stays visible. Strictness lives where it actually protects — required
+fields, declared-field types, and reconciliation against the OCR tokens.
 """
 
 from __future__ import annotations
@@ -93,12 +102,27 @@ def test_null_extra_key_no_longer_destroys_the_whole_extraction() -> None:
     assert not hasattr(result.facts[1], "value_frequency")
 
 
-def test_an_extra_key_carrying_a_value_still_fails_loud() -> None:
-    # The other half of the boundary. Dropping this would silently discard real
-    # clinical data landing in a field the schema does not model.
-    with pytest.raises(ValidationError) as exc:
-        _extract(_intake_payload({"value_frequency": "BID"}), DocumentType.intake_form)
-    assert "extra" in str(exc.value).lower()
+def test_an_extra_key_carrying_a_value_is_dropped_but_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # CONTRACT CHANGED, deliberately, against live evidence. This asserted that a
+    # valued extra must RAISE — on the theory that it is real data the schema does
+    # not model. Four real-vision runs refuted the premise: the valued extras are
+    # decorations (`field_path_note='Dose'` beside a well-formed fact), and aborting
+    # a 46-fact extraction over one is indefensible. `extra="forbid"` was never what
+    # protected this boundary either — `value`/`field_path`/`category` are REQUIRED
+    # (so relocated content still fails), and the no-invention gate is reconciliation
+    # against the page's OCR tokens. Fail-loud is kept, as a log rather than a lost
+    # extraction: this test fails if the drop ever goes silent.
+    with caplog.at_level("WARNING"):
+        result = _extract(_intake_payload({"field_path_note": "Dose"}), DocumentType.intake_form)
+
+    assert len(result.facts) == 2, "the decoration must not cost us the real facts"
+    assert result.facts[1].value == "Metformin 1000 mg"
+    assert any("undeclared" in r.message for r in caplog.records), (
+        "dropping an undeclared key that carried a VALUE must never be silent — "
+        "that is how real schema drift would hide"
+    )
 
 
 def test_a_null_extra_at_the_top_level_is_dropped_too() -> None:

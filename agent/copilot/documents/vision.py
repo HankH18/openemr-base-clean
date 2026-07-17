@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any, Protocol, get_args
@@ -35,6 +36,8 @@ from copilot.domain.documents import (
     MedicationListDocument,
 )
 from copilot.resilience import VISION_MAX_RETRIES, VISION_TIMEOUT
+
+_logger = logging.getLogger(__name__)
 
 # The schema version stamped on every extraction row this extractor produces.
 SCHEMA_VERSION = "w2-v1"
@@ -209,8 +212,8 @@ class ClaudeVision:
         # real documents occasionally make the model return ``facts`` (or the whole
         # object) as a JSON string instead of structured JSON.
         payload = _destringify(payload)
-        # Drop null-valued keys the model invented (see ``_drop_null_extras``).
-        payload = _drop_null_extras(payload, schema)
+        # Drop keys the model invented (see ``_drop_extras``).
+        payload = _drop_extras(payload, schema)
         # Strict validation — a wrong-typed or partial payload raises here.
         return schema.model_validate(payload)
 
@@ -228,39 +231,68 @@ def _fact_model(
     return None
 
 
-def _without_null_extras(data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
-    """Drop keys ``model`` does not declare **whose value is None**."""
+def _without_extras(data: dict[str, Any], model: type[BaseModel], where: str) -> dict[str, Any]:
+    """Drop keys ``model`` does not declare, logging any that carried a value."""
     declared = set(model.model_fields)
-    return {k: v for k, v in data.items() if k in declared or v is not None}
+    kept = {k: v for k, v in data.items() if k in declared}
+    valued = {k: v for k, v in data.items() if k not in declared and v is not None}
+    if valued:
+        # Never silent: a model that starts routing real content into an
+        # undeclared key must be visible here, in the logs and the trace.
+        _logger.warning(
+            "vision model emitted undeclared keys; dropped before validation",
+            extra={"where": where, "keys": sorted(valued), "model": model.__name__},
+        )
+    return kept
 
 
-def _drop_null_extras(
+def _drop_extras(
     payload: dict[str, Any],
     schema: type[LabReport] | type[IntakeForm] | type[MedicationListDocument],
 ) -> dict[str, Any]:
-    """Drop null-valued keys the model invented, before strict validation.
+    """Drop keys the vision model invented, before strict validation.
 
-    Observed live against real Claude vision on a real intake form: the model
-    intermittently emits a key that exists in NO schema (``value_frequency: None``)
-    on a single fact, and ``extra="forbid"`` then rejects the ENTIRE 42-fact
-    extraction over it. Intermittent, so a passing run proves nothing — and
-    invisible to every keyless test, because ``StubVision`` replays a recording
-    that never invents a key. Classic fixture-shaped != reality-shaped.
+    Measured against real Claude vision on the real demo intake form, 4 runs::
 
-    This does not weaken the parse boundary. A key explicitly set to ``None``
-    carries no information — it is indistinguishable from the model omitting it,
-    so dropping it loses nothing. An unexpected key that carries an actual VALUE
-    still raises: that is real data landing somewhere the schema does not model,
-    which we want loud, not silently discarded. Nothing is coerced, and a missing
-    required field still fails.
+        run 0: 46 facts, 0 invented keys
+        run 1: 39 facts, 0 invented keys
+        run 2: 47 facts, 0 invented keys
+        run 3: 46 facts, 2 invented keys   field_path_note='Dose', value_confidence=None
+
+    The model decorates. It intermittently adds keys that exist in NO schema —
+    sometimes null, sometimes carrying a value — and ``extra="forbid"`` then threw
+    away the ENTIRE 46-fact extraction over one of them. Roughly one run in four,
+    so a green run proves nothing, and every keyless test missed it because
+    ``StubVision`` replays a recording that never invents a key.
+
+    Dropping *valued* extras too is a deliberate reversal: the first cut of this
+    kept them and raised, on the theory that a valued extra is real data we want
+    loud. Four live runs refuted that — the valued extras are decorative
+    annotations (``field_path_note='Dose'`` next to a well-formed fact), and
+    destroying a whole good extraction over one is indefensible.
+
+    This does not weaken the boundary, because ``extra="forbid"`` was not what
+    protected it:
+
+    - ``field_path``, ``value`` and ``category`` are REQUIRED, so a model that
+      renamed or moved real content out of a declared field still fails loudly on
+      the missing field. That is the guard against genuine schema drift.
+    - The no-invention gate is ``documents/reconcile.py`` — a value is trusted only
+      when it is located in the page's OCR tokens. Extras never reach it.
+    - Declared fields are still strictly validated: nothing is coerced, and a
+      wrong-typed value still raises.
+
+    So the residual risk of dropping is losing a decoration, and it is logged
+    rather than silent (see ``_without_extras``). The risk of NOT dropping is
+    losing every fact on the page. That trade is not close.
     """
     fact_model = _fact_model(schema)
-    cleaned = _without_null_extras(payload, schema)
+    cleaned = _without_extras(payload, schema, "document")
     facts = cleaned.get("facts")
     if fact_model is None or not isinstance(facts, list):
         return cleaned
     cleaned["facts"] = [
-        _without_null_extras(f, fact_model) if isinstance(f, dict) else f for f in facts
+        _without_extras(f, fact_model, "fact") if isinstance(f, dict) else f for f in facts
     ]
     return cleaned
 
