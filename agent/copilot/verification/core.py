@@ -196,9 +196,6 @@ class Verifier:
         # caller and re-checked here against that stored row; a source that could
         # not be re-materialized is absent from the context, so the claim fails
         # attribution and is dropped (fail-closed) — never served as if proven.
-        # NB: ``claim.source_ref`` is statically the fhir variant (SkipValidation),
-        # so these guards read as unreachable to mypy but fire for real
-        # document/guideline citations at runtime (warn_unreachable stays off).
         if isinstance(ref, DocumentCitation):
             return _verify_document_claim(claim, ref, context)
         if isinstance(ref, GuidelineCitation):
@@ -313,9 +310,8 @@ def _verify_document_claim(
     configured floor, and the claimed value equals the stored value. Any miss
     yields ``value_match=False`` so the fail-closed policy drops the claim.
 
-    ``source_ref`` is passed as ``claim.source_ref`` (statically the fhir
-    variant via ``SkipValidation``) so the result carries the citation verbatim
-    — see ``VerificationClaimResult``.
+    ``source_ref`` is passed as ``claim.source_ref`` so the result carries the
+    citation verbatim — see ``VerificationClaimResult``.
     """
     fact = context.document_facts.get(citation.field_or_chunk_id)
     if fact is None:

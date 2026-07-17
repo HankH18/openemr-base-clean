@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeGuard
 
 from copilot.agent.grounding import (
     claim_text,
@@ -27,7 +27,7 @@ from copilot.agent.grounding import (
     humanize_label,
 )
 from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection, ValueDirection
-from copilot.domain.primitives import FhirReference, ResourceType
+from copilot.domain.primitives import Citation, FhirReference, ResourceType
 from copilot.rounds.ranges import reference_bounds, vitals_range
 
 
@@ -109,6 +109,16 @@ def _normalize_medication_value(value: str) -> str:
     return value.strip().lower().rstrip(".").strip()
 
 
+def _is_medication_ref(ref: Citation) -> TypeGuard[FhirReference]:
+    """True when this citation is a fhir ``MedicationRequest`` reference.
+
+    A ``TypeGuard`` so callers narrow the citation union once and then read the
+    fhir-only ``resource_type`` / ``value`` fields safely — a document or
+    guideline citation has neither.
+    """
+    return isinstance(ref, FhirReference) and ref.resource_type == ResourceType.MedicationRequest
+
+
 def _dedupe_medications(claims: list[Claim]) -> list[Claim]:
     """Collapse duplicate medication rows for the same drug.
 
@@ -119,18 +129,23 @@ def _dedupe_medications(claims: list[Claim]) -> list[Claim]:
     informative one. Non-medication claims are never dropped, empty-value claims
     are kept, and original order is preserved. Mirrors ``dedupeMedicationClaims``
     in web/src/labels.ts.
+
+    Only the fhir citation variant carries ``resource_type`` / ``value``, so a
+    document- or guideline-cited claim can never be a ``MedicationRequest`` row
+    and is passed through untouched.
     """
     med_values = [
         _normalize_medication_value(claim.source_ref.value)
         for claim in claims
-        if claim.source_ref.resource_type == ResourceType.MedicationRequest
+        if _is_medication_ref(claim.source_ref)
     ]
     result: list[Claim] = []
     for claim in claims:
-        if claim.source_ref.resource_type != ResourceType.MedicationRequest:
+        ref = claim.source_ref
+        if not _is_medication_ref(ref):
             result.append(claim)
             continue
-        value = _normalize_medication_value(claim.source_ref.value)
+        value = _normalize_medication_value(ref.value)
         if not value:
             result.append(claim)
             continue

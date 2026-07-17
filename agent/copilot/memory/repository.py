@@ -8,7 +8,7 @@ never leaks to callers.  See ARCHITECTURE §"Components → memory-store".
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -838,11 +838,9 @@ def _claim_from_json(c: dict[str, Any]) -> Claim:
         severity=ClaimSeverity(severity) if severity else None,
         trend_direction=TrendDirection(trend) if trend else None,
         value_direction=ValueDirection(value_dir) if value_dir else None,
-        # `Claim.source_ref` is `SkipValidation[FhirReference]` (see contracts.py):
-        # the static type is the fhir variant so legacy readers stay valid, but at
-        # runtime it holds whichever citation the discriminator selected. This cast
-        # is the single seam of that trick — the value is a real citation instance.
-        source_ref=cast("FhirReference", _citation_from_json(c["source_ref"])),
+        # `Claim.source_ref` is the `Citation` union, so whichever variant the
+        # discriminator selected round-trips as itself — no cast, no narrowing.
+        source_ref=_citation_from_json(c["source_ref"]),
     )
 
 

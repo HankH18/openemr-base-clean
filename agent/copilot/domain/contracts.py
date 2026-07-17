@@ -1,8 +1,13 @@
 """Public contracts for the API + tool interfaces.
 
-Every clinical value carries a `FhirReference`.  The verification layer
-consumes these and compares against a live re-fetch by ID.  See
-`ARCHITECTURE.md` §"Interfaces & contracts".
+Every clinical claim carries a `Citation` — the discriminated union of a
+`FhirReference` (re-checked against a live re-fetch by ID), a
+`DocumentCitation` (re-checked against its stored `extracted_fact`), or a
+`GuidelineCitation` (re-checked against its stored chunk). Whichever variant,
+the serialized citation exposes the five machine-readable spec keys
+`{source_type, source_id, page_or_section, field_or_chunk_id, quote_or_value}`.
+The verification layer consumes these and drops anything it cannot re-ground.
+See `ARCHITECTURE.md` §"Interfaces & contracts".
 """
 
 from __future__ import annotations
@@ -11,9 +16,9 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
-from copilot.domain.primitives import FhirReference, PatientId
+from copilot.domain.primitives import Citation, FhirReference, PatientId
 
 
 class ClaimSeverity(StrEnum):
@@ -72,16 +77,21 @@ class Claim(BaseModel):
     compares `source_ref.value` against `text` for numeric/med-name exact
     match.
 
-    `source_ref` is the citation discriminated union
+    `source_ref` is the citation discriminated union `Citation`
     (`FhirReference | DocumentCitation | GuidelineCitation`, keyed on
-    `source_type`). It is annotated `SkipValidation[FhirReference]` rather than
-    the bare union so that the many legacy readers that dereference
-    `claim.source_ref.value` / `.resource_type` stay statically valid: the
-    fhir variant is the only one the deterministic verifier grounds today, and
-    a non-fhir citation is tolerated as *unverifiable → dropped* (see
-    `verification.core`). The repository's hand-written (de)serializers dispatch
-    on `source_type`, and each concrete citation validates its own fields at
-    construction, so no validity is lost by skipping the union dispatch here.
+    `source_type`) — the real type, so a document- or guideline-cited claim is
+    *expressible* and type-checks. It was previously narrowed to
+    `SkipValidation[FhirReference]`, which let readers dereference
+    `.value` / `.resource_type` unguarded but meant no producer could construct
+    a non-fhir claim: the spec's document/guideline citation variants were
+    unreachable in practice. Every reader now isinstance-narrows before touching
+    a variant-specific field, so the union is honest at both ends.
+
+    Each variant is grounded by the deterministic verifier against its own
+    store — fhir against a live re-fetch, document against its stored
+    `extracted_fact`, guideline against its stored chunk (see
+    `verification.core`) — and a citation whose source cannot be
+    re-materialized still fails attribution and is dropped, fail-closed.
 
     `severity`, `trend_direction`, and `value_direction` are optional,
     record-grounded classifications attached to observation claims by the
@@ -94,7 +104,7 @@ class Claim(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     text: str = Field(min_length=1)
-    source_ref: SkipValidation[FhirReference]
+    source_ref: Citation
     severity: ClaimSeverity | None = None
     trend_direction: TrendDirection | None = None
     value_direction: ValueDirection | None = None
@@ -254,15 +264,16 @@ class VerificationClaimResult(BaseModel):
     """Per-claim outcome from the deterministic gate.
 
     ``source_ref`` mirrors ``Claim.source_ref`` — the citation union carried
-    through verbatim (annotated ``SkipValidation[FhirReference]`` for the same
-    reason). A non-fhir citation surfaces here as a failed result
-    (``attribution_ok=False``) so the caller can report it dropped.
+    through verbatim, so a result reports the same citation the claim asserted,
+    whichever variant it is. A citation whose source could not be
+    re-materialized surfaces here as a failed result (``attribution_ok=False``)
+    so the caller can report it dropped.
     """
 
     model_config = ConfigDict(frozen=True)
 
     text: str
-    source_ref: SkipValidation[FhirReference]
+    source_ref: Citation
     attribution_ok: bool
     value_match: bool
     entailment: bool | None = None

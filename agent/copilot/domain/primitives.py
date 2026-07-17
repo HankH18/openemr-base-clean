@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field
 
 
 def utcnow() -> datetime:
@@ -105,6 +105,18 @@ class FhirReference(BaseModel):
     ``source_type`` is the union discriminator, fixed to ``fhir``; a persisted
     Week-1 claim carries no ``source_type`` and rehydrates to this default, so
     the migration is byte-compatible.
+
+    **The five-key citation contract.** Every citation variant must expose
+    ``{source_type, source_id, page_or_section, field_or_chunk_id,
+    quote_or_value}`` in its serialized output — that is the machine-readable
+    shape a consumer reads to audit a claim. ``DocumentCitation`` /
+    ``GuidelineCitation`` carry those as stored fields; this variant derives
+    them, as computed fields, from the record-shaped names the verifier and the
+    repository serializer key on (``resource_id`` / ``field`` / ``value``).
+    Deriving rather than renaming is deliberate: the deterministic gate compares
+    ``ref.value`` against a live re-fetch at ``ref.field``, so those names are
+    load-bearing and must not move. The computed keys are pure aliases — they
+    add no information and can never disagree with their source.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -133,6 +145,47 @@ class FhirReference(BaseModel):
             "Distinct from `last_updated`, which is record-mutation time."
         ),
     )
+
+    @computed_field(  # type: ignore[prop-decorator]  # mypy limitation: property under a decorator
+        description="Spec citation key — the cited resource's id (alias of `resource_id`)."
+    )
+    @property
+    def source_id(self) -> str:
+        """Spec key: which source. For a FHIR citation that is the resource id."""
+        return self.resource_id
+
+    @computed_field(  # type: ignore[prop-decorator]  # mypy limitation: property under a decorator
+        description=(
+            "Spec citation key — where in the source. A FHIR resource has no "
+            "pages; the honest analogue is the resource-qualified field path."
+        )
+    )
+    @property
+    def page_or_section(self) -> str:
+        """Spec key: where in the source the value sits.
+
+        A FHIR resource has no pagination, so a page number here would be
+        fabricated. The truthful analogue is the resource-type-qualified field
+        path — e.g. ``Observation.valueQuantity.value`` — which is exactly the
+        location the verifier re-reads on a live re-fetch.
+        """
+        return f"{self.resource_type.value}.{self.field}"
+
+    @computed_field(  # type: ignore[prop-decorator]  # mypy limitation: property under a decorator
+        description="Spec citation key — the cited field path (alias of `field`)."
+    )
+    @property
+    def field_or_chunk_id(self) -> str:
+        """Spec key: which field/chunk. For a FHIR citation that is the field path."""
+        return self.field
+
+    @computed_field(  # type: ignore[prop-decorator]  # mypy limitation: property under a decorator
+        description="Spec citation key — the verbatim cited value (alias of `value`)."
+    )
+    @property
+    def quote_or_value(self) -> str:
+        """Spec key: the cited value, verbatim from source (alias of `value`)."""
+        return self.value
 
 
 class DocumentCitation(BaseModel):
