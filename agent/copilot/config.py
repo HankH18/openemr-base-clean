@@ -415,6 +415,25 @@ class Settings(BaseSettings):
             "invariant is identical in both modes."
         ),
     )
+    chat_history_max_turns: int = Field(
+        default=40,
+        description=(
+            "Cap on how many prior conversation turns are replayed into a chat "
+            "turn's prompt (one persisted user- or assistant-message = one turn). "
+            "Conversation history is otherwise UNBOUNDED: a long-lived bedside "
+            "thread re-sends its entire history every turn — token cost grows "
+            "quadratically in turns — and eventually overflows the model context "
+            "window, which the Anthropic SDK returns as a non-retryable 400 that "
+            "permanently 500s (and thus bricks) that thread. Keeping only the most "
+            "recent turns bounds both. The default 40 (~20 user/assistant "
+            "exchanges) covers a long bedside conversation with headroom while "
+            "staying far under any context limit — a real thread needs dozens of "
+            "turns, never thousands. Applied at the single point both serve paths "
+            "(inline and graph) assemble history from, so both inherit it. An "
+            "empty env var means 'unset' (the default applies), like every other "
+            "non-str knob."
+        ),
+    )
 
     # --- Observability ----------------------------------------------------
 

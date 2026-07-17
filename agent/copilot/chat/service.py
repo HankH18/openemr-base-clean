@@ -199,7 +199,10 @@ class ChatService:
             resolved_id = await self._resolve_conversation(
                 repo, clinician_id, patient_id, correlation_id, conversation_id
             )
-            history = _to_turns(await repo.get_conversation_messages(resolved_id))
+            history = _to_turns(
+                await repo.get_conversation_messages(resolved_id),
+                self._settings.chat_history_max_turns,
+            )
 
         if self._settings.chat_graph_enabled:
             outcome = await self._answer_via_graph(
@@ -502,15 +505,57 @@ class ChatService:
 # --- module helpers --------------------------------------------------------
 
 
-def _to_turns(messages: list[ConversationMessage]) -> list[ConversationTurn]:
-    """Replay persisted turns as agent context, keeping only chat roles."""
+def _to_turns(
+    messages: list[ConversationMessage], max_turns: int | None = None
+) -> list[ConversationTurn]:
+    """Replay persisted turns as agent context, keeping only chat roles.
+
+    ``max_turns`` caps the replay to the most recent ``max_turns`` turns (one
+    persisted user- or assistant-message = one :class:`ConversationTurn`). It is
+    applied HERE, at the single point both serve paths assemble history from —
+    ``chat`` hands this one list to the inline agent+verify path AND to the
+    multi-agent graph (as ``AgentTask.history``) — so neither can replay an
+    unbounded thread. Without the cap a long-lived conversation re-sends its
+    whole history every turn (quadratic token cost) and eventually overflows the
+    model context window, which the Anthropic SDK reports as a non-retryable 400
+    that permanently 500s the thread. ``None`` means "no cap" (the pre-cap
+    behaviour, kept as the default for callers that pass no budget).
+    """
     turns: list[ConversationTurn] = []
     for m in messages:
         if m.role == "user":
             turns.append(ConversationTurn(role="user", content=m.content))
         elif m.role == "assistant":
             turns.append(ConversationTurn(role="assistant", content=m.content))
-    return turns
+    return _cap_turns(turns, max_turns)
+
+
+def _cap_turns(
+    turns: list[ConversationTurn], max_turns: int | None
+) -> list[ConversationTurn]:
+    """The most recent ``max_turns`` turns, never starting on a dangling assistant.
+
+    The tail is what the next turn continues, so the MOST RECENT turns are kept.
+    ``None`` caps nothing. A non-positive budget replays no history at all —
+    deterministic, and it sidesteps the ``turns[-0:]`` footgun where a zero
+    budget would otherwise return the whole list.
+
+    Whole turns are preserved: after taking the last ``max_turns``, any leading
+    assistant turn — whose paired user message fell off the front of the window —
+    is dropped so the replay opens on a user turn. That is the shape a
+    well-formed thread has, and it keeps a truncated history from handing the
+    model a dangling assistant reply with no preceding user prompt.
+    """
+    if max_turns is None:
+        return turns
+    if max_turns <= 0:
+        return []
+    if len(turns) <= max_turns:
+        return turns
+    capped = turns[-max_turns:]
+    while capped and capped[0].role == "assistant":
+        del capped[0]
+    return capped
 
 
 def _passed_claims(result: VerificationResult) -> list[Claim]:

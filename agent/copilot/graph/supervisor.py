@@ -268,10 +268,31 @@ class AgentGraph:
                 if len(dispatched) >= self._max_iterations:
                     capped = True
                     break
-                if target == _INTAKE:
-                    intake_report = await self._dispatch_intake(task, handoffs)
-                elif target == _EVIDENCE:
-                    evidence_report = await self._dispatch_evidence(task, handoffs)
+                try:
+                    if target == _INTAKE:
+                        intake_report = await self._dispatch_intake(task, handoffs)
+                    elif target == _EVIDENCE:
+                        evidence_report = await self._dispatch_evidence(task, handoffs)
+                except Exception:
+                    # A single worker's failure is contained, never fatal — a
+                    # multi-agent graph exists to DEGRADE to whatever the surviving
+                    # workers produced. An unhandled worker exception here used to
+                    # abort run() outright: a 500 that also discarded the OTHER
+                    # worker's already-completed report. So we log with structured
+                    # context (never interpolated into the message), leave this
+                    # worker's report None, and continue. finalize already treats a
+                    # None report as "this worker contributed nothing" (see
+                    # _finalize), so the turn degrades to the chart-only /
+                    # surviving-worker answer instead of erroring. The deterministic
+                    # serve-time verifier still gates every claim, so a missing
+                    # worker means only LESS evidence — never a lowered
+                    # served/withheld bar (worker output never becomes a Claim).
+                    # Exception, not BaseException: a CancelledError is shutdown, not
+                    # a failed worker, and must keep propagating.
+                    _logger.exception(
+                        "graph worker dispatch failed; degrading to the surviving workers",
+                        extra={"worker": target, "patient_id": task.patient_id},
+                    )
                 dispatched.append(target)
 
             retrieval_hits = evidence_report.hits if evidence_report is not None else 0
