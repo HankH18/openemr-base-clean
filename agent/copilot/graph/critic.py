@@ -82,9 +82,19 @@ _FLAG_TOOL: dict[str, Any] = {
                             "type": "integer",
                             "description": "Zero-based index of the claim to flag.",
                         },
+                        # Belt-and-braces only. The enum is a REQUEST to the model,
+                        # not a guarantee — a model can and does return free text
+                        # here (e.g. "unsafe_action: dose is 10x max"). The
+                        # load-bearing defence is `_flagged_reasons`, which treats
+                        # anything but an exact `narrative_inconsistency` as unsafe.
                         "reason": {
                             "type": "string",
-                            "description": "unsafe_action or narrative_inconsistency.",
+                            "enum": [UNSAFE_ACTION, NARRATIVE_INCONSISTENCY],
+                            "description": (
+                                "Exactly one of the two literals: "
+                                f"{UNSAFE_ACTION!r} or {NARRATIVE_INCONSISTENCY!r}. "
+                                "Do not append an explanation — the bare token only."
+                            ),
                         },
                     },
                     "required": ["index"],
@@ -298,9 +308,30 @@ def _flagged_reasons(payload: dict[str, Any], count: int) -> dict[int, str]:
     *prose* recommends something dangerous, so dropping the claim is not enough —
     the sentence itself must not reach a physician (see
     ``copilot.chat.service``'s unsafe-withhold). ``narrative_inconsistency`` is
-    contained by dropping the claim. An unrecognised or missing reason degrades to
-    the stricter reading (treated as unsafe): a flag we cannot classify is not a
-    flag we may serve.
+    contained by dropping the claim.
+
+    **Lenient is the whitelist, and the whitelist is an exact match.** Only the
+    bare, recognised ``narrative_inconsistency`` token (modulo surrounding
+    whitespace and case) earns the mild treatment. Everything else degrades to
+    ``unsafe_action``: an unknown string, a near-miss (``"unsafe action"``), a
+    recognised token with an explanation appended
+    (``"narrative_inconsistency: claim 2 is unsupported"``), a non-string, or a
+    missing reason. A flag we cannot classify is not a flag we may serve, so the
+    strict reading is the DEFAULT rather than a list of bad cases to enumerate —
+    the previous inversion (degrade only non-strings) failed open on exactly the
+    free-text strings an LLM actually produces, while correctly withholding on
+    the ints and nulls it never emits.
+
+    The prefix case is deliberately strict, not an oversight. The tool schema
+    asks for a bare enum token; a reason carrying an explanation has already
+    violated that contract, and a model that is not honouring the contract has
+    forfeited our grounds for trusting its fine-grained distinction between the
+    two reasons. Prefix-matching would also silently re-open the hole for a
+    compound reason like ``"narrative_inconsistency: ... and the dose is
+    unsafe"``, which starts with the mild token while naming the strict one.
+    The cost is over-withholding an answer that only needed a claim dropped —
+    a visible, safe failure, traded against a physician reading a dangerous
+    sentence with its citation quietly stripped.
     """
     reasons: dict[int, str] = {}
     raw = payload.get("flagged")
@@ -314,7 +345,13 @@ def _flagged_reasons(payload: dict[str, Any], count: int) -> dict[int, str]:
         if not (0 <= index < count):
             continue
         reason = item.get("reason") if isinstance(item, Mapping) else None
-        reasons[index] = reason if isinstance(reason, str) else UNSAFE_ACTION
+        # Fail closed by construction: lenient is the whitelist. Only an exact,
+        # recognised narrative_inconsistency is mild; every other value — unknown
+        # string, near-miss, token-with-explanation, non-string, missing — is unsafe.
+        normalized = reason.strip().lower() if isinstance(reason, str) else ""
+        reasons[index] = (
+            NARRATIVE_INCONSISTENCY if normalized == NARRATIVE_INCONSISTENCY else UNSAFE_ACTION
+        )
     return reasons
 
 

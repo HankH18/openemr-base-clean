@@ -39,6 +39,14 @@ def test_missing_or_unknown_reason_degrades_to_unsafe() -> None:
     assert _flagged_reasons({"flagged": [{"index": 0}]}, 1) == {0: UNSAFE_ACTION}
     assert _flagged_reasons({"flagged": [{"index": 0, "reason": 12}]}, 1) == {0: UNSAFE_ACTION}
     assert _flagged_reasons({"flagged": [0]}, 1) == {0: UNSAFE_ACTION}
+    # The case the name promised and the body used to omit: an unknown STRING.
+    # Non-strings (12, None, missing) are what an LLM never emits; a free-text
+    # string is what it actually returns, and it must degrade strict too.
+    assert _flagged_reasons({"flagged": [{"index": 0, "reason": "weird_reason"}]}, 1) == {
+        0: UNSAFE_ACTION
+    }
+    assert _flagged_reasons({"flagged": [{"index": 0, "reason": None}]}, 1) == {0: UNSAFE_ACTION}
+    assert _flagged_reasons({"flagged": [{"index": 0, "reason": ""}]}, 1) == {0: UNSAFE_ACTION}
 
 
 def test_out_of_range_and_bool_indices_are_still_ignored() -> None:
@@ -86,3 +94,58 @@ def test_real_critic_marks_unsafe_but_not_inconsistent() -> None:
     assert "lactate is 4.2" not in verdict.unsafe, "but it must not force a withhold"
     assert "uncited thing" in verdict.rejected, "the citation gate is untouched"
     assert verdict.accepted == [], "both cited claims were flagged"
+
+
+def test_a_reason_with_an_explanation_appended_still_withholds() -> None:
+    """The exact live hazard: an LLM given a free-text field explains itself.
+
+    Measured before the fix — the inversion is the whole finding::
+
+        reason='unsafe_action'                  -> withholds=True
+        reason='unsafe_action: dose is 10x max' -> withholds=False   <- the likely output
+        reason='UNSAFE_ACTION'                  -> withholds=False
+        reason='unsafe action'                  -> withholds=False
+        reason=12                               -> withholds=True
+        reason=None                             -> withholds=True
+
+    ``12`` and ``None`` — which a model never emits — withheld correctly, while every
+    plausible string variant failed open. The classifier only degraded NON-strings to
+    strict, and a string is the only type that actually arrives. So the gating model
+    would flag a dangerous claim, the claim's citation would be stripped, ``unsafe``
+    would stay empty, and the physician would read "Give 10x the insulin dose" with
+    its evidence quietly removed — what this file's own header calls laundering the
+    recommendation.
+    """
+    for reason in (
+        "unsafe_action: dose is 10x max",  # the model explains itself
+        "UNSAFE_ACTION",  # wrong case
+        "unsafe action",  # space, not underscore
+        "  unsafe_action  ",  # stray whitespace
+    ):
+        assert _flagged_reasons({"flagged": [{"index": 0, "reason": reason}]}, 1) == {
+            0: UNSAFE_ACTION
+        }, f"a near-miss reason must fail CLOSED, got lenient for {reason!r}"
+
+
+def test_the_one_lenient_case_is_still_lenient() -> None:
+    # The regression guard. Without it, "withhold everything" passes every test above
+    # for entirely the wrong reason — and withholding every narrative_inconsistency
+    # would withhold ANSWERS that only needed a claim dropped.
+    assert _flagged_reasons({"flagged": [{"index": 0, "reason": NARRATIVE_INCONSISTENCY}]}, 1) == {
+        0: NARRATIVE_INCONSISTENCY
+    }
+    # ...and case/whitespace variants of it are still recognised as the mild case.
+    assert _flagged_reasons({"flagged": [{"index": 0, "reason": " Narrative_Inconsistency "}]}, 1) == {
+        0: NARRATIVE_INCONSISTENCY
+    }
+
+
+def test_narrative_inconsistency_with_an_explanation_degrades_strict() -> None:
+    # Deliberate and worth stating: an explained narrative_inconsistency is NOT
+    # matched leniently. That withholds an answer which only needed a claim dropped —
+    # annoying, but it is the fail-CLOSED direction, and safe-but-annoying beats
+    # unsafe-but-quiet. Pinned so a future change has to argue with it rather than
+    # drift into leniency.
+    assert _flagged_reasons(
+        {"flagged": [{"index": 0, "reason": "narrative_inconsistency: claim 2 unsupported"}]}, 1
+    ) == {0: UNSAFE_ACTION}
