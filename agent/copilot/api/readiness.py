@@ -11,11 +11,12 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from copilot.config import Settings
 from copilot.domain.contracts import ReadinessDependency
+from copilot.memory.models import GuidelineChunkRow
 
 
 class DependencyProbe(Protocol):
@@ -79,6 +80,43 @@ async def probe_pgvector(settings: Settings, engine: AsyncEngine) -> ReadinessDe
         return ReadinessDependency(
             name="pgvector", ok=False, detail=type(exc).__name__, advisory=True
         )
+
+
+async def probe_guideline_corpus(engine: AsyncEngine) -> ReadinessDependency:
+    """Guideline corpus population — an empty corpus serves zero evidence.
+
+    The migrations create ``guideline_chunk`` empty; the corpus is loaded by a
+    separate, manual step (``scripts/ingest_guidelines.py`` — DEPLOY.md §18
+    step 4). Skipping it leaves hybrid retrieval structurally unable to return
+    anything while every other dependency reports healthy, so the deployment
+    looks ready and silently answers with no evidence.
+
+    Advisory on every branch, like ``probe_langfuse``: an empty corpus is a real
+    degradation but the service still serves (chat answers from FHIR facts; the
+    retriever returns ``[]``, which is honest no-evidence rather than a
+    fabricated cite), so it must never 503 the deployment out of rotation.
+    """
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(select(func.count()).select_from(GuidelineChunkRow))
+            count = int(result.scalar_one() or 0)
+    except Exception as exc:
+        return ReadinessDependency(
+            name="guideline_corpus", ok=False, detail=type(exc).__name__, advisory=True
+        )
+    if count == 0:
+        return ReadinessDependency(
+            name="guideline_corpus",
+            ok=False,
+            detail=(
+                "empty corpus — guideline retrieval returns no evidence; run "
+                "scripts/ingest_guidelines.py (DEPLOY.md §18 step 4)"
+            ),
+            advisory=True,
+        )
+    return ReadinessDependency(
+        name="guideline_corpus", ok=True, detail=f"{count} chunks", advisory=True
+    )
 
 
 async def probe_embedder(settings: Settings) -> ReadinessDependency:

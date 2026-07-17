@@ -296,8 +296,30 @@ latency artifact, and alerts with response actions.
 Latency SLOs are **p95** (the tail a clinician actually feels), measured over a
 rolling window. The stubbed, LLM-free baseline is captured by
 `agent/scripts/latency_report.py --out artifacts/latency_report.json` (numeric
-`p50`/`p95` per pipeline); production p95 is read from the same spans in
-Langfuse. The agent status page (`GET /status`) surfaces the current numbers.
+`p50`/`p95` per pipeline); production p95 is read from the spans below in
+Langfuse.
+
+**Where these spans come from.** An SLO that cites a span nothing emits is not
+an SLO, so each signal below names the shipped code that emits it:
+
+| Span | Emitted by | Nesting |
+|------|-----------|---------|
+| `doc.ingest` | `copilot/documents/pipeline.py` — `DocumentIngestionService.attach_and_extract` | Trace root, or a child of the enclosing request span |
+| `extraction.run` | `copilot/documents/pipeline.py` — `DocumentIngestionService._extract` (the vision call) | Child of `doc.ingest` |
+| `guideline.retrieve` | `copilot/rag/retriever.py` — `GuidelineRetriever.retrieve` | Child of the enclosing span (`evidence-retriever.retrieve` on the graph path, the chat span on the inline path) |
+
+All three carry the correlation id of the request that opened them, so a trace
+reconstructs from the correlation id alone. Attributes are **counts, ids and the
+document type only** — never page text, OCR tokens, extracted clinical values,
+the filename, or the query string (§4's PHI rule applies to spans as much as to
+logs). The backend is selected from settings exactly like every other
+collaborator, so a deployment without Langfuse creds runs `NoopObservability`:
+the spans cost nothing and behaviour is identical — the SLOs simply have no
+telemetry to read until Langfuse is wired (`agent/LANGFUSE_SETUP.md`).
+
+The agent status page (`GET /status`) surfaces the **recorded baseline** from the
+committed artifact, *not* live span telemetry; it labels every metric with its
+provenance in `metric_sources` (§7.3).
 
 | SLO | Signal | p95 target (warn / page) | Notes |
 |-----|--------|--------------------------|-------|
@@ -368,3 +390,51 @@ otherwise), Alert 6 warn-tier for the fallback signal and page-tier for the
 latency breach. Every alert links to a Langfuse trace filtered by
 `correlation_id`, the same id stamped on the JSON access logs and the
 `audit_log` row.
+
+### 7.3 The status page: measured vs. recorded
+
+`GET /status` (aliased `GET /v1/status`) publishes the health aggregates. Its
+numbers do **not** all have the same standing, and the difference matters to
+anyone reading the page as evidence — so the payload labels every metric in a
+`metric_sources` block rather than leaving the reader to guess:
+
+| Label | Meaning |
+|-------|---------|
+| `measured:` | Computed from live agent-DB rows at request time. Moves when production moves. |
+| `recorded:` | Read back from a **committed artifact** captured offline. Does **not** move when production does. |
+| `unavailable:` | The agent does not record the signal. **No number is published** — the field says why. |
+
+| Metric | Source |
+|--------|--------|
+| `ingestion_count`, `extraction_field_pass_rate`, `error_rate`, `routing_decisions` | **measured** — agent DB (`source_document`, `extracted_fact.supported`, `audit_log.action`) |
+| `eval_by_category`, `eval_dataset` | **recorded** — `agent/evals/gate_baseline.json`: the **53-case golden set** scored on the five mandated rubrics (`schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`) |
+| `latency_ms` | **recorded** — `agent/artifacts/latency_report.json`, the committed stubbed LLM-free baseline. **Not** live telemetry; live p95 comes from the §7.1 spans in Langfuse |
+| `retrieval_hit_rate` | **unavailable** — see below |
+
+**`retrieval_hit_rate` is not measured.** Nothing persists per-query retrieval
+hit/miss telemetry, and the eval gate scores *recorded fixtures* rather than
+exercising the retriever, so no honest source for this rate exists today. It is
+therefore reported as `retrieval_hit_rate_available: false` with an
+`unavailable:` label. The key still carries a `0.0` **placeholder** purely
+because the pinned payload contract types it as a number — it is *not* an
+observation that retrieval returns nothing. Read `metric_sources`, not the `0.0`.
+To make it real, persist a per-retrieval outcome (the `guideline.retrieve` span
+already records `hits` / `corpus_chunks`) and aggregate from that — then relabel
+the metric `measured:`.
+
+### 7.4 Readiness: an empty corpus is degraded, not ready
+
+The guideline corpus is loaded by a **manual** step the migrations do not perform
+(`scripts/ingest_guidelines.py` — DEPLOY.md §18 step 4). A deploy that skips it
+leaves hybrid retrieval structurally unable to return anything, and every other
+dependency still reports healthy. `/ready` therefore probes the corpus itself:
+
+| Probe | Grade | Meaning |
+|-------|-------|---------|
+| `guideline_corpus` | `ok` | `N chunks` present |
+| `guideline_corpus` | `degraded` | **Empty corpus** (or the table is missing) — the detail names the fix |
+
+The probe is **advisory on every branch**, like `langfuse`: an empty corpus is a
+real degradation, but the service still serves — chat answers from FHIR facts and
+the retriever returns `[]`, which is honest no-evidence rather than a fabricated
+citation. So it reports `degraded` and never 503s the deployment out of rotation.

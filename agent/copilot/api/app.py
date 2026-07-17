@@ -64,14 +64,17 @@ def _default_probe_factories() -> list[ProbeFactory]:
     """Wire up the real probes against real dependencies.
 
     Week-2 graded readiness surfaces the ingestion + RAG dependencies
-    (``document_store``, ``pgvector``, ``embedder``, ``reranker``) alongside the
-    Week-1 external dependencies (OpenEMR FHIR, LLM, Langfuse). The agent
-    document store replaces the bare ``postgres`` probe — it is the same
-    connection, named for what it backs.
+    (``document_store``, ``pgvector``, ``guideline_corpus``, ``embedder``,
+    ``reranker``) alongside the Week-1 external dependencies (OpenEMR FHIR, LLM,
+    Langfuse). The agent document store replaces the bare ``postgres`` probe — it
+    is the same connection, named for what it backs. ``guideline_corpus`` grades
+    the *content* of that store rather than its reachability: a deploy that skips
+    the manual corpus ingest is degraded-but-serving, not ready.
     """
     return [
         lambda s: partial(readiness.probe_document_store, get_engine()),
         lambda s: partial(readiness.probe_pgvector, s, get_engine()),
+        lambda s: partial(readiness.probe_guideline_corpus, get_engine()),
         lambda s: partial(readiness.probe_embedder, s),
         lambda s: partial(readiness.probe_reranker, s),
         lambda s: partial(readiness.probe_openemr_fhir, s),
