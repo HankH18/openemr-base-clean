@@ -555,3 +555,209 @@ Only after a cycle finds nothing worth fixing, and only if tokens remain:
 
 Suggested order: variants first (cheaper, tests the schema's generality), then handwriting
 (which needs an answer to the OCR-bottleneck question above first).
+
+## Cycle 6 CLOSED — NINE defects, deployed and verified live (HEAD a4b0eb9)
+
+1177 tests green (from 871 at cycle-2 start), mypy clean, ingestion 8, pass_rate 97.83,
+gate 0, harness intact. Live: UI 200, conversations/1 -> 401, agent healthy, and /ready
+now runs GATING smart_config + pgvector + openemr_fhir + llm probes.
+
+Cycle 6 was the richest of the night, and the findings were PATIENT-SAFETY, not security:
+
+**#40 A doubling troponin printed as "↑0.0".** _fmt_num hardcoded .1f; troponin's band is
+<0.04, so EVERY clinically decisive troponin delta — the serial rise that rules in MI —
+rendered as "up by zero", and 0.01->0.04 additionally read trend=steady. Precision now
+derives from the operands. FIXED 397a39e.
+
+**#41 One future-dated reading silently emptied the card**, and the UI then rendered an
+affirmative "No recorded changes since your last review" while a new abnormal tachycardia
+sat in the record. Fail-OPEN in a fail-closed system. The future reading is now FLAGGED,
+not dropped (silent dropping is the bug's own failure mode), and because a future
+timestamp makes the ORDERING unknowable, trend/direction/changed all withhold. FIXED.
+
+**#42 Comparisons were unit-blind.** C-then-F charting read as "↑61.6 · improving"; the
+series chart plotted 37.0 and 98.6 on one °F axis (profound hypothermia). No conversions
+— a converted point would plot a number that exists in no record. FIXED.
+
+**#43 The verification gate compared NUMBERS, not QUANTITIES** — a claim saying ng/mL
+verified clean against a record of ng/L (1000x). And claim_text emitted a bare unitless
+number, so the number was verified and the unit beside it was not. FIXED b9834d7 —
+including the WIRING, which the building agent honestly reported it could not reach:
+"my tests are green and they'd be green even if the product were still fully broken."
+
+**#44 /ready and the Docker healthcheck were GREEN on a database with ZERO tables.** The
+documented rollout makes `alembic upgrade head` a separate manual step; skip it and the
+container reports healthy, Caddy routes to it, and every request 500s. FIXED 7f32f8a.
+
+**#45 The "startup check that refuses auth_mode=smart without https" DID NOT EXIST.**
+config.py promised it twice; ensure_smart_ready was never called from create_app, and
+never checked the client secret or the authorize URL. An operator following the docs got
+the physician's browser sent to http://openemr. FIXED.
+
+**#46 `${VAR:-}` — the standard compose idiom — HARD-BRICKED THE BOOT.** 8 of 9 knobs.
+I found this by nearly shipping it. FIXED 457814b + 27 unreachable settings surfaced.
+
+**#47 DEPLOY.md produced an EMPTY client secret.** The docs said COPILOT_SMART_APP_CLIENT_
+SECRET; compose interpolates ${SMART_APP_CLIENT_SECRET}. Following the procedure literally
+is what broke it. FIXED a4b0eb9; swept for siblings — none remain.
+
+**#48 patient_id pseudonymized before egress** (14bcc70) — but see the limit below.
+
+### Agents refusing my instructions, correctly — the best signal of the night
+- The readiness agent REFUSED my host-equality rule on two grounds: it contradicts the
+  repo's own split-host fixtures AND it is wrong in general (SMART routinely separates
+  the app from the EHR's auth server). It also refused the /ready healthcheck change with
+  a real argument: the live Caddyfile has no health_uri, so Caddy never consults Docker
+  health, and Docker health doesn't restart containers — it would buy a changed `docker ps`
+  string and take on DB-blip restart risk.
+- It SSH'd the droplet and corrected my analysis: the "unset client secret" was the LOCAL
+  default; live has it set (len 86). It verified the live config survives the new check
+  BEFORE shipping it.
+- The unit agent reported its own work as non-functional rather than claiming the P0.
+
+### Still open, carried forward
+- **The Langfuse pseudonym is NOT de-identification** (45 CFR 164.514(c)) — the dataset
+  remains PHI and still needs a BAA. Human decision.
+- **`health_uri /ready` belongs in the Caddyfile** — that is the real routing gate; the
+  Docker healthcheck is not.
+- **_distance_to_range treats the bound as inclusive**, so troponin 0.04 against "<0.04"
+  scores distance 0 and a 4x rise still classifies trend=steady despite severity=warning.
+  The card no longer lies about the number; "steady" is arguably its own defect.
+- Coverage counts characters (subsequence can pass); rasterize accumulates PNGs;
+  is_authorized gates a caller-supplied list; idempotency is in-process only.
+
+## Cycle 7 — THREE more live defects (issues 49-51). Halt condition still not met.
+
+**#49 P0 LIVE — the keyless reranker discards the entire hybrid-RAG pipeline.**
+_apply_rerank TOTALLY REORDERS the RRF+section-boost result and overwrites it, and it is
+handed `content` only — never `section` — so it is structurally blind to the boost. The
+StubReranker sorts by a raw un-normalized term-frequency sum (no IDF, no stemming, no
+length norm), and _dense_rank returns EVERY row with an embedding, so there is no retrieval
+cutoff: the stub is the SOLE ranker over the whole corpus. Measured on the real corpus:
+
+  query: "What is the MAP target for septic shock vasopressors?"
+    fused (RRF+boost) top1 : vasopressors-and-map-target   0.047643   <- correct
+    production top1        : recognition-and-screening     0.032787   <- served
+    rerank made top-1 WRONG on 2/7 queries; right on 0/7
+    at top_k=2 the correct chunk is not returned at all
+    returned .score order: [0.032787, 0.032258, 0.047643, 0.031746]  monotonic: False
+
+LIVE: DEPLOY.md tells operators to leave VOYAGE/COHERE keys unset -> StubEmbedder +
+StubReranker; graph enabled -> top_k=4. RRF, FTS, pgvector cosine and the section boost
+contribute NOTHING to what a clinician sees. DISPATCHED.
+
+**#50 P0 LIVE — the eval gate is blind to the entire guideline RAG.** The auditor sabotaged
+retrieval completely (retrieve -> [], RRF inverted, boost no-op, chunks replaced with
+garbage) and ran the REAL evaluate_all + check_regressions:
+
+  GATE with guideline RAG fully sabotaged -> pass_rate=100.0  blocking failures=0
+
+live_cases.py does not import copilot.rag.retriever AT ALL. This is the SAME hole the live
+tier was built to close for deidentify — one feature over, on the Week-2 flagship. And it is
+exactly WHY #49 survived: the gate could never go red, so nobody looked. DISPATCHED.
+
+**#51 P1 LIVE — a corrected guideline silently does not apply, and then VERIFIES.**
+ingest.py skips on the `source` key alone; guideline_document has no content hash (unlike
+source_document, which does). Probed:
+
+  after v1 ingest  : "...50-100 mg of intravenous vitamin K."
+  [operator fixes the file to 5-10 mg, re-runs DEPLOY.md step 4]
+  re-ingest report : [('Warfarin', 'skipped')]        <- reads as SUCCESS
+  after v2 ingest  : "...50-100 mg of intravenous vitamin K."   <- STALE
+  after --force    : "...5-10 mg of intravenous vitamin K."
+
+Worse than an ordinary cache bug: the serve-time verifier re-materializes the chunk from
+that same stale row, so the quote matches verbatim and the claim is SERVED AS GROUNDED.
+Staleness is self-consistent, so the verification gate structurally cannot catch it.
+Someone fixes a 10x vitamin-K overdose, redeploys per the runbook, and the co-pilot keeps
+citing the old dose. And DEPLOY.md:784 FALSELY claims "There is no --force / --reset flag"
+while scripts/ingest_guidelines.py:91-100 defines it. Third phantom-documentation defect of
+the night. DISPATCHED.
+
+### The auditor's clean list — substantial, and worth as much as the findings
+- **Migrations**: full upgrade head -> downgrade base -> upgrade head round-trips clean on a
+  real DB; every ALTER against a pre-existing table adds a NULLABLE column, so none fails on
+  a populated Postgres; every NOT NULL is on a create_table with a server_default; 0006's
+  pgvector/JSON dialect split and FK drop ordering are correct.
+- **Retention**: there is NO DELETE against audit_log anywhere in the codebase (grepped), so
+  the 6-year HIPAA floor cannot be violated; probed a 7-year-old row -> eligible=1 deleted=0;
+  sweep_chat is idempotent and deletes messages before conversations (no orphans); the floor
+  clamp genuinely beats a misconfigured retention setting.
+- **Corpus clinical correctness**: all four files read line by line — sepsis (30 mL/kg, abx
+  <=1h, MAP >=65, norepi->vasopressin), DKA (0.1 u/kg/h, K >=3.3 before insulin, dextrose
+  <200), warfarin (INR 4.5-10 hold, >10 oral 2.5-5 mg, major bleed 4F-PCC + 5-10 mg IV vit K)
+  are clinically accurate and correctly attributed to their front-matter source.
+- **Citation attribution**: get_guideline_chunk_by_id's argument order checked specifically
+  for transposition — correct; a citation cannot point outside its cited document, and a
+  fabricated chunk id is dropped fail-closed.
+- **My empty-env fix verified independently**: COPILOT_CHAT_RETENTION_DAYS/OCR_DPI/TLS_VERIFY/
+  SESSION_IDLE_SECONDS/RASTER_MAX_PAGES all ="" parse to defaults, no boot brick.
+- **RRF math**: sum 1/(k+rank) at k=60 is correct — it is just never allowed to matter (#49).
+
+## INCIDENT — I wiped the repo and misread the evidence (recovered, 10cf898)
+
+Commits 4a5d2bb and 30a0db7 each carried a tree of exactly ONE file. The whole
+OpenEMR fork, the agent, the frozen harness — gone from git, pushed to BOTH remotes.
+
+The working tree was never damaged; only the INDEX was emptied, so my
+`git add <one-file> && git commit` wrote a one-path tree. `git status` reported the
+survivors as untracked (`??`) rather than deleted, and **the suite stayed 100% green
+throughout, because pytest reads the DISK and git reads the INDEX** — the two can
+disagree totally. Every signal I was watching was green while the repository emptied.
+
+**I looked directly at the evidence and talked myself out of it.**
+`git diff --stat a4b0eb9..4a5d2bb` printed "9160 files changed, 3801828 deletions"
+and I recorded it as "the difference is only the overnight log" — because the commit
+I had just written WAS docs-only. Expectation overwrote the reading.
+
+An independent auditor caught it, in a session where I had spent all night telling
+other agents to verify effects. That is the argument for the adversarial pass in one
+line: I could not see it in my own work, and the number was right there.
+
+Recovered by resetting the INDEX to a4b0eb9 without touching the working tree, so
+three agents' in-flight edits survived. Forward-fix, not a force-push. Also removed
+246 macOS-style " 2" snapshot duplicates a filesystem sync had scattered around — one
+had been COMMITTED by an earlier `git add agent/web/`, and pytest was collecting the
+rest as duplicate modules (31 failures that were pure artifact; now 1178 passing).
+Each duplicate was diffed against its original before deletion: `summary 2.py` (07:30)
+vs `summary.py` (07:41) differ only by ruff reformatting; nothing unique was lost.
+
+The droplet was on a4b0eb9 and never at risk — but deploying 30a0db7 would have
+wiped it. Now recorded in verify-the-deploy and LEARNED.md:
+`git ls-tree -r HEAD --name-only | wc -l` before every push.
+
+## Cycle 7 — issues 52-54
+
+**#52 P0 LIVE (REGRESSION, ours) — a TRUE change vanishes behind "No recorded
+changes".** Tonight's own 397a39e stopped a FALSE trend by making a true one
+disappear. _unit() returns the unit UNSTRIPPED, so 'mg/dL ' != 'mg/dL' -> no trusted
+pair -> _changed False -> the row gate drops the row BEFORE its own "no trend" text
+can render -> the card affirmatively says nothing changed while glucose went 100->180.
+The commit violated the contract it wrote in the same file ("withholds visibly or not
+at all"): _is_future got an escape hatch, mixed-unit got none. DISPATCHED.
+
+**#53 P1 LIVE (CLINICAL) — the keyless stack serves the WRONG guideline for two
+clinically important queries, even with a healthy RAG:**
+
+  "How do I reverse warfarin in major life-threatening bleeding?"
+     -> serves `supratherapeutic-inr-without-bleeding`   (INR-HOLD ADVICE, FOR A MAJOR BLEED)
+  "Which nephrotoxins should I stop in AKI?"
+     -> serves `initial-evaluation`
+
+Both fail under identity rerank too, so this is NOT the reranker bug — it is the
+keyless lexical stack (term-overlap sparse + hashing-trick "dense") favouring the
+section that repeats the query's words most. The agent EXCLUDED these from the gate
+rather than commit an unfixable red, and said so. Needs its own fix.
+
+**#54 — the audit's own sabotage was partly invalid.** Its "inverted rrf_fuse" probe
+was a NO-OP: retrieve calls rrf_scores, never rrf_fuse. The CONCLUSION (gate blind)
+was right and independently confirmed; one of its four demonstrations proved nothing.
+Even an adversarial probe needs to be checked that it actually bites.
+
+### Vacuous tests found in OUR OWN work tonight (all three, by audit)
+- `test_config_blank_env.py:72-77` (MINE) asserted `anthropic_api_key == ""` whose
+  DEFAULT is also "" — it passed with the scoping deleted. It was the ONLY guard on
+  that fix's central decision. FIXED 195fd4a, now proven to bite.
+- `test_summary_correctness.py:261-263` asserts `== []` on a PURE RE-RECORD fixture
+  but names a GENERAL rule — that is exactly how #52 got in.
+- `test_reconcile_multiword.py:548` flagged; unreviewed.
