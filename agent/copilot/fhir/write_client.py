@@ -28,6 +28,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
+from uuid import UUID
 
 import httpx
 
@@ -119,13 +120,58 @@ class OpenEmrWriteClient:
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 10.0,
         verify: bool = True,
+        patient_id_template: str = "",
         now: Callable[[], datetime] = utcnow,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=timeout, verify=verify)
+        self._pid_template = patient_id_template
         self._now = now
+
+    def _patient_uuid(self, pid: PatientId) -> str:
+        """Map the agent's integer pid to the OpenEMR patient **UUID**.
+
+        Only the encounter routes need this. ``GET``/``POST
+        /api/patient/:puuid/encounter`` (``_rest_routes_standard.inc.php``
+        :105/:112) are keyed by the patient UUID —
+        ``EncounterRestController::getAll`` documents "Route parameter is always
+        a UUID string", and ``EncounterService::insertEncounter`` feeds it to
+        ``UuidRegistry::uuidToBytes`` → ``Uuid::fromString``, which throws on an
+        integer. The sibling vital (:140) and medication (:305) routes really are
+        pid-keyed and must keep sending the raw pid.
+
+        Mirrors ``_PatientMappedFhirClient`` (``copilot/fhir/provider.py``:88-94):
+        same ``settings.fhir_patient_id_template``, same ``{pid}`` format.
+
+        Fails LOUDLY when unmapped or when the template yields a non-UUID rather
+        than putting a value on the wire that OpenEMR can only reject — a write
+        that cannot be confirmed is FAILED, and an unconfigurable one should say
+        so in its own words, not as an opaque 400/500 from the server.
+        """
+        if not self._pid_template:
+            raise OpenEmrWriteError(
+                "cannot resolve an encounter: the OpenEMR encounter route is keyed by "
+                "patient UUID, but no patient-id mapping is configured. Set "
+                "COPILOT_FHIR_PATIENT_ID_TEMPLATE (e.g. "
+                "'a1000000-0000-0000-0000-{pid:012d}'). Refusing to send the integer "
+                f"pid {pid} to a UUID-keyed route."
+            )
+        try:
+            candidate = self._pid_template.format(pid=pid.value)
+        except (IndexError, KeyError, ValueError) as exc:
+            raise OpenEmrWriteError(
+                f"patient-id template {self._pid_template!r} is not a valid '{{pid}}' "
+                "format string"
+            ) from exc
+        try:
+            return str(UUID(candidate))
+        except ValueError as exc:
+            raise OpenEmrWriteError(
+                f"patient-id template produced {candidate!r}, which is not a UUID; "
+                "the OpenEMR encounter route would reject it"
+            ) from exc
 
     async def __aenter__(self) -> OpenEmrWriteClient:
         return self
@@ -142,8 +188,11 @@ class OpenEmrWriteClient:
         A vital attaches to an encounter, so the write path needs an ``eid``.
         Reusing today's encounter keeps a bedside session's readings together;
         absent one, a minimal "Co-Pilot bedside entry" encounter is created.
+
+        Both calls are keyed by patient **UUID**, not pid — see ``_patient_uuid``.
         """
-        resp = await self._send("GET", f"/patient/{pid}/encounter")
+        puuid = self._patient_uuid(pid)
+        resp = await self._send("GET", f"/patient/{puuid}/encounter")
         if resp.status_code == 200:
             today = self._now().date().isoformat()
             existing = _most_recent_today(_envelope_list(self._json(resp)), today)
@@ -156,7 +205,7 @@ class OpenEmrWriteClient:
             )
 
         payload = {"date": self._now().date().isoformat(), "reason": _ENCOUNTER_REASON}
-        created = await self._send("POST", f"/patient/{pid}/encounter", json_body=payload)
+        created = await self._send("POST", f"/patient/{puuid}/encounter", json_body=payload)
         self._require(created, 201)
         data = self._json(created).get("data")
         if not isinstance(data, Mapping):

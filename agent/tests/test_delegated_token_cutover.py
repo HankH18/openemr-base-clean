@@ -50,6 +50,8 @@ _ENC_KEY = Fernet.generate_key().decode()
 COOKIE = "delegated-token-cookie"
 FHIR_USER = "https://fhir/Practitioner/tok"
 PID = 1015
+#: pid -> OpenEMR patient UUID, the shape a deployment configures.
+PATIENT_UUID_TEMPLATE = "a1000000-0000-0000-0000-{pid:012d}"
 FHIR_BASE = "http://oe.test/fhir"
 WRITE_API = "http://oe.test/api"
 PHYSICIAN_TOKEN = "physician-access-delegated-xyz"  # test fixture value, not a real secret
@@ -119,6 +121,12 @@ def _smart_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setenv("COPILOT_ANTHROPIC_API_KEY", "")  # -> deterministic stub agent
     monkeypatch.setenv("COPILOT_WRITEBACK_ENABLED", "true")
     monkeypatch.setenv("COPILOT_TLS_VERIFY", "false")
+    # OpenEMR's encounter routes are UUID-keyed (:puuid — see
+    # apis/routes/_rest_routes_standard.inc.php:105,112), so the write client needs
+    # the same pid->uuid template the read client has always used. Without it the
+    # client now refuses to send (it used to send the int and 502 against real
+    # OpenEMR); a deployment sets this in its env.
+    monkeypatch.setenv("COPILOT_FHIR_PATIENT_ID_TEMPLATE", PATIENT_UUID_TEMPLATE)
     _reset_caches()
     yield db_file
     _reset_caches()
@@ -231,7 +239,13 @@ class TestSmartModeDelegatedToken:
         cid = _seed_session(_smart_app)
         _seed_cursor(_smart_app, cid, [PID])
         today = datetime.now(UTC).date().isoformat()
-        respx.get(f"{WRITE_API}/patient/{PID}/encounter").mock(
+        # The encounter route is keyed by the patient UUID, not the pid. This mock
+        # used to echo our OWN wrong URL (/patient/1015/encounter) back to us, so it
+        # stayed green while asserting a flow that was 100% broken against real
+        # OpenEMR. The assertion here -- that the write carries the physician's
+        # delegated token -- was always right; only this fixture was wrong.
+        puuid = PATIENT_UUID_TEMPLATE.format(pid=PID)
+        respx.get(f"{WRITE_API}/patient/{puuid}/encounter").mock(
             return_value=Response(200, json={"data": [{"id": "42", "date": today}]})
         )
         vital_route = respx.post(f"{WRITE_API}/patient/{PID}/encounter/42/vital").mock(

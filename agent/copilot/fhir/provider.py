@@ -176,7 +176,16 @@ def build_write_client(settings: Settings) -> OpenEmrWriteClient:
     poller is a hard invariant (``research/WRITEBACK_PHASE1_PLAN.md`` §2.4).
     """
     provider = build_write_token_provider(settings)
-    return OpenEmrWriteClient(_write_api_base_url(settings), provider, verify=settings.tls_verify)
+    return OpenEmrWriteClient(
+        _write_api_base_url(settings),
+        provider,
+        verify=settings.tls_verify,
+        # OpenEMR's encounter routes are UUID-keyed (:puuid), not pid-keyed. Without
+        # this the client would send the agent's integer pid and every vital write
+        # would 502. The read client has always mapped here (see _pid_template); the
+        # write client was simply never given the same template.
+        patient_id_template=settings.fhir_patient_id_template,
+    )
 
 
 def build_write_client_for_session(settings: Settings, session_id: str) -> OpenEmrWriteClient:
@@ -192,7 +201,16 @@ def build_write_client_for_session(settings: Settings, session_id: str) -> OpenE
     if not settings.writeback_enabled:
         raise WritebackDisabledError("write-back is disabled (COPILOT_WRITEBACK_ENABLED=false)")
     provider = build_session_token_provider(settings, session_id)
-    return OpenEmrWriteClient(_write_api_base_url(settings), provider, verify=settings.tls_verify)
+    return OpenEmrWriteClient(
+        _write_api_base_url(settings),
+        provider,
+        verify=settings.tls_verify,
+        # OpenEMR's encounter routes are UUID-keyed (:puuid), not pid-keyed. Without
+        # this the client would send the agent's integer pid and every vital write
+        # would 502. The read client has always mapped here (see _pid_template); the
+        # write client was simply never given the same template.
+        patient_id_template=settings.fhir_patient_id_template,
+    )
 
 
 def _write_api_base_url(settings: Settings) -> str:

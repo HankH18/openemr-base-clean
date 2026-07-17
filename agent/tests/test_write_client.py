@@ -13,6 +13,7 @@ import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import httpx
 import pytest
@@ -26,6 +27,12 @@ pytestmark = pytest.mark.asyncio
 
 _BASE = "http://openemr/apis/default/api"
 _PID = PatientId(value=1015)
+
+# OpenEMR's encounter routes are keyed by the patient UUID, not the pid, so the
+# client must be given the pid->uuid mapping (``COPILOT_FHIR_PATIENT_ID_TEMPLATE``)
+# — same template the read path uses (``copilot/fhir/provider.py``:88-94).
+_PID_TEMPLATE = "a1000000-0000-0000-0000-{pid:012d}"
+_PUUID = "a1000000-0000-0000-0000-000000001015"  # == _PID_TEMPLATE.format(pid=1015)
 
 
 def _fixed_now() -> datetime:
@@ -50,12 +57,14 @@ async def _writer(
     handler: Handler,
     *,
     provider: TokenProvider | None = None,
+    patient_id_template: str = _PID_TEMPLATE,
 ) -> AsyncIterator[OpenEmrWriteClient]:
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     client = OpenEmrWriteClient(
         _BASE,
         provider or _static_provider(),
         http_client=http,
+        patient_id_template=patient_id_template,
         now=_fixed_now,
     )
     try:
@@ -336,9 +345,17 @@ class TestResolveOrCreateEncounter:
             eid = await client.resolve_or_create_encounter(_PID)
 
         assert eid == "99"
+        # Was: /patient/1015/encounter (the integer pid). That asserted a URL
+        # OpenEMR rejects: apis/routes/_rest_routes_standard.inc.php:105/112 are
+        # "GET|POST /api/patient/:puuid/encounter" — keyed by patient UUID
+        # (EncounterRestController::getAll: "Route parameter is always a UUID
+        # string"; EncounterService::insertEncounter feeds it to
+        # UuidRegistry::uuidToBytes -> Uuid::fromString, which throws on "1015").
+        # The old expectation only held because the mock echoed the client's own
+        # URL back — it pinned our bug, not OpenEMR's contract.
         assert calls == [
-            ("GET", "/apis/default/api/patient/1015/encounter"),
-            ("POST", "/apis/default/api/patient/1015/encounter"),
+            ("GET", f"/apis/default/api/patient/{_PUUID}/encounter"),
+            ("POST", f"/apis/default/api/patient/{_PUUID}/encounter"),
         ]
 
     async def test_creates_encounter_when_lookup_404s(self) -> None:
@@ -359,6 +376,78 @@ class TestResolveOrCreateEncounter:
             with pytest.raises(OpenEmrWriteError) as exc:
                 await client.resolve_or_create_encounter(_PID)
         assert exc.value.status_code == 500
+
+
+class TestEncounterRouteIsUuidKeyed:
+    """Pins OPENEMR's contract for the encounter route, not ours.
+
+    ``apis/routes/_rest_routes_standard.inc.php``:105/112 declare
+    ``GET|POST /api/patient/:puuid/encounter`` — the patient **UUID**. Sending the
+    integer pid means: GET -> ``search([], true, "1015")`` -> 0 rows -> 404 (so an
+    existing encounter is never reused), then POST -> ``EncounterService``:378
+    ``UuidRegistry::uuidToBytes("1015")`` -> ``Uuid::fromString`` throws. Never a
+    201 — every vital write 502s.
+
+    These assert the *shape OpenEMR requires* (a parseable UUID that is not the
+    pid), so they hold regardless of which template a deployment configures.
+    """
+
+    async def test_both_encounter_calls_send_a_uuid_not_the_pid(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": []})
+            return httpx.Response(201, json={"data": {"id": "99", "date": "2026-07-11"}})
+
+        async with _writer(handler) as client:
+            await client.resolve_or_create_encounter(_PID)
+
+        assert [m for m, _ in calls] == ["GET", "POST"]
+        for _method, path in calls:
+            segment = path.split("/patient/")[1].split("/")[0]
+            # Must parse as a UUID — Uuid::fromString() is what OpenEMR runs on it.
+            UUID(segment)
+            assert segment != str(_PID.value), "integer pid sent to a UUID-keyed route"
+
+    async def test_unmapped_pid_fails_loudly_and_sends_nothing(self) -> None:
+        """No mapping configured => refuse, rather than put an int on the wire."""
+        calls: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)  # pragma: no cover - must never be reached
+            return httpx.Response(200, json={"data": []})
+
+        async with _writer(handler, patient_id_template="") as client:
+            with pytest.raises(OpenEmrWriteError) as exc:
+                await client.resolve_or_create_encounter(_PID)
+
+        assert calls == [], "must not send a request it knows OpenEMR will reject"
+        assert "COPILOT_FHIR_PATIENT_ID_TEMPLATE" in str(exc.value)
+
+    async def test_template_yielding_a_non_uuid_fails_loudly(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"data": []})  # pragma: no cover
+
+        async with _writer(handler, patient_id_template="patient-{pid}") as client:
+            with pytest.raises(OpenEmrWriteError) as exc:
+                await client.resolve_or_create_encounter(_PID)
+        assert "not a UUID" in str(exc.value)
+
+    async def test_sibling_vital_route_still_uses_the_raw_pid(self) -> None:
+        """Guards the fix from over-reaching: :140 really IS pid-keyed."""
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json={"vid": 5})
+
+        async with _writer(handler) as client:
+            await client.create_vital(
+                _PID, "42", VitalWrite(metric=WritableMetric.heart_rate, value=72, unit="bpm")
+            )
+        assert seen[0].url.path == "/apis/default/api/patient/1015/encounter/42/vital"
 
 
 # --- 401 retry --------------------------------------------------------------
