@@ -85,16 +85,38 @@ class Poller:
         self._obs: Observability = observability or NoopObservability()
 
     async def tick(self, patient_id: PatientId) -> PollerResult:
-        """Run one full change → maybe-synthesize cycle for one patient."""
-        async with self._obs.span("poller.tick", patient_id=patient_id.value) as _span:
-            result = await self._tick_inner(patient_id)
-        self._obs.event(
-            "poller.result",
-            patient_id=patient_id.value,
-            outcome=result.outcome.value,
-            error=result.error,
-        )
-        return result
+        """Run one full change → maybe-synthesize cycle for one patient.
+
+        The ``poller.result`` event is emitted from INSIDE the span: the
+        backend attaches an event to the enclosing observation, so emitting it
+        after the ``async with`` exits would orphan it at the root of the trace
+        (the span is already closed and unset by then) — losing the only signal
+        that distinguishes a healthy tick from an errored one.
+        """
+        async with self._obs.span("poller.tick", patient_id=patient_id.value):
+            try:
+                result = await self._tick_inner(patient_id)
+            except Exception as exc:
+                # _tick_inner handles FhirClientError/SynthesisError itself, so
+                # anything landing here is an UNEXPECTED failure (e.g. a DB
+                # error from an upsert_sync_state call). Those are the hardest
+                # failures there are, and they must not be the ones that emit no
+                # telemetry — report the tick as errored before propagating,
+                # while the span is still open to receive the event.
+                self._obs.event(
+                    "poller.result",
+                    patient_id=patient_id.value,
+                    outcome=PollerTickOutcome.error.value,
+                    error=repr(exc),
+                )
+                raise
+            self._obs.event(
+                "poller.result",
+                patient_id=patient_id.value,
+                outcome=result.outcome.value,
+                error=result.error,
+            )
+            return result
 
     async def _tick_inner(self, patient_id: PatientId) -> PollerResult:
         polled_at = utcnow()

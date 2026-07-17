@@ -34,6 +34,7 @@ from copilot.memory.repository import MemoryRepository
 from copilot.observability import (
     NoopObservability,
     Observability,
+    correlation_id_var,
     current_correlation_id,
     generate_correlation_id,
 )
@@ -62,24 +63,37 @@ class _RuntimePoller(Poller):
         self._obs: Observability = observability or NoopObservability()
 
     async def tick(self, patient_id: PatientId) -> PollerResult:
-        async with session_scope() as session, self._pipeline._fhir_client() as fhir:
-            repo = MemoryRepository(session)
-            inner = Poller(
-                fhir=fhir,
-                synthesizer=StubSynthesizer(),
-                repository=repo,
-                observability=self._obs,
-            )
-            result = await inner.tick(patient_id)
-            # HIPAA §164.312(b): the tick read this patient's chart from
-            # OpenEMR. Trail it atomically with the tick's own state write.
-            # Background ticks carry no request correlation id, so mint one.
-            await repo.record_audit(
-                correlation_id=current_correlation_id() or generate_correlation_id(),
-                action="poller.read",
-                patient_id=patient_id,
-            )
-            return result
+        # APScheduler fires the tick on a bare background task, so no HTTP
+        # middleware ever publishes a correlation id. Mint one HERE — before
+        # the tick opens its span — because the Langfuse trace root is keyed by
+        # whatever id is in context at span-open time. Minting it later (e.g.
+        # only for the audit row) would leave the trace with a random id that
+        # the audit row's id does not point at, breaking the documented
+        # "reconstruct the trace from the correlation id" join for every tick.
+        # An inherited id wins: a tick driven from a request context stays on
+        # that request's trace rather than being split onto a fresh one.
+        token = correlation_id_var.set(current_correlation_id() or generate_correlation_id())
+        try:
+            async with session_scope() as session, self._pipeline._fhir_client() as fhir:
+                repo = MemoryRepository(session)
+                inner = Poller(
+                    fhir=fhir,
+                    synthesizer=StubSynthesizer(),
+                    repository=repo,
+                    observability=self._obs,
+                )
+                result = await inner.tick(patient_id)
+                # HIPAA §164.312(b): the tick read this patient's chart from
+                # OpenEMR. Trail it atomically with the tick's own state write,
+                # under the SAME id the tick's trace was opened with.
+                await repo.record_audit(
+                    correlation_id=current_correlation_id(),
+                    action="poller.read",
+                    patient_id=patient_id,
+                )
+                return result
+        finally:
+            correlation_id_var.reset(token)
 
 
 def build_poller_scheduler(
