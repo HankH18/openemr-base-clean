@@ -18,8 +18,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+import httpx
+
 from copilot.config import Settings
 from copilot.rag._lexical import overlap_score, tokenize
+from copilot.resilience import (
+    RERANK_RETRY,
+    RERANK_TIMEOUT,
+    RetryPolicy,
+    retry_sync,
+    retryable_response,
+)
 
 
 class RerankError(RuntimeError):
@@ -63,21 +72,40 @@ class CohereReranker:
     ranking. Any transport or shape error raises :class:`RerankError`; the
     retriever catches it and falls back to the fused order, so a Cohere outage
     degrades ranking quality without ever failing the answer path.
+
+    **Retried** (:data:`copilot.resilience.RERANK_RETRY`: 2 bounded, jittered
+    attempts) on timeouts, connection errors, 429 and 5xx — never on any other
+    4xx. A rerank commits nothing upstream, so re-sending is safe. The budget is
+    deliberately the smallest in the service: this is the one call with an
+    instant, lossless fallback, so a second retry would spend a clinician's
+    latency to recover a refinement they will barely notice the absence of.
+
+    **Exhausting the retries changes nothing about the failure.** The final
+    attempt's error propagates untouched and still becomes :class:`RerankError`,
+    which the retriever still catches to serve the fused sparse+dense order. The
+    retry can only convert an outage into a success — never a graceful degrade
+    into a raised error.
     """
 
     _ENDPOINT = "https://api.cohere.com/v2/rerank"
 
-    def __init__(self, api_key: str, model: str, *, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        *,
+        timeout: httpx.Timeout | float = RERANK_TIMEOUT,
+        retry: RetryPolicy = RERANK_RETRY,
+    ) -> None:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
+        self._retry = retry
 
     def rerank(self, query: str, documents: Sequence[str]) -> list[str]:
         docs = list(documents)
         if not docs:
             return []
-        import httpx
-
         payload = {
             "model": self._model,
             "query": query,
@@ -85,11 +113,15 @@ class CohereReranker:
             "top_n": len(docs),
         }
         try:
-            response = httpx.post(
-                self._ENDPOINT,
-                json=payload,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=self._timeout,
+            response = retry_sync(
+                lambda: httpx.post(
+                    self._ENDPOINT,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    timeout=self._timeout,
+                ),
+                policy=self._retry,
+                should_retry_result=retryable_response,
             )
             response.raise_for_status()
             body = response.json()

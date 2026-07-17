@@ -18,6 +18,12 @@ about to expire (or on an explicit ``force`` after 401).
 Design note: token providers do **not** log the tokens themselves.  Only
 IDs and expiry seconds are ever logged.  This is a hard rule (see
 ARCHITECTURE §Security).
+
+Retry note: every grant here is retried on transient transport failures
+(:data:`copilot.resilience.DEFAULT_RETRY` — 3 bounded, jittered attempts on
+timeouts/connection errors/429/5xx, never on any other 4xx). See
+:func:`_post_token` for why that is safe even for the single-use
+``authorization_code`` and rotating ``refresh_token`` grants.
 """
 
 from __future__ import annotations
@@ -30,6 +36,14 @@ from typing import Protocol, cast
 
 import httpx
 from authlib.jose import jwt as jose_jwt  # type: ignore[import-untyped]  # authlib ships no stubs
+
+from copilot.resilience import (
+    DEFAULT_RETRY,
+    TOKEN_TIMEOUT,
+    RetryPolicy,
+    retry_async,
+    retryable_response,
+)
 
 # 30-second skew guard on token expiry — refresh a bit before the clock says.
 _EXPIRY_SKEW = timedelta(seconds=30)
@@ -98,6 +112,7 @@ class SmartAppLaunchTokenProvider:
     # compatible: pre-PKCE callers leave it None and the field is simply omitted.
     code_verifier: str | None = field(default=None, repr=False)
     http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    retry: RetryPolicy = field(default=DEFAULT_RETRY)
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
@@ -121,8 +136,9 @@ class SmartAppLaunchTokenProvider:
             data["client_secret"] = self.client_secret
         if self.code_verifier:
             data["code_verifier"] = self.code_verifier
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, lambda: data, retry=self.retry
+        )
         return _parse_token_response(resp)
 
     async def _refresh(self, refresh_token: str) -> OAuthToken:
@@ -133,8 +149,9 @@ class SmartAppLaunchTokenProvider:
         }
         if self.client_secret:
             data["client_secret"] = self.client_secret
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, lambda: data, retry=self.retry
+        )
         return _parse_token_response(resp)
 
 
@@ -166,6 +183,7 @@ class SessionTokenProvider:
     save_token: Callable[[OAuthToken], Awaitable[None]]
     client_secret: str | None = field(default=None, repr=False)
     http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    retry: RetryPolicy = field(default=DEFAULT_RETRY)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
         current = await self.load_token()
@@ -195,8 +213,9 @@ class SessionTokenProvider:
         }
         if self.client_secret:
             data["client_secret"] = self.client_secret
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, lambda: data, retry=self.retry
+        )
         return _parse_token_response(resp)
 
 
@@ -228,6 +247,7 @@ class ResourceOwnerPasswordTokenProvider:
     user_role: str = "users"
     scope: str | None = None
     http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
+    retry: RetryPolicy = field(default=DEFAULT_RETRY)
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
@@ -252,8 +272,9 @@ class ResourceOwnerPasswordTokenProvider:
             data["scope"] = self.scope
         if self.client_secret:
             data["client_secret"] = self.client_secret
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, lambda: data, retry=self.retry
+        )
         return _parse_token_response(resp)
 
     async def _refresh(self, refresh_token: str) -> OAuthToken:
@@ -266,8 +287,9 @@ class ResourceOwnerPasswordTokenProvider:
             data["scope"] = self.scope
         if self.client_secret:
             data["client_secret"] = self.client_secret
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, lambda: data, retry=self.retry
+        )
         return _parse_token_response(resp)
 
 
@@ -293,20 +315,32 @@ class BackendServicesTokenProvider:
     http_client_factory: Callable[..., httpx.AsyncClient] = field(default=httpx.AsyncClient)
     jti_factory: Callable[[], str] = field(default=lambda: secrets.token_urlsafe(16))
     now_factory: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+    retry: RetryPolicy = field(default=DEFAULT_RETRY)
     _cached: OAuthToken | None = field(default=None, init=False, repr=False)
 
     async def get_token(self, force: bool = False) -> OAuthToken:
         if not force and self._cached is not None and self._cached.is_fresh():
             return self._cached
-        assertion = self._build_assertion()
-        data = {
-            "grant_type": "client_credentials",
-            "scope": " ".join(self.scopes),
-            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-            "client_assertion": assertion,
-        }
-        async with self.http_client_factory(timeout=10.0) as client:
-            resp = await client.post(self.token_url, data=data)
+
+        def _grant() -> dict[str, str]:
+            # Built PER ATTEMPT, not once: the assertion carries a single-use
+            # ``jti`` and a short ``exp``, and SMART Backend Services servers are
+            # entitled to reject a replayed jti. Re-minting makes each retry a
+            # genuinely new, replay-safe request rather than a resend the server
+            # is right to refuse — and keeps ``exp`` from expiring underneath a
+            # backoff. It is the only reason ``_post_token`` takes a factory.
+            return {
+                "grant_type": "client_credentials",
+                "scope": " ".join(self.scopes),
+                "client_assertion_type": (
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                ),
+                "client_assertion": self._build_assertion(),
+            }
+
+        resp = await _post_token(
+            self.http_client_factory, self.token_url, _grant, retry=self.retry
+        )
         token = _parse_token_response(resp)
         self._cached = token
         return token
@@ -331,6 +365,55 @@ class BackendServicesTokenProvider:
 
 class TokenAcquisitionError(Exception):
     """Raised when a token endpoint returns non-2xx or a malformed body."""
+
+
+async def _post_token(
+    http_client_factory: Callable[..., httpx.AsyncClient],
+    token_url: str,
+    data_factory: Callable[[], dict[str, str]],
+    *,
+    retry: RetryPolicy,
+) -> httpx.Response:
+    """POST one token grant, retrying only genuinely transient failures.
+
+    **Why retrying a token grant is safe — including the single-use ones.**
+    ``authorization_code`` codes are single-use and OpenEMR *rotates*
+    ``refresh_token``s, so these grants are not idempotent in the usual sense.
+    Retrying them is nonetheless provably not-worse-than-failing, which is the
+    bar that matters:
+
+    - If the request never reached the server, the credential is untouched and
+      the retry is both safe and valuable — it saves a physician from being
+      logged out by a one-off network blip mid-turn.
+    - If it *did* reach the server and only the response was lost, the credential
+      is already spent — by the first attempt, whether or not we retry. The retry
+      then presents a spent credential, the server answers **4xx**
+      ``invalid_grant``, and :func:`is_retryable_status` stops the loop dead. The
+      caller gets the same :class:`TokenAcquisitionError` it would have got
+      without any retry, and the physician re-authenticates either way.
+
+    So the retry can only ever turn a failure into a success. Single-use is
+    enforced *server-side* and reported as a 4xx we never retry — that
+    server-side enforcement is the whole proof.
+
+    **This argument does NOT extend to clinical writes**, and the difference is
+    exactly the missing enforcement: a lost response on ``POST /patient/x/vital``
+    means the row landed, the server will happily accept an identical second one,
+    and a retry silently duplicates a clinical record. That is why
+    ``copilot.fhir.write_client`` stays fail-closed and is untouched by this
+    module. Retrying a clinical write is worse than failing it.
+
+    ``data_factory`` is a callable rather than a dict so a grant whose body must
+    be *freshly minted per attempt* can be — see
+    :class:`BackendServicesTokenProvider`, whose JWT assertion carries a
+    single-use ``jti``.
+    """
+
+    async def _attempt() -> httpx.Response:
+        async with http_client_factory(timeout=TOKEN_TIMEOUT) as client:
+            return await client.post(token_url, data=data_factory())
+
+    return await retry_async(_attempt, policy=retry, should_retry_result=retryable_response)
 
 
 def _parse_token_response(resp: httpx.Response) -> OAuthToken:

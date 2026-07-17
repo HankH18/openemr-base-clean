@@ -32,6 +32,7 @@ from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType
 from copilot.fhir.client import FhirClient
 from copilot.rag.retriever import GuidelineEvidence
+from copilot.resilience import CHAT_MAX_RETRIES, CHAT_TIMEOUT
 
 _MAX_TOOL_ITERATIONS = 6
 _MAX_TOKENS = 2048
@@ -123,7 +124,15 @@ class ClaudeAgent:
         else:
             from anthropic import AsyncAnthropic  # local import keeps the stub path light
 
-            self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+            # CHAT_TIMEOUT / CHAT_MAX_RETRIES are passed EXPLICITLY rather than
+            # inherited: the SDK's default read timeout is 600s, which let one
+            # hung call hold a clinician's turn for ten minutes. See
+            # copilot.resilience for the SLO each number is anchored to.
+            self._client = AsyncAnthropic(
+                api_key=settings.anthropic_api_key,
+                timeout=CHAT_TIMEOUT,
+                max_retries=CHAT_MAX_RETRIES,
+            )
 
     async def answer(
         self,

@@ -2,6 +2,9 @@
 
 - Attaches ``Authorization: Bearer …`` sourced from a ``TokenProvider``.
 - On 401, refetches the token once and retries.
+- Retries transient transport failures (timeouts, connection errors, 429, 5xx —
+  never any other 4xx) with a bounded, jittered budget, but **only for
+  idempotent methods**; see ``_IDEMPOTENT_METHODS``.
 - Emits the change-detection query (``_lastUpdated=gt{watermark}
   &_summary=count``) as a typed helper (``count_since``).
 - Reads raw FHIR JSON — Pydantic parsing lives at call sites, not here,
@@ -18,6 +21,7 @@ import httpx
 
 from copilot.domain.primitives import PatientId, ResourceType
 from copilot.fhir.auth import TokenAcquisitionError, TokenProvider
+from copilot.resilience import DEFAULT_RETRY, RetryPolicy, retry_async, retryable_response
 
 
 class FhirClientError(Exception):
@@ -27,6 +31,15 @@ class FhirClientError(Exception):
 # Hard cap on pages followed for a single search, so a misbehaving server
 # advertising an endless `next` chain cannot spin forever.
 _MAX_PAGES = 50
+
+# Methods safe to re-send. This client is read-only today — every call site
+# (`read`, `search`, `count_since`, pagination) is a GET — so the guard is
+# redundant *right now*. It is here so it stays that way: a future non-idempotent
+# call site added to `_request_url` would otherwise silently inherit a retry loop
+# and start duplicating whatever it wrote. Retry is opt-in by method, not by
+# default. (Writes live in `copilot.fhir.write_client`, which is fail-closed and
+# retries nothing.)
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class FhirClient:
@@ -45,11 +58,13 @@ class FhirClient:
         http_client: httpx.AsyncClient | None = None,
         timeout: float = 10.0,
         verify: bool = True,
+        retry: RetryPolicy = DEFAULT_RETRY,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token_provider = token_provider
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(timeout=timeout, verify=verify)
+        self._retry = retry
 
     async def __aenter__(self) -> FhirClient:
         return self
@@ -125,12 +140,19 @@ class FhirClient:
         *,
         params: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Bearer-authenticated fetch of an absolute ``url`` with one 401 retry.
+        """Bearer-authenticated fetch of an absolute ``url``, with a bounded
+        transient-failure retry and one 401 forced-refresh retry.
 
         ``label`` is the human-readable target used in error messages (a path
         for :meth:`_request`, the full URL for a pagination ``next`` fetch).
         The next URL already carries its own query string, so pagination
         fetches pass no ``params``.
+
+        The two retries are orthogonal and compose: the transient budget re-sends
+        an identical request when the transport failed or the server said 429/5xx;
+        the 401 path re-sends *once* with a freshly forced token. A 401 is a 4xx,
+        so the transient budget never touches it — auth failure is a verdict, not
+        a blip, and only a new token can change it.
         """
 
         async def _do(force_refresh: bool) -> httpx.Response:
@@ -141,12 +163,21 @@ class FhirClient:
             }
             return await self._client.request(method, url, params=params, headers=headers)
 
-        resp = await _do(force_refresh=False)
+        async def _attempt(force_refresh: bool) -> httpx.Response:
+            if method.upper() not in _IDEMPOTENT_METHODS:
+                return await _do(force_refresh)
+            return await retry_async(
+                lambda: _do(force_refresh),
+                policy=self._retry,
+                should_retry_result=retryable_response,
+            )
+
+        resp = await _attempt(force_refresh=False)
         if resp.status_code == 401:
             # One retry with a forced token refresh — handles a
             # server-side revocation between requests.
             try:
-                resp = await _do(force_refresh=True)
+                resp = await _attempt(force_refresh=True)
             except TokenAcquisitionError as exc:
                 raise FhirClientError(f"token refresh failed after 401: {exc}") from exc
 

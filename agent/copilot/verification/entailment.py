@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from copilot.domain.contracts import Claim
+from copilot.resilience import GATING_MAX_RETRIES, GATING_TIMEOUT
 
 _ENTAILMENT_SYSTEM_PROMPT = """You verify whether a clinical claim is
 entailed (i.e., faithfully supported without additions or inversions) by
@@ -43,7 +44,15 @@ class LlmEntailment:
         else:
             from anthropic import AsyncAnthropic  # local import
 
-            self._client = AsyncAnthropic(api_key=anthropic_api_key)
+            # A gating-kind call: one word out (8 max_tokens), on the request
+            # path, and explicitly "not the safety control" — so it gets the same
+            # tight, cheap-to-abandon budget as the critic's safety pass rather
+            # than the SDK's inherited 600s. See copilot.resilience.
+            self._client = AsyncAnthropic(
+                api_key=anthropic_api_key,
+                timeout=GATING_TIMEOUT,
+                max_retries=GATING_MAX_RETRIES,
+            )
 
     async def entails(self, claim: Claim, resource: Mapping[str, Any]) -> bool:
         payload = json.dumps(
