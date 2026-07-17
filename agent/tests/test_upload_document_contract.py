@@ -55,15 +55,30 @@ def _client(handler: Any) -> OpenEmrWriteClient:
     )
 
 
-def test_a_200_with_bare_true_is_success_not_a_failure() -> None:
-    # OpenEMR's real success response. This used to raise (we required 201).
+@pytest.mark.parametrize("code", [200, 201])
+def test_a_2xx_with_bare_true_is_success_not_a_failure(code: int) -> None:
+    # 200 is what OpenEMR's DocumentRestController actually returns, and requiring
+    # 201 made a SUCCESSFUL upload raise. Requiring only 200 would be the same
+    # brittleness inverted — both codes mean "created", and which one a deployment
+    # sends is not worth being dogmatic about.
     import anyio
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=True)
+        return httpx.Response(code, json=True)
 
     result = anyio.run(_client(handler).upload_document, _PID, b"%PDF-1.4\n")
     assert result == OPENEMR_NO_HANDLE, "a confirmed upload with no id yields the sentinel"
+
+
+def test_a_non_success_status_still_fails_closed() -> None:
+    # Accepting a range is not laxity: anything outside it still raises.
+    import anyio
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json=True)
+
+    with pytest.raises(OpenEmrWriteError):
+        anyio.run(_client(handler).upload_document, _PID, b"%PDF-1.4\n")
 
 
 def test_the_category_rides_the_query_string_not_the_body() -> None:

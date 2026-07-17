@@ -405,7 +405,12 @@ class OpenEmrWriteClient:
             data={"doc_type": doc_type},
             idempotency_key=idempotency_key,
         )
-        self._require(resp, 200)
+        # OpenEMR's own DocumentRestController returns 200 (responseHandler(..., 200))
+        # — this client used to demand 201, so a SUCCESSFUL upload raised. Requiring
+        # only 200 would be the same brittleness inverted: both codes mean "created",
+        # and which one a deployment sends is not a thing to be dogmatic about. The
+        # real failure signal (404 + empty body) still raises, as does anything else.
+        self._require(resp, (200, 201))
         body = _try_json(resp)
         if body is False or body is None:
             raise OpenEmrWriteError("OpenEMR rejected the document upload")
@@ -465,9 +470,15 @@ class OpenEmrWriteClient:
             raise OpenEmrWriteError("write could not be confirmed (transport error)") from exc
         return resp
 
-    def _require(self, resp: httpx.Response, expected: int) -> None:
-        """Raise unless the response is exactly the expected success code."""
-        if resp.status_code == expected:
+    def _require(self, resp: httpx.Response, expected: int | tuple[int, ...]) -> None:
+        """Raise unless the response carries an expected success code.
+
+        Accepts a tuple where OpenEMR's success code genuinely varies. That is not
+        laxity: every other status — including the 404-with-empty-body that IS the
+        document route's failure signal — still raises, so fail-closed is intact.
+        """
+        allowed = (expected,) if isinstance(expected, int) else expected
+        if resp.status_code in allowed:
             return
         validation = None
         if resp.status_code in (400, 422):
@@ -475,7 +486,8 @@ class OpenEmrWriteClient:
             if isinstance(body, Mapping):
                 validation = body.get("validationErrors") or body.get("validation") or body
         raise OpenEmrWriteError(
-            f"write returned status={resp.status_code} (expected {expected})",
+            f"write returned status={resp.status_code} "
+            f"(expected {allowed[0] if len(allowed) == 1 else ' or '.join(map(str, allowed))})",
             status_code=resp.status_code,
             validation=validation,
         )
