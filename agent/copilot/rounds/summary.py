@@ -10,14 +10,19 @@ into one claim per clinical concept:
   the prior reading — e.g. "Heart rate: 92 /min  ↓12 · 22h since prior".
 - **Everything else** (conditions, meds, allergies) appears once, as-is.
 
-Deterministic: the same resources always yield the same summary. Every claim's
-source_ref points at the exact resource it came from, so the trust story holds.
+Deterministic: the same resources always yield the same summary. The one
+exception is a record dated *after* now — see :func:`_is_future` — which the
+card flags rather than trusts; that judgement necessarily reads the clock, so it
+changes (once, in the safe direction) when the clock passes the stated time.
+Every claim's source_ref points at the exact resource it came from, so the trust
+story holds.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any, TypeGuard
 
 from copilot.agent.grounding import (
@@ -27,7 +32,7 @@ from copilot.agent.grounding import (
     humanize_label,
 )
 from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection, ValueDirection
-from copilot.domain.primitives import Citation, FhirReference, ResourceType
+from copilot.domain.primitives import Citation, FhirReference, ResourceType, utcnow
 from copilot.rounds.ranges import reference_bounds, vitals_range
 
 
@@ -79,21 +84,38 @@ def build_change_claims(resources: Sequence[Mapping[str, Any]], hours: float = 1
     Anchored to the patient's own timeline: the reference "now" is the latest
     observation time, and a metric is reported only if its latest reading falls
     within ``hours`` of that AND is notable — either abnormal (an interpretation
-    flag / OpenEMR ``abnormal``) or moved vs the prior reading. Returns ``[]``
-    when the data carries no timestamps to anchor the window. Deterministic.
+    flag / OpenEMR ``abnormal``), moved vs the prior reading, or dated in the
+    future (a record whose own clock is wrong is worth a physician's eyes, and
+    must never be dropped quietly). Returns ``[]`` when the data carries no
+    timestamps to anchor the window.
+
+    The anchor is never a reading dated after now. A single mistyped year (2027),
+    a device clock running ahead, or a future ``issued`` would otherwise drag the
+    window past every real reading, and the card would go empty — which the UI
+    renders as the affirmative "No recorded changes since your last review".
+    That is fail-*open*: a brand-new tachycardia would vanish behind a sentence
+    saying nothing had changed. This module withholds visibly or not at all.
     """
     groups = group_observations(resources)
     times = [t for group in groups.values() for res in group if (t := _effective(res)) is not None]
     if not times:
         return []
-    window_start = max(times) - timedelta(hours=hours)
+    # Anchor on the patient's own timeline, but only on readings that are not in
+    # the future. When *every* reading is future-dated there is no trustworthy
+    # patient-timeline anchor at all, so fall back to the wall clock: the future
+    # readings then still land inside the window and get reported (flagged), which
+    # beats reporting "nothing changed".
+    now = utcnow()
+    dated_by_now = [t for t in times if t <= now]
+    anchor = max(dated_by_now) if dated_by_now else now
+    window_start = anchor - timedelta(hours=hours)
 
     claims: list[Claim] = []
     for group in groups.values():
         latest_time = _effective(group[0])
         if latest_time is None or latest_time < window_start:
             continue  # not measured within the window — nothing new to report
-        if not (_is_abnormal(group[0]) or _changed(group)):
+        if not (_is_abnormal(group[0]) or _changed(group) or _is_future(group[0])):
             continue  # measured recently but unremarkable
         claim = _observation_claim(group)
         if claim is not None:
@@ -214,16 +236,18 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
 def _value_direction(group: list[Mapping[str, Any]]) -> ValueDirection:
     """Motion of the latest reading vs the prior one: ``up`` / ``down`` / ``none``.
 
-    ``none`` when there is no prior reading, the value is unchanged, or either
-    reading is non-numeric. Grounded in the same successive record values the
-    trend classifier uses — this is the sign of ``latest - prior``, so it is
+    ``none`` when the value is unchanged or the two readings are not comparable
+    at all (:func:`_trusted_pair`: no prior, non-numeric, mixed units, or a
+    future-dated latest reading). Grounded in the same successive record values
+    the trend classifier uses — this is the sign of ``latest - prior``, so it is
     derivable independently of any reference range and drives the UI's uniform
     movement arrow (↑ / ↓ / —).
     """
-    if len(group) < 2:
+    pair = _trusted_pair(group)
+    if pair is None:
         return ValueDirection.none
-    latest, prior = _numeric(group[0]), _numeric(group[1])
-    if latest is None or prior is None or latest == prior:
+    (latest, _), (prior, _) = pair
+    if latest == prior:
         return ValueDirection.none
     return ValueDirection.up if latest > prior else ValueDirection.down
 
@@ -308,15 +332,17 @@ def _classify_trend(
     Grounded: uses only the record's own values and the record/standard range.
     Entering the band or shrinking the distance is ``improving``; leaving it or
     growing the distance is ``worsening``; both-in-range or no numeric change is
-    ``steady``. Returns ``None`` when it cannot be judged — no prior reading, a
-    non-numeric reading, or no range at all — so the UI renders neutral rather
-    than guessing a direction.
+    ``steady``. Returns ``None`` when it cannot be judged — no range at all, or
+    no comparable pair of readings (:func:`_trusted_pair`: no prior, non-numeric,
+    mixed units, or a future-dated latest reading) — so the UI renders neutral
+    rather than guessing a direction. The range itself is expressed in the
+    record's unit, so a mixed-unit pair could not be scored against it honestly
+    even if the two readings were comparable to each other.
     """
-    if len(group) < 2:
+    pair = _trusted_pair(group)
+    if pair is None:
         return None
-    latest, prior = _numeric(group[0]), _numeric(group[1])
-    if latest is None or prior is None:
-        return None
+    (latest, _), (prior, _) = pair
     if low is None and high is None:
         return None
     d_latest = _distance_to_range(latest, low, high)
@@ -347,11 +373,18 @@ def _is_abnormal(res: Mapping[str, Any]) -> bool:
 
 
 def _changed(group: list[Mapping[str, Any]]) -> bool:
-    """True when the latest numeric reading differs from the prior one."""
-    if len(group) < 2:
+    """True when the latest numeric reading differs from the prior one.
+
+    False whenever the two are not comparable (:func:`_trusted_pair`) — a
+    re-recorded unit is not a clinical change, and an unreliable ordering cannot
+    establish one. A group that is only "notable" because of a future-dated
+    record is surfaced by :func:`build_change_claims` on its own terms, so
+    nothing is dropped silently here.
+    """
+    pair = _trusted_pair(group)
+    if pair is None:
         return False
-    latest, prior = _numeric(group[0]), _numeric(group[1])
-    return latest is not None and prior is not None and latest != prior
+    return pair[0][0] != pair[1][0]
 
 
 def _parse(raw: str) -> datetime | None:
@@ -401,17 +434,97 @@ def _unit(res: Mapping[str, Any]) -> str:
     return ""
 
 
-def _numeric(res: Mapping[str, Any]) -> float | None:
+def _numeric(res: Mapping[str, Any]) -> tuple[float, str] | None:
+    """The reading's numeric value *with the unit it was recorded in*.
+
+    The unit rides along because every consumer compares two readings, and a raw
+    float is not comparable across units. OpenEMR permits a temperature in ``Cel``
+    and in ``degF`` (and a weight in kg and lb) within one metric's history: read
+    unit-blind, 37.0 → 98.6 is a 61.6-degree rise when the patient never changed.
+
+    The unit is the *display* form (:func:`_unit`), so two spellings of the same
+    unit (``Cel``/``degC``) compare equal — that is normalization of a label the
+    card already prints, not a conversion of a value.
+    """
     q = res.get("valueQuantity")
     if isinstance(q, Mapping):
         v = q.get("value")
         if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
+            return (float(v), _unit(res))
     return None
 
 
-def _fmt_num(x: float) -> str:
-    return str(int(x)) if x == int(x) else f"{x:.1f}"
+def _is_future(res: Mapping[str, Any]) -> bool:
+    """True when the record's own clinical timestamp is dated after now.
+
+    A reading cannot have been taken later than the present, so this is a record
+    defect — a mistyped year, a device clock ahead, a bogus ``issued``. What it
+    costs us is *ordering*: the record-stated sequence (and therefore the sign of
+    any delta against it) cannot be trusted, since we cannot tell a
+    mistyped-today from a stale reading stamped into the future.
+    """
+    t = _effective(res)
+    return t is not None and t > utcnow()
+
+
+def _trusted_pair(
+    group: list[Mapping[str, Any]],
+) -> tuple[tuple[float, str], tuple[float, str]] | None:
+    """Latest & prior ``(value, unit)`` when a comparison between them holds up.
+
+    ``None`` — no comparison is derivable — when any of these is true:
+
+    - there is no prior reading, or either reading is non-numeric;
+    - the two were recorded in **different units**: their raw floats measure
+      different things, so every delta, direction and trend between them is
+      meaningless (this is the "temperature rose 61.6°, trend improving" bug);
+    - the latest reading is **dated in the future**: which reading is actually
+      later is then unknowable, so the sign of the delta is a coin flip.
+
+    Fail-closed, matching this module's posture everywhere else: each consumer
+    renders neutral rather than assert a change it cannot stand behind. No unit
+    conversion is attempted — a wrong mapping would be worse than the omission,
+    and the card says out loud (see :func:`_trend`) that it is withholding.
+    """
+    if len(group) < 2:
+        return None
+    latest, prior = _numeric(group[0]), _numeric(group[1])
+    if latest is None or prior is None:
+        return None
+    if latest[1] != prior[1]:
+        return None
+    if _is_future(group[0]):
+        return None
+    return (latest, prior)
+
+
+def _decimals(x: float) -> int:
+    """How many decimal places a source value states (0 for a whole number).
+
+    Read off the value's shortest round-trip repr — i.e. the precision the record
+    itself carries — so a delta is never rendered coarser than its operands.
+    """
+    exponent = Decimal(repr(float(x))).normalize().as_tuple().exponent
+    return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+def _fmt_num(x: float, decimals: int = 0) -> str:
+    """Format a delta at ``decimals`` places — the precision of its operands.
+
+    Precision must never be coarser than the data it describes. Hardcoding one
+    decimal place (the old behaviour) printed every clinically decisive troponin
+    move as ``0.0``: with a reference band of ``<0.04``, the serial rise that
+    rules in MI (0.04 → 0.08) rendered as "up by zero". Callers pass the greater
+    of the two operands' :func:`_decimals`, which is always exactly enough — the
+    difference of two values with at most *n* decimal places has at most *n* —
+    and rounds away float representation noise (0.04 - 0.01 is 0.030000000000000002).
+
+    A whole number still renders as a whole number: no ``92.0``, and no
+    significant-figure formatting that would turn 1234 into ``1.23e+03``.
+    """
+    if x == int(x):
+        return str(int(x))
+    return f"{x:.{decimals}f}"
 
 
 def _relative(seconds: float) -> str:
@@ -425,18 +538,36 @@ def _relative(seconds: float) -> str:
 
 
 def _trend(group: list[Mapping[str, Any]]) -> str:
-    """Suffix describing the change vs the prior reading, or '' if none."""
+    """Suffix describing the change vs the prior reading, or '' if none.
+
+    Every branch that cannot derive a delta says so on the card instead of
+    printing a number it cannot defend — a withheld trend must be visible, never
+    a quiet omission dressed up as a routine reading.
+    """
+    latest = group[0]
+    if _is_future(latest):
+        # The record's clinical time is ahead of the clock, so neither the elapsed
+        # gap nor the ordering (and hence the delta's sign) means anything. Print
+        # the defect: a mistyped year is a thing a physician must see, not a thing
+        # to launder into "↑1 · 168d since prior".
+        return "  · dated in the future — verify record"
     if len(group) < 2:
         return ""
-    latest, prior = group[0], group[1]
+    prior = group[1]
     le, pe = _effective(latest), _effective(prior)
     gap = _relative((le - pe).total_seconds()) if (le and pe and le > pe) else ""
     tail = f" · {gap} since prior" if gap else ""
-    lv, pv = _numeric(latest), _numeric(prior)
-    if lv is None or pv is None:
+    pair = _trusted_pair(group)
+    if pair is None:
+        lv, pv = _numeric(latest), _numeric(prior)
+        if lv is not None and pv is not None and lv[1] != pv[1]:
+            # Same metric, two units: the delta between the raw floats is fiction.
+            return f"  · prior in {pv[1] or 'no unit'} — no trend{tail}"
         return f" · updated{tail}" if tail else ""
-    delta = lv - pv
+    (lv_value, _), (pv_value, _) = pair
+    delta = lv_value - pv_value
     if delta == 0:
         return f"  → no change{tail}"
     arrow = "↑" if delta > 0 else "↓"
-    return f"  {arrow}{_fmt_num(abs(delta))}{tail}"
+    places = max(_decimals(lv_value), _decimals(pv_value))
+    return f"  {arrow}{_fmt_num(abs(delta), places)}{tail}"

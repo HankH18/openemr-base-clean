@@ -15,6 +15,9 @@ Fail-closed throughout:
   query is patient-scoped *and* authorization-gated, there is no cross-patient
   leak.
 - A point with no groundable value or no usable timestamp is **dropped**.
+- A reading recorded in a **different unit** from the series' own (``Cel`` in a
+  ``degF`` history) is **dropped**, never relabelled with the series unit and
+  never converted — see :func:`_series_unit`.
 - An unknown/absent metric returns an **empty ``points`` list** — never a
   fabricated series.
 
@@ -133,12 +136,15 @@ async def observation_series(
     scored = [pt for res in matched if (pt := _point(res)) is not None]
     scored.sort(key=lambda pt: pt[0])
 
+    # One unit for the whole series, and *only* the readings recorded in it: a
+    # point is never relabelled with another point's unit (see _series_unit).
+    unit = _series_unit(scored)
     series = ObservationSeries(
         patient_id=pid.value,
         metric=metric,
-        unit=_series_unit(matched),
-        reference_range=_series_range(matched),
-        points=[point for _, point in scored],
+        unit=unit,
+        reference_range=_series_range([res for res in matched if _unit(res) == unit]),
+        points=[point for _, point_unit, point in scored if point_unit == unit],
     )
 
     # HIPAA §164.312(b): this authorized read returned PHI (lab values), so it
@@ -191,13 +197,19 @@ def _bundle_resources(bundle: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return out
 
 
-def _point(res: Mapping[str, Any]) -> tuple[datetime, ObservationSeriesPoint] | None:
-    """Ground one Observation into a series point, or ``None`` to drop it.
+def _point(res: Mapping[str, Any]) -> tuple[datetime, str, ObservationSeriesPoint] | None:
+    """Ground one Observation into ``(instant, unit, point)``, or ``None`` to drop it.
 
     Fail-closed: no groundable value, no timestamp, an unparseable timestamp, or
     a missing resource id all drop the point rather than fabricate a reading. The
     stored ``value``/``timestamp`` are verbatim from the same extractors the
     verification gate uses, so a plotted point is as auditable as a claim.
+
+    The reading's own display unit is returned alongside — never folded into the
+    point — so the caller can keep the series to a single unit. It rides beside
+    the point rather than on it because ``ObservationSeriesPoint`` is a published
+    response contract; the caller drops mismatched points, so every point that
+    survives is in the series' unit and nothing needs a per-point label.
     """
     described = describe_resource(res)
     if described is None:
@@ -219,6 +231,7 @@ def _point(res: Mapping[str, Any]) -> tuple[datetime, ObservationSeriesPoint] | 
 
     return (
         instant,
+        _unit(res),
         ObservationSeriesPoint(
             resource_id=rid,
             value=value,
@@ -260,17 +273,41 @@ def _raw_abnormal(res: Mapping[str, Any]) -> str:
     return raw if isinstance(raw, str) else ""
 
 
-def _series_unit(resources: Sequence[Mapping[str, Any]]) -> str:
-    """The metric's display unit — the first non-empty across its readings."""
-    for res in resources:
-        unit = _unit(res)
-        if unit:
-            return unit
-    return ""
+def _series_unit(points: Sequence[tuple[datetime, str, ObservationSeriesPoint]]) -> str:
+    """The series' unit: the unit of the **newest** usable reading (``''`` if none).
+
+    Not "the first non-empty unit across the readings" (the old rule). OpenEMR
+    permits a temperature in ``Cel`` and in ``degF`` — and a weight in kg and lb —
+    within one metric's history, and that rule stamped one reading's unit onto
+    every point in the series: 37.0 and 98.6 plotted on a single axis labelled °F,
+    which a physician reads as profound hypothermia. The unit is now decided by
+    one reading and applied only to readings that actually carry it; the caller
+    drops the rest.
+
+    The newest reading wins so the chart's axis agrees with the unit the rounds
+    card prints for that metric's current value. Consequence, accepted knowingly:
+    if the newest reading switches units, older points in the old unit drop out
+    and the chart goes sparse until history refills in the new unit. A sparse
+    chart is honest; a relabelled one is a lie.
+
+    Points are **dropped rather than converted** on purpose.
+    ``ObservationSeriesPoint.value`` is the verbatim source string — the same
+    discipline a claim's citation keeps — so a converted point would plot a number
+    that appears in no record and could not be audited back to one. °C→°F is an
+    exact mapping and would be safe to compute, but there is nowhere honest to put
+    the result under this contract, and a table that also had to cover kg/lb,
+    mmol/L↔mg/dL (analyte-specific) and the rest would be a fabrication surface.
+    """
+    return points[-1][1] if points else ""
 
 
 def _series_range(resources: Sequence[Mapping[str, Any]]) -> ReferenceRange | None:
-    """The metric's reference band — the first derivable across its readings."""
+    """The metric's reference band — the first derivable across its readings.
+
+    The caller passes only the readings recorded in the series' unit, so the band
+    describes the axis the points are plotted on: a ``Cel`` record's 36.1-37.2
+    can never end up bounding a °F chart.
+    """
     for res in resources:
         rng = _reference_range_of(res)
         if rng is not None:
