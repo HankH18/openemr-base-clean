@@ -455,3 +455,47 @@ schema-validated field/value pairs in a labeled non-citable block, and every cla
 a tool-returned FHIR resource which the value-match gate verifies) -- the auditor explicitly
 declined to report it as a finding since it could not be demonstrated without a live model
 call. That restraint is worth more than a speculative finding.
+
+## Cycle 5 CLOSED — verified live on the deployed build (HEAD ac48255)
+
+1070 tests green, mypy clean, ingestion 8, pass_rate 97.83, harness intact.
+
+DoS proven closed by firing the REAL attack payloads at the deployed rasterizer:
+
+  ocr_dpi=200  max_page_pixels=50,000,000  max_pages=1000
+  normal letter 8.5x11    329 B -> RENDERED 1 page, peak RSS 0.11 GB   (unaffected)
+  ATTACK 60x60in          331 B -> REJECTED "144.0 megapixels at 200 DPI"   0.11 GB
+  ATTACK 200x200in        333 B -> REJECTED "1600.0 megapixels at 200 DPI"  0.11 GB
+
+Peak RSS never moves off 0.11 GB — nothing is allocated, which is the point.
+Was 1.10 GB and 3.62 GB. mem_limit live: 1073741824 (1 GiB exactly).
+
+### Two lessons from this wave, now in the skills
+
+**The metric went quiet under the condition it measured.** Measuring loop starvation as
+MAX OBSERVED STALL reported 1.1 ms while the loop was blocked for seconds: a starved
+ticker records no sample for the interval it was starved THROUGH, so worse starvation =
+fewer samples showing it. Rewritten to assert TICKS SERVED (4 inline vs 299 offloaded).
+Now stub-blindness taxonomy #5a.
+
+**Sabotage with the plausible WRONG FIX, not just deletion.** Deleting a guard proves the
+test notices absence — the easy half. The valuable variant is the near-miss someone would
+actually commit: "check the area AFTER render" still went red, proving the tests demand
+rejection BEFORE allocation rather than merely catching the raise. Now in LEARNED.md.
+
+### Honest limits recorded, not buried
+- **The Langfuse pseudonym is NOT de-identification.** 45 CFR 164.514(c) requires a
+  re-identification code not be "derived from or related to" the individual; an HMAC of
+  the pid IS so derived. The dataset remains PHI under Safe Harbor and STILL NEEDS A BAA.
+  Real risk reduction (direct identifier -> keyed pseudonym), but the P1 as written is
+  NOT retired. Human decision.
+- **Batching does not bound Anthropic spend** and cannot — every page is still sent once;
+  only the document cap bounds spend. Written into the module docstring so nobody sells
+  it as a cost control.
+- The scrub knows `patient_id`/`patient_ids` only; a future call site inventing `pid=` or
+  `mrn=` egresses raw. Choke point for KNOWN keys, not a general PHI filter.
+- rasterize_pdf still accumulates every PNG in a list (1000 letter pages ~0.1-0.6 GB
+  retained). Within budget; streaming is the next bound.
+- A latent bug fixed en route: THE PROMPT NEVER MENTIONED PAGE NUMBERS, so on multi-page
+  docs the model likely returned page_no=None and the reconciler defaulted every fact to
+  page 1 — silently searching the wrong page.
