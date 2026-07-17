@@ -20,7 +20,9 @@ import base64
 import json
 from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, get_args
+
+from pydantic import BaseModel
 
 from copilot.config import Settings
 from copilot.documents.fixtures import STUB_INTAKE_FACTS, STUB_LAB_FACTS, STUB_MEDLIST_FACTS
@@ -207,8 +209,60 @@ class ClaudeVision:
         # real documents occasionally make the model return ``facts`` (or the whole
         # object) as a JSON string instead of structured JSON.
         payload = _destringify(payload)
+        # Drop null-valued keys the model invented (see ``_drop_null_extras``).
+        payload = _drop_null_extras(payload, schema)
         # Strict validation — a wrong-typed or partial payload raises here.
         return schema.model_validate(payload)
+
+
+def _fact_model(
+    schema: type[LabReport] | type[IntakeForm] | type[MedicationListDocument],
+) -> type[BaseModel] | None:
+    """The per-fact model behind a document schema's ``facts: list[X]`` field."""
+    field = schema.model_fields.get("facts")
+    if field is None:
+        return None
+    for arg in get_args(field.annotation):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg
+    return None
+
+
+def _without_null_extras(data: dict[str, Any], model: type[BaseModel]) -> dict[str, Any]:
+    """Drop keys ``model`` does not declare **whose value is None**."""
+    declared = set(model.model_fields)
+    return {k: v for k, v in data.items() if k in declared or v is not None}
+
+
+def _drop_null_extras(
+    payload: dict[str, Any],
+    schema: type[LabReport] | type[IntakeForm] | type[MedicationListDocument],
+) -> dict[str, Any]:
+    """Drop null-valued keys the model invented, before strict validation.
+
+    Observed live against real Claude vision on a real intake form: the model
+    intermittently emits a key that exists in NO schema (``value_frequency: None``)
+    on a single fact, and ``extra="forbid"`` then rejects the ENTIRE 42-fact
+    extraction over it. Intermittent, so a passing run proves nothing — and
+    invisible to every keyless test, because ``StubVision`` replays a recording
+    that never invents a key. Classic fixture-shaped != reality-shaped.
+
+    This does not weaken the parse boundary. A key explicitly set to ``None``
+    carries no information — it is indistinguishable from the model omitting it,
+    so dropping it loses nothing. An unexpected key that carries an actual VALUE
+    still raises: that is real data landing somewhere the schema does not model,
+    which we want loud, not silently discarded. Nothing is coerced, and a missing
+    required field still fails.
+    """
+    fact_model = _fact_model(schema)
+    cleaned = _without_null_extras(payload, schema)
+    facts = cleaned.get("facts")
+    if fact_model is None or not isinstance(facts, list):
+        return cleaned
+    cleaned["facts"] = [
+        _without_null_extras(f, fact_model) if isinstance(f, dict) else f for f in facts
+    ]
+    return cleaned
 
 
 def _tool_input(response: Any, name: str) -> dict[str, Any] | None:
