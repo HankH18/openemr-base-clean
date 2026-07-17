@@ -927,3 +927,52 @@ and #55 was sitting directly in it.
   in your experiment" rule. Redone cleanly: 4 red.
 - the junk-duplicate sync is STILL active (a " 3.py" appeared). Cleaned; source is clean;
   only .venv/node_modules retain them. Worth a .gitignore guard.
+
+## Cycle 9 CLOSED — deployed and verified live (HEAD 02e443f, tree 9167 files)
+
+1227 tests green, mypy clean, gate 0, pass_rate 97.83, harness intact.
+Verified live: foreign conversation_id -> REFUSED (was PHI replay); fresh thread still opens.
+
+### Fixed (issues 59-62)
+- **#59 P0 LIVE — POST /v1/chat replayed a foreign conversation_id with no ownership check.**
+  The SIBLING of the cycle-4 GET fix; I created this blind spot by fixing only the GET
+  surface. Clinician A supplying clinician B's conversation_id got B's PHI ("HIV+, viral
+  load 40k") replayed into the LLM context, A's turns appended into B's thread, and the
+  audit misattributed the access. Fixed: _resolve_conversation now authorizes patient-match
+  (matching GET) before any PHI load; foreign == nonexistent == 404, no oracle. 8d62bd5.
+- **#60 guideline_evidence [] conflated routed-zero-hit with never-routed** (cf0e3b5). The
+  contract SWORE it distinguished them; the supervisor collapsed both to []. A lost/degraded
+  corpus read as "no guidelines apply." Fixed with an explicit evidence_retrieved boolean
+  threaded end-to-end. Degrade-on-zero-hit considered and DECLINED (would silently withhold
+  answers that serve today — a product decision, flagged).
+- **#61 write-back: confirm committed an arbitrary/unproposed/tampered candidate** (02e443f).
+  NOT live (writeback off) but the enable-day safety net. Probed: proposed 72, confirmed 180
+  -> chart got 180; confirmed with NO propose -> 200; settled key + different candidate ->
+  false-success replay. propose now persists the candidate; confirm binds to it and commits
+  the STORED candidate, not the client's. Closes A/B/C.
+- **#62 a FOURTH encoding of the write defect** — test_write_carries_physician_token confirmed
+  without proposing (probe B in smart mode). The agent correctly STOPPED rather than edit it.
+  I corrected the FIXTURE to propose-then-confirm (the real UI flow); the physician-token
+  assertion is untouched. Verdict: test setup stale, not the assertion.
+
+### Process notes
+- TWO more agents died on API 529 in earlier cycles; a third (RAG) and fourth (critic) also
+  died mid-work and I finished both by hand. The API is straining. Still answering.
+- I made a COMMIT-HYGIENE error: three agents shared chat.py/service.py, and staging by path
+  swept the conflation fix's plumbing into the IDOR commit. The code composes correctly
+  (verified 1227 green with all three coexisting); the conflation commit documents the split
+  honestly. A cleaner approach when agents share files: commit the shared file's combined diff
+  once with a message covering both, or sequence same-file agents instead of parallelizing.
+- Auditor's CLEAN list this cycle (valuable): iteration cap fails safe; withhold-decision
+  consistency holds (no fail-open path); critic fail-safe on LLM error; no turn-level hang
+  (every outbound call individually time-bounded); history round-trips without role
+  corruption; append-only holds for every REACHABLE write kind; write value fidelity intact
+  (no 72-vs-7.2 class bug); write authz re-checked at confirm.
+- Auditor also flagged (NOT yet fixed): conversation history replayed into the prompt is
+  UNBOUNDED (no cap at any layer) -- a long thread grows the prompt without bound, re-sends
+  the whole history every turn (quadratic cost), and eventually exceeds the context window ->
+  400 -> that thread permanently un-answerable. And: a single worker exception aborts the
+  whole turn and discards the other worker's good result (availability, fails SAFE on
+  correctness). Both carried to cycle 10.
+
+### HALT: still not met. Cycles 5-9 found 2,9,3,4,4 live/latent defects. Base rate 100%.
