@@ -8,7 +8,8 @@ can use whichever tool you have:
   **Droplet** environment (top-right).
 - **Postman** — `AgentForge.postman_collection.json`. Postman → *Import* → select
   that file. Set the collection variable `baseUrl` (defaults to
-  `http://localhost:8010`).
+  `http://localhost:8000` — the port the local agent listens on, per the root
+  `README.md` "Run locally" and `agent/Dockerfile`'s `CMD … --port 8000`).
 
 Both point every request at a `{{baseUrl}}` variable and are kept in sync (the
 same request set exists in both formats). Between them they cover **every path
@@ -211,7 +212,7 @@ Both environments define:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `baseUrl` | Local `http://localhost:8010` / Droplet `https://agentforge.hankholcomb.com` | every request targets it |
+| `baseUrl` | Local `http://localhost:8000` / Droplet `https://agentforge.hankholcomb.com` | every request targets it |
 | `clinician_id` | `1` | acting clinician (authoritative in disabled mode) |
 | `patient_id` | `101` | subject patient; must be on the round |
 | `conversation_id` | `1` | for *Get Conversation* |

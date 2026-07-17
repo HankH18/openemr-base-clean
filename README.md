@@ -46,13 +46,14 @@ or network; full E2E acceptance suite passing.
 
 New this week (authoritative design: [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md)):
 
-- **Document ingestion** — `attach_and_extract` / `POST /v1/documents` accept two document types,
-  `lab_pdf` and `intake_form`. Pipeline: PDF rasterize → **Tesseract OCR** → **Claude-vision**
-  structured extraction → strict **Pydantic schema** validation (a field that doesn't validate is
-  rejected, not coerced) → OCR reconciliation (attach bounding box + match confidence). The source
-  document is stored in OpenEMR (`POST /api/patient/:pid/document`); derived extractions/facts are
-  **append-only** in the agent DB. Every extracted fact carries a **per-fact citation with a page
-  bbox**; a value that can't be located on the page is flagged `supported=false`, never invented.
+- **Document ingestion** — `attach_and_extract` / `POST /v1/documents` accept three document types,
+  `lab_pdf`, `intake_form` and `medication_list`. Pipeline: PDF rasterize → **Tesseract OCR** →
+  **Claude-vision** structured extraction → strict **Pydantic schema** validation (a field that
+  doesn't validate is rejected, not coerced) → OCR reconciliation (attach bounding box + match
+  confidence). The source document is stored in OpenEMR (`POST /api/patient/:pid/document`);
+  derived extractions/facts are **append-only** in the agent DB. Every extracted fact carries a
+  **per-fact citation with a page bbox**; a value that can't be located on the page is flagged
+  `supported=false`, never invented.
 - **Hybrid RAG + rerank** over a small hospitalist guideline corpus (4 documents / 19 chunks) —
   sparse (Postgres FTS) + dense (Voyage `voyage-3.5` embeddings; **pgvector stores** the vectors,
   ranking is a **Python-side cosine over the loaded chunk set** — no vector operator, no ANN index,
