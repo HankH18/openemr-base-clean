@@ -48,6 +48,7 @@ from copilot.domain.primitives import PatientId
 from copilot.fhir.provider import build_write_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import Observability, build_observability
 
 _UPLOAD_CATEGORY = "copilot-ingested"
 
@@ -149,6 +150,7 @@ class DocumentIngestionService:
         write_client_factory: Callable[[], DocumentUploader] | None = None,
         ocr: OcrEngine | None = None,
         vision: VisionExtractor | None = None,
+        observability: Observability | None = None,
     ) -> None:
         self._settings = settings
         self._write_client_factory: Callable[[], DocumentUploader] = write_client_factory or (
@@ -156,6 +158,10 @@ class DocumentIngestionService:
         )
         self._ocr = ocr or build_ocr(settings)
         self._vision = vision or build_vision(settings)
+        # Defaults from settings like every other collaborator here, so the F8
+        # upload route emits the span without an edit at its call site; keyless
+        # (no Langfuse creds) resolves to NoopObservability — zero behaviour change.
+        self._obs: Observability = observability or build_observability(settings)
 
     async def attach_and_extract(
         self,
@@ -166,45 +172,68 @@ class DocumentIngestionService:
         filename: str | None = None,
         correlation_id: str = "",
     ) -> IngestionResult:
-        """Ingest one document end-to-end. Fails closed on any mid-pipeline error."""
+        """Ingest one document end-to-end. Fails closed on any mid-pipeline error.
+
+        Wrapped in the ``doc.ingest`` span the OBSERVABILITY.md §7.1
+        ingestion-latency SLO reads its p95 from, with the vision step as a
+        nested ``extraction.run`` child. Span attributes are counts, ids and
+        the document *type* only — never page text, OCR tokens, extracted
+        clinical values, or the filename (which can itself carry a patient name).
+        """
         pid = patient_id.value
         kind = parse_doc_type(doc_type)
         correlation = correlation_id or _new_correlation_id()
         content_hash = hashlib.sha256(content).hexdigest()
 
-        reuse = await _find_reusable_document(pid, content_hash)
-        if reuse is not None:
-            document_id, openemr_document_id = reuse
-            reused = True
-            pages, tokens_by_page = await _load_persisted_pages(document_id)
-        else:
-            document_id = await _create_pending_document(
-                pid, kind, filename, content_hash, correlation
-            )
-            reused = False
-            openemr_document_id = await self._upload(document_id, pid, content, kind, filename)
-            pages, tokens_by_page = await self._rasterize_and_ocr(document_id, content)
-            await _mark_status(
-                document_id,
-                IngestionStatus.extracting,
-                openemr_document_id=openemr_document_id,
-                page_count=len(pages),
-            )
-            await _persist_pages(document_id, pages, tokens_by_page)
+        async with self._obs.span(
+            "doc.ingest", patient_id=pid, doc_type=kind.value, correlation_id=correlation
+        ) as span:
+            reuse = await _find_reusable_document(pid, content_hash)
+            if reuse is not None:
+                document_id, openemr_document_id = reuse
+                reused = True
+                pages, tokens_by_page = await _load_persisted_pages(document_id)
+            else:
+                document_id = await _create_pending_document(
+                    pid, kind, filename, content_hash, correlation
+                )
+                reused = False
+                openemr_document_id = await self._upload(document_id, pid, content, kind, filename)
+                pages, tokens_by_page = await self._rasterize_and_ocr(document_id, content)
+                await _mark_status(
+                    document_id,
+                    IngestionStatus.extracting,
+                    openemr_document_id=openemr_document_id,
+                    page_count=len(pages),
+                )
+                await _persist_pages(document_id, pages, tokens_by_page)
 
-        facts = await self._extract(document_id, pages, kind)
-        reconciled = _reconcile_facts(facts, tokens_by_page, self._settings)
-        extraction_id, fact_count = await _persist_extraction(
-            pid, document_id, self._vision.model_name, reconciled, correlation
-        )
-        return IngestionResult(
-            status=IngestionStatus.extracted,
-            source_document_id=document_id,
-            openemr_document_id=openemr_document_id,
-            extraction_id=extraction_id,
-            fact_count=fact_count,
-            reused_upload=reused,
-        )
+            facts = await self._extract(document_id, pages, kind)
+            reconciled = _reconcile_facts(facts, tokens_by_page, self._settings)
+            extraction_id, fact_count = await _persist_extraction(
+                pid, document_id, self._vision.model_name, reconciled, correlation
+            )
+            span.set_attribute("source_document_id", document_id)
+            span.set_attribute("page_count", len(pages))
+            span.set_attribute("fact_count", fact_count)
+            span.set_attribute("reused_upload", reused)
+            span.set_attribute("status", IngestionStatus.extracted.value)
+            span.set_output(
+                {
+                    "status": IngestionStatus.extracted.value,
+                    "page_count": len(pages),
+                    "fact_count": fact_count,
+                    "reused_upload": reused,
+                }
+            )
+            return IngestionResult(
+                status=IngestionStatus.extracted,
+                source_document_id=document_id,
+                openemr_document_id=openemr_document_id,
+                extraction_id=extraction_id,
+                fact_count=fact_count,
+                reused_upload=reused,
+            )
 
     async def _upload(
         self,
@@ -253,13 +282,26 @@ class DocumentIngestionService:
     async def _extract(
         self, document_id: int, pages: Sequence[RasterizedPage], kind: DocumentType
     ) -> list[ExtractedFact]:
-        """Run structured extraction; fail closed on extraction/validation error."""
-        try:
-            report: ExtractionResult = await self._vision.extract(pages, kind)
-            return list(report.facts)
-        except Exception:
-            await _mark_status(document_id, IngestionStatus.failed)
-            raise
+        """Run structured extraction; fail closed on extraction/validation error.
+
+        Opened inside ``doc.ingest``, so ``extraction.run`` is its child — the
+        vision call is what dominates the ingestion SLO, and separating it lets
+        a breach be attributed to the model call rather than to raster/OCR.
+        """
+        async with self._obs.span(
+            "extraction.run", doc_type=kind.value, page_count=len(pages)
+        ) as span:
+            span.set_attribute("model", self._vision.model_name)
+            try:
+                report: ExtractionResult = await self._vision.extract(pages, kind)
+            except Exception:
+                span.set_attribute("failed", True)
+                await _mark_status(document_id, IngestionStatus.failed)
+                raise
+            facts = list(report.facts)
+            span.set_attribute("fact_count", len(facts))
+            span.set_output({"fact_count": len(facts)})
+            return facts
 
 
 async def attach_and_extract(

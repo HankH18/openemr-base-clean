@@ -44,6 +44,7 @@ from copilot.domain.primitives import CitationSourceType, GuidelineCitation
 from copilot.memory.db import session_scope
 from copilot.memory.models import GuidelineChunkRow
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import NoopObservability, Observability, build_observability
 from copilot.rag._lexical import overlap_score, tokenize
 from copilot.rag.deidentify import deidentify
 from copilot.rag.embeddings import Embedder, build_embedder
@@ -133,11 +134,13 @@ class GuidelineRetriever:
         settings: Settings,
         embedder: Embedder,
         reranker: Reranker,
+        observability: Observability | None = None,
     ) -> None:
         self._settings = settings
         self._embedder = embedder
         self._reranker = reranker
         self._is_postgres = settings.database_url.startswith("postgresql")
+        self._obs: Observability = observability or NoopObservability()
 
     async def retrieve(self, query: str, top_k: int = 4) -> list[GuidelineEvidence]:
         """Return the top-``k`` guideline-evidence chunks for ``query``.
@@ -146,34 +149,53 @@ class GuidelineRetriever:
         retrieve) before any embedder/reranker call, so egress is both
         PHI-scrubbed and recall-enriched. An empty corpus returns ``[]`` —
         explicit no-evidence, never a fabricated cite.
-        """
-        scrubbed = deidentify(query)
-        # Abbreviation expansion runs strictly AFTER the PHI choke point, so it
-        # only ever sees de-identified text and can never re-introduce PHI.
-        expanded = expand_query(scrubbed)
-        async with session_scope() as session:
-            rows = await MemoryRepository(session).list_guideline_chunks()
-            if not rows:
-                return []
-            # Dense: embed the (de-identified, expanded) query at retrieve time.
-            query_vec = self._embedder.embed([expanded])[0]
-            dense_ids = _dense_rank(rows, query_vec)
-            sparse_ids = await self._sparse_rank(session, rows, expanded)
-            candidates = {
-                str(row.id): _Candidate(
-                    chunk_id=str(row.id),
-                    document_id=str(row.guideline_document_id),
-                    section=row.section or "general",
-                    content=row.content,
-                )
-                for row in rows
-            }
 
-        scores = _boost_section_matches(rrf_scores(sparse_ids, dense_ids), candidates, expanded)
-        fused = [cid for cid, _score in sorted(scores.items(), key=lambda kv: -kv[1])]
-        fused_candidates = [candidates[cid] for cid in fused if cid in candidates]
-        ordered = self._apply_rerank(expanded, fused_candidates)
-        return [_to_evidence(candidate, scores) for candidate in ordered[:top_k]]
+        Wrapped in the ``guideline.retrieve`` span the OBSERVABILITY.md §7.1
+        evidence-retrieval SLO reads its p95 from. The span nests under whatever
+        span is already open (the graph's ``evidence-retriever.retrieve``, the
+        chat span, …), so it lands inside the correlation-id trace rather than
+        as an orphan. Attributes are counts only — never the query text, which
+        may carry PHI even before the de-identify choke point.
+        """
+        async with self._obs.span("guideline.retrieve", top_k=top_k) as span:
+            scrubbed = deidentify(query)
+            # Abbreviation expansion runs strictly AFTER the PHI choke point, so it
+            # only ever sees de-identified text and can never re-introduce PHI.
+            expanded = expand_query(scrubbed)
+            async with session_scope() as session:
+                rows = await MemoryRepository(session).list_guideline_chunks()
+                if not rows:
+                    # An empty corpus is the deploy-skipped-the-ingest failure the
+                    # `guideline_corpus` readiness probe grades; record it on the
+                    # span so the trace explains a zero-evidence answer.
+                    span.set_attribute("corpus_chunks", 0)
+                    span.set_attribute("hits", 0)
+                    span.set_output({"hits": 0, "corpus_chunks": 0})
+                    return []
+                # Dense: embed the (de-identified, expanded) query at retrieve time.
+                query_vec = self._embedder.embed([expanded])[0]
+                dense_ids = _dense_rank(rows, query_vec)
+                sparse_ids = await self._sparse_rank(session, rows, expanded)
+                candidates = {
+                    str(row.id): _Candidate(
+                        chunk_id=str(row.id),
+                        document_id=str(row.guideline_document_id),
+                        section=row.section or "general",
+                        content=row.content,
+                    )
+                    for row in rows
+                }
+
+            scores = _boost_section_matches(rrf_scores(sparse_ids, dense_ids), candidates, expanded)
+            fused = [cid for cid, _score in sorted(scores.items(), key=lambda kv: -kv[1])]
+            fused_candidates = [candidates[cid] for cid in fused if cid in candidates]
+            ordered = self._apply_rerank(expanded, fused_candidates)
+            evidence = [_to_evidence(candidate, scores) for candidate in ordered[:top_k]]
+            span.set_attribute("corpus_chunks", len(rows))
+            span.set_attribute("candidates", len(fused_candidates))
+            span.set_attribute("hits", len(evidence))
+            span.set_output({"hits": len(evidence), "corpus_chunks": len(rows)})
+            return evidence
 
     async def _sparse_rank(
         self, session: AsyncSession, rows: list[GuidelineChunkRow], query: str
@@ -210,12 +232,23 @@ def build_retriever(
     *,
     embedder: Embedder | None = None,
     reranker: Reranker | None = None,
+    observability: Observability | None = None,
 ) -> GuidelineRetriever:
-    """Build the hybrid retriever; ``None`` injections use the keyless stubs."""
+    """Build the hybrid retriever; ``None`` injections use the keyless stubs.
+
+    ``observability`` defaults from ``settings`` exactly as the embedder and
+    reranker do, so every existing caller (the graph's evidence-retriever
+    worker, the chat route) emits the ``guideline.retrieve`` span without an
+    edit at the call site. Keyless — no Langfuse creds — resolves to
+    ``NoopObservability``, so the span is free and behaviour is unchanged.
+    """
     return GuidelineRetriever(
         settings=settings,
         embedder=embedder if embedder is not None else build_embedder(settings),
         reranker=reranker if reranker is not None else build_reranker(settings),
+        observability=(
+            observability if observability is not None else build_observability(settings)
+        ),
     )
 
 

@@ -279,12 +279,17 @@ docker compose -f docker-compose.deploy.yml exec agent \
 `status` (`ok` / `degraded` / `down`) alongside the `ok` boolean, so a
 degraded-but-serving dependency is distinct from a hard failure. It probes
 `document_store` + `pgvector` (the agent Postgres + vector extension),
-`embedder` + `reranker` (Voyage/Cohere, or the keyless stubs — reported
-`degraded` advisory when running on the stub), and `openemr_fhir` + `llm` +
-`langfuse`. A 503 means a **gating** dependency is down (advisory ones —
-`langfuse`, the keyless stubs — never cause a 503). `GET /status` returns the
-agent health aggregates (ingestion count, extraction pass rate, retrieval hit
-rate, eval-by-category, p50/p95 latency, error rate).
+`guideline_corpus` (the corpus is actually populated — `degraded` advisory when
+empty, i.e. step 4 below was skipped), `embedder` + `reranker` (Voyage/Cohere, or
+the keyless stubs — reported `degraded` advisory when running on the stub), and
+`openemr_fhir` + `llm` + `langfuse`. A 503 means a **gating** dependency is down
+(advisory ones — `langfuse`, `guideline_corpus`, the keyless stubs — never cause
+a 503). `GET /status` returns the agent health aggregates (ingestion count,
+extraction pass rate, eval-by-rubric over the 53-case golden set, p50/p95
+latency, error rate), each labelled `measured:` (live agent-DB) or `recorded:`
+(committed artifact) in its `metric_sources` block. `retrieval_hit_rate` is
+reported **unavailable** — no retrieval telemetry is persisted, so the `0.0` is a
+contract placeholder rather than a measurement (OBSERVABILITY.md §7.3).
 
 > **Packaging note (Week 2):** the agent image installs the **tesseract** OCR
 > binary (local, in-container OCR for document ingestion — PHI never leaves the
@@ -660,6 +665,8 @@ docker compose -f docker-compose.deploy.yml --env-file .env up -d agent caddy
 
 # 7. Verify graded readiness — document_store ok (gating); pgvector/embedder/
 #    reranker may report `degraded`/`stub (keyless)` and that is expected & serving.
+#    guideline_corpus must read `ok` with an `N chunks` detail: `degraded` +
+#    "empty corpus" means step 4 did not take, and RAG will serve zero evidence.
 docker compose -f docker-compose.deploy.yml exec agent \
   python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
 ```
