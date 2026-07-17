@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from anyio import to_thread
+
 from copilot.config import Settings, get_settings
 from copilot.documents.ocr import OcrEngine, build_ocr
 from copilot.documents.raster import RasterizedPage, rasterize_pdf
@@ -262,22 +264,58 @@ class DocumentIngestionService:
     async def _rasterize_and_ocr(
         self, document_id: int, content: bytes
     ) -> tuple[list[RasterizedPage], dict[int, list[dict[str, object]]]]:
-        """Render + OCR every page; fail closed if the bytes are not a readable PDF."""
+        """Render + OCR every page; fail closed if the bytes are not a readable PDF.
+
+        The render + OCR work runs on a worker thread via ``to_thread.run_sync``,
+        mirroring ``supervisor._review`` — because both ``rasterize_pdf`` and
+        ``OcrEngine.recognize`` are synchronous, CPU-bound, and were being called
+        straight from this coroutine. The upload route awaits ``attach_and_extract``
+        inline in its handler, so every millisecond spent here was a millisecond
+        the event loop could not serve anyone else: a 300-page PDF (a 36.5 KB
+        upload, and an ordinary discharge summary) blocked the loop for 8.1
+        seconds on raster ALONE, with OCR excluded — measured max stall for a
+        concurrent request was 8102 ms. OCR is far slower per page than raster, so
+        the real stall was minutes. One worker on one vCPU: no second core absorbs
+        it, and every clinician loses chat, rounds, and document reads meanwhile.
+
+        ``OcrEngine.recognize`` is a plain ``def`` on a Protocol with several
+        implementors (``StubOcr``, ``TesseractOcr``, test fakes); making it async
+        would be a breaking contract change for all of them and would force the
+        pure-Python ``StubOcr`` to become a coroutine for no reason. Moving the
+        existing sync body to a thread changes no semantics — the exception still
+        propagates out of ``run_sync`` into the ``except`` below, so the
+        fail-closed ``status='failed'`` transition is untouched.
+        """
         try:
-            pages = rasterize_pdf(content, dpi=self._settings.ocr_dpi)
-            tokens_by_page: dict[int, list[dict[str, object]]] = {}
-            for page in pages:
-                tokens = self._ocr.recognize(
-                    page.image,
-                    page_no=page.page_no - 1,
-                    width=page.width,
-                    height=page.height,
-                )
-                tokens_by_page[page.page_no] = [token.to_dict() for token in tokens]
-            return pages, tokens_by_page
+            return await to_thread.run_sync(self._rasterize_and_ocr_sync, content)
         except Exception:
             await _mark_status(document_id, IngestionStatus.failed)
             raise
+
+    def _rasterize_and_ocr_sync(
+        self, content: bytes
+    ) -> tuple[list[RasterizedPage], dict[int, list[dict[str, object]]]]:
+        """The synchronous render + OCR body. Runs on a worker thread.
+
+        Caps come from ``Settings`` so an operator on a bigger box can raise them
+        without a code change; the defaults are derived in ``raster.py``.
+        """
+        pages = rasterize_pdf(
+            content,
+            dpi=self._settings.ocr_dpi,
+            max_page_pixels=self._settings.raster_max_page_pixels,
+            max_pages=self._settings.raster_max_pages,
+        )
+        tokens_by_page: dict[int, list[dict[str, object]]] = {}
+        for page in pages:
+            tokens = self._ocr.recognize(
+                page.image,
+                page_no=page.page_no - 1,
+                width=page.width,
+                height=page.height,
+            )
+            tokens_by_page[page.page_no] = [token.to_dict() for token in tokens]
+        return pages, tokens_by_page
 
     async def _extract(
         self, document_id: int, pages: Sequence[RasterizedPage], kind: DocumentType
