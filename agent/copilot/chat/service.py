@@ -66,6 +66,23 @@ _STEP_AGENT = "chat-agent.answer"
 _STEP_VERIFY = "serve-verifier.verify_answer"
 
 
+class ConversationAccessError(Exception):
+    """A caller-supplied ``conversation_id`` the caller may not use.
+
+    Raised by :meth:`ChatService._resolve_conversation` when a supplied
+    conversation id does not belong to the request's patient — because the
+    conversation does not exist, or because it is another patient's thread.
+
+    Deliberately carries NO field distinguishing "foreign" from "nonexistent":
+    the chat route maps it to the SAME 404 (with the same detail) that
+    ``GET /v1/conversations/{id}`` returns for both cases, so a caller cannot
+    turn the autoincrement id space into an existence oracle (walk 1..N, watch
+    the status split). The service stays HTTP-agnostic; the route owns the
+    status/body — the same division the GET route uses, whose refusal is raised
+    in its route handler.
+    """
+
+
 class _TurnOutcome(BaseModel):
     """What one grounded-answer path produced, before persistence + shaping.
 
@@ -81,21 +98,44 @@ class _TurnOutcome(BaseModel):
     action: VerificationAction
     passed: bool
     guideline_evidence: list[GuidelineEvidence] | None = None
+    evidence_retrieved: bool = False
     handoffs: list[Handoff] = Field(default_factory=list)
 
 
 class ChatReply(BaseModel):
     """The assembled result of one chat turn, ready for HTTP shaping.
 
-    ``guideline_evidence`` distinguishes three states, and the ``None`` vs ``[]``
-    difference is load-bearing for the caller:
+    ``guideline_evidence`` and ``evidence_retrieved`` together describe the
+    turn's guideline-evidence state. The ``None`` vs ``[]`` split on the list is
+    still load-bearing for the route; the boolean resolves the one ambiguity the
+    list alone cannot.
+
+    ``guideline_evidence``:
 
     - ``None`` — this turn ran the inline path, which does not retrieve. The
       route is responsible for retrieving the evidence block itself.
-    - ``[]`` — the graph ran and the supervisor did not route to the
-      evidence-retriever (no guideline need in the question), so there is
-      genuinely no evidence for this turn.
+    - ``[]`` — the graph ran and produced no evidence chunks. On its own this is
+      ambiguous; read it together with ``evidence_retrieved`` (below).
     - non-empty — exactly the chunks the evidence-retriever worker retrieved.
+
+    ``evidence_retrieved`` — whether the graph's evidence-retriever worker
+    actually RAN this turn (the graph sets it from ``evidence_report is not
+    None``; ``False`` on the inline path, which has no such worker). It exists to
+    split the two states an empty ``guideline_evidence`` list would otherwise
+    conflate:
+
+    - ``False`` with ``[]`` — the supervisor did not route to the
+      evidence-retriever (no guideline need), OR the inline path. There is
+      genuinely no guideline evidence to show for this turn.
+    - ``True`` with ``[]`` — the worker RAN and retrieved zero chunks (empty or
+      degraded corpus, or a query that legitimately matched nothing). Materially
+      different from "no guideline need": the clinician can now tell "no
+      guidelines apply" from "we looked and found none".
+
+    It never gates served/withheld — guideline evidence informs the prose only,
+    never becomes a :class:`~copilot.domain.contracts.Claim`, so a zero-hit turn
+    still serves its FHIR-grounded answer. The flag makes the state observable;
+    it does not change what is served.
 
     ``handoffs`` is the graph's ordered agent-transition log (empty on the inline
     path, which has no agents to hand off between).
@@ -110,6 +150,7 @@ class ChatReply(BaseModel):
     conversation_id: int
     correlation_id: str
     guideline_evidence: list[GuidelineEvidence] | None = None
+    evidence_retrieved: bool = False
     handoffs: list[Handoff] = Field(default_factory=list)
 
 
@@ -183,6 +224,7 @@ class ChatService:
             conversation_id=resolved_id,
             correlation_id=correlation_id,
             guideline_evidence=outcome.guideline_evidence,
+            evidence_retrieved=outcome.evidence_retrieved,
             handoffs=outcome.handoffs,
         )
 
@@ -247,7 +289,8 @@ class ChatService:
             span.set_output({"action": action.value, "passed": passed, "claims": len(claims)})
 
         # guideline_evidence=None: the inline path does not retrieve — the route
-        # owns the evidence block for this mode (see ChatReply).
+        # owns the evidence block for this mode (see ChatReply). evidence_retrieved
+        # defaults False: there is no graph evidence-retriever worker on this path.
         return _TurnOutcome(answer=answer, claims=claims, action=action, passed=passed)
 
     async def _answer_via_graph(
@@ -327,6 +370,7 @@ class ChatService:
             action=action,
             passed=passed,
             guideline_evidence=result.guideline_evidence,
+            evidence_retrieved=result.evidence_retrieved,
             handoffs=result.handoffs,
         )
 
@@ -402,8 +446,41 @@ class ChatService:
         correlation_id: str,
         conversation_id: int | None,
     ) -> int:
-        """Echo a supplied conversation id, or open a fresh patient-scoped one."""
+        """Authorize + echo a supplied conversation id, or open a fresh one.
+
+        A caller-supplied ``conversation_id`` is NOT trusted. The route only
+        authorizes ``patient_id`` (the request body) via
+        ``is_authorized(clinician_id, patient_id)``; it never authorizes the
+        conversation id. Echoing it unchecked would replay ANY thread's history
+        into this turn's LLM context — and append the new turns into it — for a
+        caller authorized for even one patient, disclosing another patient's PHI
+        and misattributing the read audit under ``patient_id``.
+
+        So a supplied id is loaded and REFUSED unless it belongs to the request's
+        patient. This is the SAME rounding-list (patient-level) boundary the
+        ``GET /v1/conversations/{id}`` route enforces via
+        ``is_authorized(cid, conversation.patient_id)`` — not conversation
+        ownership. Because the route already verified
+        ``is_authorized(clinician_id, patient_id)`` before we run, requiring
+        ``row.patient_id == patient_id.value`` makes the clinician authorized for
+        the conversation's patient too (patient-level, matching GET), and
+        additionally pins the conversation to the SAME patient this turn claims —
+        a consistency GET has no body patient to need, and whose absence is what
+        lets a caller cross patients here.
+
+        Deliberately NOT clinician-ownership. GET lets any clinician sharing the
+        round read the thread, so POST lets them continue it; the read-audit row
+        still attributes the write to the acting clinician. Making POST stricter
+        than GET would be its own GET/POST-inconsistency defect.
+
+        A foreign or nonexistent id raises :class:`ConversationAccessError`,
+        which the route maps to the same indistinguishable 404 the GET route
+        returns — so "not yours" and "does not exist" cannot be told apart.
+        """
         if conversation_id is not None:
+            row = await repo.get_conversation(conversation_id)
+            if row is None or row.patient_id != patient_id.value:
+                raise ConversationAccessError
             return conversation_id
         return await repo.create_conversation(clinician_id, patient_id, correlation_id)
 

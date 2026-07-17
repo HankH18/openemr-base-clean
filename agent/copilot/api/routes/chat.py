@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from copilot.api.deps import resolve_acting_context
 from copilot.api.middleware import resolve_correlation_id
 from copilot.auth import is_authorized
-from copilot.chat.service import ChatReply, ChatService
+from copilot.chat.service import ChatReply, ChatService, ConversationAccessError
 from copilot.config import get_settings
 from copilot.domain.primitives import PatientId
 from copilot.fhir.client import FhirClient
@@ -146,14 +146,26 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Patient is not on your rounding list")
 
     observability = request.app.state.observability
-    reply = await _service(observability, _reader_factory(acting.session_id)).chat(
-        clinician_id=clinician_id,
-        patient_id=patient_id,
-        message=req.message,
-        correlation_id=correlation_id,
-        conversation_id=req.conversation_id,
-        document_ids=req.document_ids,
-    )
+    try:
+        reply = await _service(observability, _reader_factory(acting.session_id)).chat(
+            clinician_id=clinician_id,
+            patient_id=patient_id,
+            message=req.message,
+            correlation_id=correlation_id,
+            conversation_id=req.conversation_id,
+            document_ids=req.document_ids,
+        )
+    except ConversationAccessError:
+        # A supplied conversation_id that is not this patient's thread — foreign OR
+        # nonexistent — is the SAME 404 with the SAME detail as the sibling read
+        # route (GET /v1/conversations/{id}, which unified both on 404 above). A
+        # 403-vs-404 split would let a caller enumerate which conversation ids
+        # exist; existence is withheld from anyone not already entitled to the
+        # contents. Raised here in the route (not the service) so the HTTP shape is
+        # owned in the same layer the GET route raises its refusal.
+        raise HTTPException(
+            status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL
+        ) from None
     body = _reply_body(reply)
     # Evidence separation: guideline backing rides as a distinct top-level block,
     # never inside a patient-fact claim's citation.
@@ -177,6 +189,13 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     else:
         evidence = [e.model_dump(mode="json") for e in reply.guideline_evidence]
     body["guideline_evidence"] = evidence
+    # Discriminates the two states an empty `guideline_evidence` block conflates:
+    # True + [] is a routed-but-zero-hit turn (the evidence-retriever ran and the
+    # corpus returned nothing), False + [] is a never-routed turn (no guideline
+    # need) or the inline path. Without this a lost/degraded corpus reads as "no
+    # guidelines apply". Graph-only signal; the inline path's own retrieval hits
+    # ride the `chat.retrieval` event above.
+    body["evidence_retrieved"] = reply.evidence_retrieved
     return body
 
 
