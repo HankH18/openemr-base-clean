@@ -349,3 +349,66 @@ Pre-existing (predates the n-gram and wrapped-cell work; HEAD~ byte-identical). 
 require asymmetric COVERAGE (matched_chars / len(value)) in ADDITION to similarity. The
 supported rate SHOULD drop — some current supports are false. Explicitly told the agent not
 to tune the threshold to preserve the numbers.
+
+## Cycle 4 CLOSED — all findings fixed, deployed, verified live (HEAD 79d81d8)
+
+995 tests green (was 871 at cycle-2 start), mypy clean, gate exit 0, feat_ingestion 8,
+pass_rate 97.83, frozen harness verified intact across 10 parallel agents.
+
+Verified on the DEPLOYED build by exercising the defects, not by trusting the build:
+  UI 200 | /health 200
+  GET /v1/conversations/1        -> 401          (was 200 + another clinician's PHI)
+  deployed supervisor.py          -> "question=task.question" x0   (Langfuse leak closed)
+  reconcile invented tail         -> supported=False, bbox=None    (was supported=True)
+  reconcile verbatim value        -> supported=True, conf=0.970    (no regression)
+
+### STOPPED HERE: context/token budget, NOT a clean audit cycle.
+The halt condition the user set is "a cycle where no fixes are required". That has NOT
+been reached — cycle 4 found 6 real defects (2 of them live P0s), so the base rate of
+"audit finds something" is still 100%. A cycle-5 audit is the correct next action and it
+should be assumed it will find more. Do not read this stopping point as convergence.
+
+### OPEN — carried forward, each with evidence, for a human decision
+
+**P1 patient_id egresses to Langfuse on nearly every span/event.** A bare PID is a HIPAA
+identifier reaching the same no-BAA third party the question leak just left. It is in the
+Observability Protocol signature, so removing it is a Protocol change. THIS IS THE SINGLE
+BIGGEST OPEN ITEM.
+
+**P1 coverage counts CHARACTERS, so a subsequence still passes.** '...06:05 CDT PRN'
+covers 1.0 because 'prn' is a subsequence of the 'Printed' that follows. Measured; a
+min-run-length hardening was tried (0 honest lost, leaks 18->4) and REJECTED with reason
+(the scavenged 'bi' is itself a run of 2; it would also break single-char values). Needs
+word-level alignment. Documented in-code, not hidden.
+
+**P2 authorization is self-granted.** is_authorized checks a list the CALLER supplied
+(rounds.py -> rounding cursor). No assignment/roster concept exists anywhere (grep
+assigned|care_team|roster|panel -> zero authz hits). POST /v1/rounds/start
+{"patient_ids":[B]} self-grants B. authorization.py:5-7 is honest about this. So the
+conversations fix bought a SESSION SCOPE, not an authz boundary. Architectural.
+
+**P2 routes/documents.py:189/196** keeps the 404-vs-403 oracle the conversation route
+just unified away. Needs valid creds, so lower severity, same class.
+
+**P2 the idempotency guard is in-process only.** Dockerfile passes no --workers flag, so
+one worker is a DEFAULT, not a pin: adding --workers or a replica silently voids the
+guarantee with NO test turning red.
+
+**P2 the Postgres upsert branch is constructed-correct but never executed in tests.** No
+Postgres runs in the suite; psycopg isn't in .venv. Statement compilation is pinned; live
+execution is not.
+
+**P2 STUB_MEDLIST_FACTS encodes bare drug names** ("Lisinopril") while the prompt demands
+"dose and frequency exactly as printed" -- the fixture and the prompt disagree about what
+a medication value IS. Touching it moves frozen metrics, so it needs its own measured cycle.
+
+**P2 _tool_schema trim** deliberately NOT done: it breaks the tested contract
+"input_schema IS the pydantic schema". Needs a human call.
+
+**Note:** an agent ran `brew install tesseract` on the host for real-OCR evidence. It
+flips local build_ocr from StubOcr to TesseractOcr. Benign (995 pass with it), but it is
+a real environment dependency of the local suite. `brew uninstall tesseract` to revert.
+
+**DB:** backup at /root/copilot-db-backup-0940.sql. Stale extractions 1 & 2 (my 04:46/
+04:57 test rows, old reconciler) still drag extraction_field_pass_rate; the DELETE was
+blocked by the auto-mode classifier and was NOT worked around.
