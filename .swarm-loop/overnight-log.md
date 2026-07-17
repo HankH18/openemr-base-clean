@@ -218,3 +218,74 @@ would claim support for a value whose tail was never verified, which is precisel
 invention the gate exists to prevent.
 
 Backlogged for a human call, with this evidence.
+
+## Refresh done — A/B proof of the reconcile fix on the live deployment
+
+Re-ingested the demo docs through the REAL pipeline, mirroring the route's uploader
+selection (DerivedOnlyUploader, since writeback is off). Same document, old vs new
+reconciler -- a controlled A/B, not an inference:
+
+  extraction 1 (04:46, OLD single-token)  lab_pdf  37 facts  21 supported  56.8%
+  extraction 3 (09:48, NEW n-gram)        lab_pdf  37 facts  29 supported  78.4%
+  extraction 4 (09:50, NEW)               intake   38 facts  31 supported  81.6%
+  extraction 5 (09:50, NEW)               medlist  12 facts   8 supported  66.7%
+
+Live extraction_field_pass_rate: 0.606 -> 0.7095. Still blended with the two stale
+extractions (1, 2) I created at 04:46/04:57 with the buggy reconciler. Excluding those,
+current capability is 68/87 = 78.2%.
+
+Clearing the stale rows was BLOCKED by the auto-mode classifier (destructive SQL on a
+live DB) — correctly. Not worked around. DB backup at /root/copilot-db-backup-0940.sql.
+Left for the user's decision.
+
+Also noted (not a defect): `attach_and_extract`'s docstring claims "tests, CLI, the F8
+route" use it, but the route constructs DocumentIngestionService directly so it can
+inject DerivedOnlyUploader (routes/documents.py:69,155). My first refresh probe used the
+wrapper's DEFAULT factory, hit the real write client, and failed with
+WritebackDisabledError — my probe was wrong, not the product. Stale docstring only.
+
+## Cycle 4 audit — five findings, TWO LIVE (issues 32-36)
+
+**#32 P0 LIVE — unauthenticated PHI read on GET /v1/conversations/{id}.** Observed with
+a live probe: no cookie, no clinician_id -> HTTP 200 + another clinician's free-text
+clinical Q&A. The handler never touches the cookie so it CANNOT 401 -- auth_mode=smart
+does NOT mask it. Autoincrement ids = enumeration oracle; unknown id returns 200 {[]}.
+The suite ENSHRINES it (test_chat_routes.py:317 asserts 200 unauth). Same class as the
+already-fixed GET /v1/documents/{id}; conversations were left behind. DISPATCHED.
+
+**#33 P0 LIVE — raw clinician questions shipped to Langfuse.** supervisor.py:254/:385/:382
+put task.question (free clinical text) on spans/events; langfuse_backend is a passthrough.
+CONFIRMED live on the droplet: all 3 langfuse keys set, graph_enabled=True, active
+backend = LangfuseObservability (not Noop). The codebase contradicts itself --
+retriever.py:162-163 says "never the query text, which may carry PHI" and honors it,
+while its own caller two frames up ships that identical text on the parent span.
+deidentify() has exactly ONE call site in the whole codebase; the "THE choke-point before
+any third-party egress" claim is FALSE -- it guards the Voyage/Cohere leg only. DISPATCHED.
+
+**#34 P1 LIVE — upsert_sync_state is a read-then-write across an await.** Concurrent
+/refresh + poller tick -> IntegrityError -> 500, or last-writer-wins moving the watermark
+BACKWARD and pairing it with a mismatched content_hash, so the change-gate skips a needed
+re-synthesis and a clinician reads a stale card. Same shape in save_memory_file,
+upsert_rounding_cursor, set_last_seen. QUEUED (wave 2 — repository.py is owned by #32).
+
+**#35 P2 — every vital write would 502 (int pid sent to a UUID-keyed encounter route).**
+Not live (writeback_enabled=false) and fails CLOSED, so the feature is dead, not
+dangerous. The test asserts our own URL back to us. DISPATCHED.
+
+**#36 P2 — idempotency store is TOCTOU.** Concurrent double-confirm -> 2 POSTs observed.
+OpenEMR implements no idempotency keys (grepped the whole PHP tree: 1 unrelated hit), so
+the header is decorative and the server-side store IS the guard. Masked today only by a
+client-side isDisabled. DISPATCHED.
+
+**Auditor's clean list (valuable):** append-only claim TRUE (EncounterService strips
+user ids); no write-without-confirm path; retry cannot double-commit (write client is
+deliberately excluded from retry_async); Voyage/Cohere egress genuinely deidentified;
+session_scope genuinely rolls back; no migration/model drift except two index-only items;
+document routes authz clean; cross-patient dedupe clean.
+
+**Related, filed as design not defect:** is_authorized gates on a list the CALLER supplies
+(rounds.py -> rounding cursor). There is no assignment/roster concept anywhere (grep for
+assigned|care_team|roster|panel -> zero authz hits), so POST /v1/rounds/start
+{"patient_ids":[B]} self-grants B. authorization.py:5-7 is honest that authorized ==
+self-established. So fixing #32 buys a SESSION SCOPE, not an authz boundary. That is a
+Phase-1 architecture decision for the user, not something to redesign at 06:00.
