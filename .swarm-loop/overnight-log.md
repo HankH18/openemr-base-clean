@@ -625,3 +625,71 @@ is what broke it. FIXED a4b0eb9; swept for siblings — none remain.
   The card no longer lies about the number; "steady" is arguably its own defect.
 - Coverage counts characters (subsequence can pass); rasterize accumulates PNGs;
   is_authorized gates a caller-supplied list; idempotency is in-process only.
+
+## Cycle 7 — THREE more live defects (issues 49-51). Halt condition still not met.
+
+**#49 P0 LIVE — the keyless reranker discards the entire hybrid-RAG pipeline.**
+_apply_rerank TOTALLY REORDERS the RRF+section-boost result and overwrites it, and it is
+handed `content` only — never `section` — so it is structurally blind to the boost. The
+StubReranker sorts by a raw un-normalized term-frequency sum (no IDF, no stemming, no
+length norm), and _dense_rank returns EVERY row with an embedding, so there is no retrieval
+cutoff: the stub is the SOLE ranker over the whole corpus. Measured on the real corpus:
+
+  query: "What is the MAP target for septic shock vasopressors?"
+    fused (RRF+boost) top1 : vasopressors-and-map-target   0.047643   <- correct
+    production top1        : recognition-and-screening     0.032787   <- served
+    rerank made top-1 WRONG on 2/7 queries; right on 0/7
+    at top_k=2 the correct chunk is not returned at all
+    returned .score order: [0.032787, 0.032258, 0.047643, 0.031746]  monotonic: False
+
+LIVE: DEPLOY.md tells operators to leave VOYAGE/COHERE keys unset -> StubEmbedder +
+StubReranker; graph enabled -> top_k=4. RRF, FTS, pgvector cosine and the section boost
+contribute NOTHING to what a clinician sees. DISPATCHED.
+
+**#50 P0 LIVE — the eval gate is blind to the entire guideline RAG.** The auditor sabotaged
+retrieval completely (retrieve -> [], RRF inverted, boost no-op, chunks replaced with
+garbage) and ran the REAL evaluate_all + check_regressions:
+
+  GATE with guideline RAG fully sabotaged -> pass_rate=100.0  blocking failures=0
+
+live_cases.py does not import copilot.rag.retriever AT ALL. This is the SAME hole the live
+tier was built to close for deidentify — one feature over, on the Week-2 flagship. And it is
+exactly WHY #49 survived: the gate could never go red, so nobody looked. DISPATCHED.
+
+**#51 P1 LIVE — a corrected guideline silently does not apply, and then VERIFIES.**
+ingest.py skips on the `source` key alone; guideline_document has no content hash (unlike
+source_document, which does). Probed:
+
+  after v1 ingest  : "...50-100 mg of intravenous vitamin K."
+  [operator fixes the file to 5-10 mg, re-runs DEPLOY.md step 4]
+  re-ingest report : [('Warfarin', 'skipped')]        <- reads as SUCCESS
+  after v2 ingest  : "...50-100 mg of intravenous vitamin K."   <- STALE
+  after --force    : "...5-10 mg of intravenous vitamin K."
+
+Worse than an ordinary cache bug: the serve-time verifier re-materializes the chunk from
+that same stale row, so the quote matches verbatim and the claim is SERVED AS GROUNDED.
+Staleness is self-consistent, so the verification gate structurally cannot catch it.
+Someone fixes a 10x vitamin-K overdose, redeploys per the runbook, and the co-pilot keeps
+citing the old dose. And DEPLOY.md:784 FALSELY claims "There is no --force / --reset flag"
+while scripts/ingest_guidelines.py:91-100 defines it. Third phantom-documentation defect of
+the night. DISPATCHED.
+
+### The auditor's clean list — substantial, and worth as much as the findings
+- **Migrations**: full upgrade head -> downgrade base -> upgrade head round-trips clean on a
+  real DB; every ALTER against a pre-existing table adds a NULLABLE column, so none fails on
+  a populated Postgres; every NOT NULL is on a create_table with a server_default; 0006's
+  pgvector/JSON dialect split and FK drop ordering are correct.
+- **Retention**: there is NO DELETE against audit_log anywhere in the codebase (grepped), so
+  the 6-year HIPAA floor cannot be violated; probed a 7-year-old row -> eligible=1 deleted=0;
+  sweep_chat is idempotent and deletes messages before conversations (no orphans); the floor
+  clamp genuinely beats a misconfigured retention setting.
+- **Corpus clinical correctness**: all four files read line by line — sepsis (30 mL/kg, abx
+  <=1h, MAP >=65, norepi->vasopressin), DKA (0.1 u/kg/h, K >=3.3 before insulin, dextrose
+  <200), warfarin (INR 4.5-10 hold, >10 oral 2.5-5 mg, major bleed 4F-PCC + 5-10 mg IV vit K)
+  are clinically accurate and correctly attributed to their front-matter source.
+- **Citation attribution**: get_guideline_chunk_by_id's argument order checked specifically
+  for transposition — correct; a citation cannot point outside its cited document, and a
+  fabricated chunk id is dropped fail-closed.
+- **My empty-env fix verified independently**: COPILOT_CHAT_RETENTION_DAYS/OCR_DPI/TLS_VERIFY/
+  SESSION_IDLE_SECONDS/RASTER_MAX_PAGES all ="" parse to defaults, no boot brick.
+- **RRF math**: sum 1/(k+rank) at k=60 is correct — it is just never allowed to matter (#49).
