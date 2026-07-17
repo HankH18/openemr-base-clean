@@ -342,6 +342,12 @@ class AgentGraph:
             guideline_evidence=list(evidence_report.evidence)
             if evidence_report is not None
             else [],
+            # Did the evidence-retriever RUN this turn? A routed-but-zero-hit turn
+            # (worker ran, corpus returned nothing) and a never-routed turn both
+            # leave `guideline_evidence` empty above; this boolean is the only
+            # thing that tells them apart downstream. `evidence_report is not None`
+            # is exactly "the worker produced a report", i.e. it was dispatched.
+            evidence_retrieved=evidence_report is not None,
         )
 
     # --- worker dispatch --------------------------------------------------

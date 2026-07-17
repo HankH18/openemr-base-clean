@@ -140,9 +140,22 @@ class GraphResult(BaseModel):
     retrieved under the supervisor's routing decision — the same chunks that
     informed the prose. Surfacing it here is what lets the chat route DISPLAY the
     supervisor's evidence instead of retrieving a second, decoupled set of its
-    own (one retrieval per turn). Empty when the supervisor did not dispatch the
-    evidence worker: honest "this turn needed no guideline evidence", not
-    "retrieval found nothing".
+    own (one retrieval per turn).
+
+    An empty ``guideline_evidence`` list has TWO causes that must not be
+    conflated, and ``evidence_retrieved`` is the discriminator:
+
+    - ``evidence_retrieved is False`` — the supervisor did not dispatch the
+      evidence worker (no guideline need in the question). Honest "this turn
+      needed no guideline evidence".
+    - ``evidence_retrieved is True`` — the worker RAN and retrieved zero chunks
+      (an empty/degraded corpus, or a query that legitimately matched nothing).
+      Materially different from "no guideline need": "we looked and found none".
+
+    ``evidence_retrieved`` is ``evidence_report is not None`` — i.e. whether the
+    evidence-retriever worker executed this turn. It never gates served/withheld
+    (guideline evidence informs the prose only, never a Claim); it exists purely
+    so a zero-hit retrieval is distinguishable from a never-routed turn.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -153,3 +166,7 @@ class GraphResult(BaseModel):
     metrics: GraphMetrics
     critic: CriticVerdict | None = None
     guideline_evidence: list[GuidelineEvidence] = Field(default_factory=list)
+    #: Whether the evidence-retriever worker ran this turn (``evidence_report is
+    #: not None``). Splits routed-but-zero-hit (``True`` + empty
+    #: ``guideline_evidence``) from never-routed (``False`` + empty).
+    evidence_retrieved: bool = False
