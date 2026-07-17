@@ -81,10 +81,10 @@ class StubSynthesizer:
 
     async def synthesize(self, inputs: SynthesisInput) -> MemoryFileSummary:
         # Human-readable claim text via the same grounding the chat agents use,
-        # so a card reads "Observation Potassium: 5.7", not "Observation/<uuid>
-        # → valueQuantity.value=5.7". Falls back to the raw pointer only when a
-        # resource has no groundable concept/value.
-        from copilot.agent.grounding import claim_text, describe_resource
+        # so a card reads "Observation Potassium: 5.7 mmol/L", not
+        # "Observation/<uuid> → valueQuantity.value=5.7". Falls back to the raw
+        # pointer only when a resource has no groundable concept/value.
+        from copilot.agent.grounding import claim_text, describe_resource, extract_unit
 
         claims: list[Claim] = []
         for res in inputs.resources:
@@ -99,9 +99,14 @@ class StubSynthesizer:
                 # a clinically meaningless "Observation/<uuid>" line on the card.
                 continue
             display, field, value = described
+            # Same (text, source_ref) pairing the chat agents use: one verbatim
+            # unit feeds BOTH, so the card renders a quantity and the gate has a
+            # unit to re-compare. Grounded via extract_unit — the extractor the
+            # verifier itself re-runs — so it agrees byte-for-byte on re-fetch.
+            unit = extract_unit(res)
             claims.append(
                 Claim(
-                    text=claim_text(str(rtype), display, str(value)),
+                    text=claim_text(str(rtype), display, str(value), unit),
                     source_ref=FhirReference(
                         resource_type=ResourceType(rtype)
                         if rtype in ResourceType.__members__
@@ -109,6 +114,7 @@ class StubSynthesizer:
                         resource_id=str(rid),
                         field=field,
                         value=str(value),
+                        unit=unit,
                     ),
                 )
             )

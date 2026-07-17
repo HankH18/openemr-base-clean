@@ -29,6 +29,7 @@ from copilot.agent.grounding import (
     claim_text,
     describe_resource,
     extract_temporal,
+    extract_unit,
     humanize_label,
 )
 from copilot.domain.contracts import Claim, ClaimSeverity, TrendDirection, ValueDirection
@@ -237,6 +238,13 @@ def _observation_claim(group: list[Mapping[str, Any]]) -> Claim | None:
             resource_id=str(latest.get("id")),
             field=field,
             value=str(value),
+            # VERBATIM (`extract_unit`), deliberately not the display `unit` above.
+            # `_unit` case-folds a closed map (`Cel` → `°C`) for the card's label;
+            # writing that into source_ref would put `°C` where a live re-fetch
+            # re-derives `Cel`, and the gate — which refuses to fold units — would
+            # withhold every temperature as a unit mismatch. The label is for the
+            # reader; source_ref must match the record byte-for-byte.
+            unit=extract_unit(latest),
             timestamp=extract_temporal(latest),
         ),
         severity=_classify_severity(latest),

@@ -917,6 +917,12 @@ def _citation_to_json(
         "resource_id": ref.resource_id,
         "field": ref.field,
         "value": ref.value,
+        # `value` is only half a quantity. Dropping the unit here would rehydrate
+        # every claim with `unit=None`, which the verification gate reads as "no
+        # unit in the record" and short-circuits — silently disarming the unit
+        # check on every persisted claim. Plain `str | None`, so unlike the two
+        # datetimes below it needs no isoformat round-trip.
+        "unit": ref.unit,
         "last_updated": ref.last_updated.isoformat() if ref.last_updated else None,
         "timestamp": ref.timestamp.isoformat() if ref.timestamp else None,
     }
@@ -956,6 +962,11 @@ def _citation_from_json(
         resource_id=ref["resource_id"],
         field=ref["field"],
         value=ref["value"],
+        # Older rows predate `unit` too; same `.get` default. `FhirReference.unit`
+        # is already `str | None`, so a legacy row rehydrates to None and passes
+        # validation untouched — the exact policy the gate documents for a
+        # unit-less claim (not gated on units).
+        unit=ref.get("unit"),
         last_updated=datetime.fromisoformat(last_upd) if last_upd else None,
         timestamp=datetime.fromisoformat(ts) if ts else None,
     )
