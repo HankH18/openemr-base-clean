@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -44,6 +45,15 @@ from copilot.domain.writes import (
 from copilot.fhir.auth import TokenAcquisitionError, TokenProvider
 
 _ENCOUNTER_REASON = "AgentForge Co-Pilot bedside entry"
+
+#: Returned by :meth:`OpenEmrWriteClient.upload_document` on a confirmed upload
+#: when OpenEMR hands back no id. Its document-create genuinely returns a bare
+#: ``true`` (``DocumentService::insertAtPath``), so there is nothing to parse:
+#: inventing an id would fabricate provenance, and returning ``""`` would be
+#: indistinguishable from :class:`~copilot.documents.pipeline.DerivedOnlyUploader`'s
+#: "no upload happened". This sentinel says exactly what is true — OpenEMR holds
+#: the document, and its API gave us no handle for it.
+OPENEMR_NO_HANDLE = "openemr:uploaded-no-handle"
 
 
 class OpenEmrWriteError(Exception):
@@ -355,26 +365,56 @@ class OpenEmrWriteClient:
         mime_type: str = "application/pdf",
         idempotency_key: str | None = None,
     ) -> str:
-        """Multipart-POST a source document to the Standard API; return its id.
+        """Multipart-POST a source document to the Standard API; return its handle.
 
         The Week-2 document-ingestion pipeline stores the source bytes in OpenEMR
-        (which owns the document) before deriving pages/facts from them. Fail-closed
-        like every write: only an explicit ``201`` whose body carries a parseable
-        document id is success; anything else raises ``OpenEmrWriteError``.
+        (which owns the document) before deriving pages/facts from them.
+
+        **This call is written against OpenEMR's ACTUAL contract, which is not the
+        one the rest of this client uses** — verified in OpenEMR's own source, and
+        every difference used to be a silent failure here:
+
+        - ``DocumentRestController::postWithPath`` returns
+          ``responseHandler($serviceResult, null, 200)`` — **200, not 201**. We
+          required 201, so a *successful* upload raised.
+        - ``DocumentService::insertAtPath`` returns a bare ``true`` on success, so
+          there is **no id to parse**. We demanded one and failed the upload that
+          had, in fact, worked. On failure it returns ``false`` → ``responseHandler``
+          emits **404 with an empty body**, so 404 (not a 4xx-generic) is the real
+          failure signal.
+        - The route reads ``$request->query->get('path')`` — the category is a
+          **query parameter**. We sent it as form data, so OpenEMR saw ``null`` and
+          ``isValidPath(null)`` rejected the upload.
+
+        Because OpenEMR returns no id, a successful upload yields
+        :data:`OPENEMR_NO_HANDLE` rather than an invented one — the honest record of
+        "OpenEMR has this document; its API gave us no handle for it". An id is
+        still parsed opportunistically in case a deployment's envelope carries one.
+        Fail-closed is unchanged: anything but a 200 with a truthy body raises.
         """
         files = {"document": (filename, content, mime_type)}
-        data: dict[str, str] = {"doc_type": doc_type}
+        # `doc_type` is ours (not read by the route); `path` MUST ride the query
+        # string — the controller takes it from $request->query, never the body.
+        path = f"/patient/{pid}/document"
         if category:
-            data["path"] = category
+            path = f"{path}?path={quote(category, safe='/')}"
         resp = await self._send(
             "POST",
-            f"/patient/{pid}/document",
+            path,
             files=files,
-            data=data,
+            data={"doc_type": doc_type},
             idempotency_key=idempotency_key,
         )
-        self._require(resp, 201)
-        return _document_id(self._json(resp))
+        self._require(resp, 200)
+        body = _try_json(resp)
+        if body is False or body is None:
+            raise OpenEmrWriteError("OpenEMR rejected the document upload")
+        if isinstance(body, Mapping):
+            try:
+                return _document_id(body)
+            except OpenEmrWriteError:
+                return OPENEMR_NO_HANDLE
+        return OPENEMR_NO_HANDLE
 
     # --- transport --------------------------------------------------------
 
