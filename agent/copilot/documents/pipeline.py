@@ -316,7 +316,15 @@ async def attach_and_extract(
     """Ingest one document with the deployment's default collaborators.
 
     Thin convenience wrapper over :class:`DocumentIngestionService` for callers
-    that do not need to inject collaborators (tests, CLI, the F8 route).
+    that do not need to inject collaborators (tests, CLI).
+
+    NOT used by the upload route: ``api/routes/documents.py`` constructs the
+    service directly so it can inject the uploader its config implies
+    (``DerivedOnlyUploader`` when write-back is off — see ``routes/documents.py``
+    ``_uploader_factory``). This wrapper takes the DEFAULT factory, i.e. a real
+    OpenEMR write client, so calling it with write-back disabled raises
+    ``WritebackDisabledError`` — which is correct, but is NOT what a browser
+    upload does. Reach for the service directly if you care which uploader runs.
     """
     service = DocumentIngestionService(settings or get_settings())
     return await service.attach_and_extract(

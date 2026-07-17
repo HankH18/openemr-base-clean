@@ -91,7 +91,8 @@ def _handoff_view(handoff: Handoff) -> dict[str, Any]:
     Makes the multi-agent routing observable to a caller (which agents ran, in
     what order, and why) instead of a claim only a doc makes. Deliberately a
     PROJECTION, not a ``model_dump``: the typed ``Handoff.payload`` carries
-    routing context that is patient content — the raw question, document ids —
+    routing context that may be patient-derived — document ids and routing
+    signals (it also carried the raw question until that leak was closed) —
     and none of it belongs in a response block whose whole purpose is to explain
     routing. Only the agent names, the static reason string, and the router's
     matched vocabulary terms (drawn from a fixed word list in

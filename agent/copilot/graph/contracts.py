@@ -46,8 +46,17 @@ class Handoff(BaseModel):
 
     Emitted into the trace as a ``worker.handoff`` event (with these four fields
     as attributes) at the moment the supervisor dispatches a worker or the
-    critic. ``payload`` carries the routing context (document ids, the query,
-    …) — always a mapping, never free text.
+    critic. ``payload`` carries NON-PHI routing signals only — document ids,
+    counts, and terms from the module's fixed routing vocabulary. Never the
+    clinician's question, and never any other free text read from the record.
+
+    This sentence used to read "the routing context (document ids, the query, …)
+    — always a mapping, never free text", which named the query and denied free
+    text in the same breath. The payload really did carry the raw question, and
+    this event really does egress to Langfuse, so the docstring was not merely
+    stale: it described the leak and asserted its absence, which is how a reader
+    checking for PHI egress would have been talked out of looking. Keep this
+    accurate; the trace is a third-party surface.
     """
 
     model_config = ConfigDict(frozen=True)
