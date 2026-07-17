@@ -19,23 +19,34 @@ the worker; the whole read path runs with no key.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from copilot.config import Settings
+from copilot.domain.documents import ExtractedFact
 from copilot.domain.primitives import PatientId
 from copilot.graph.contracts import AgentTask
 from copilot.memory.db import session_scope
+from copilot.memory.models import ExtractedFactRow
 from copilot.memory.repository import MemoryRepository
 
 
 @dataclass(frozen=True)
 class IntakeReport:
-    """What the intake-extractor produced for one task."""
+    """What the intake-extractor produced for one task.
+
+    ``facts`` are the supported facts themselves — the worker's actual output,
+    which finalize hands to the answering agent. ``fact_count`` stays the count
+    of supported facts (``len(facts)`` may be smaller: a stored fact with no
+    value cannot be materialized into an :class:`ExtractedFact`), so the metric
+    keeps reporting what the extractor found rather than what survived
+    rendering.
+    """
 
     document_ids: list[str]
     fact_count: int
     extraction_confidence: float
+    facts: list[ExtractedFact] = field(default_factory=list)
 
 
 class IntakeExtractor(Protocol):
@@ -44,16 +55,44 @@ class IntakeExtractor(Protocol):
     async def run(self, task: AgentTask) -> IntakeReport: ...
 
 
+def _to_fact(row: ExtractedFactRow) -> ExtractedFact | None:
+    """Materialize a stored fact row as the typed domain DTO (``None`` if it can't).
+
+    ``extracted_fact.value`` is nullable in the schema but required on
+    :class:`ExtractedFact` — a fact with no value carries nothing an answer could
+    use, so it is dropped rather than coerced into an empty string.
+    """
+    if row.value is None:
+        return None
+    return ExtractedFact(
+        field_path=row.field_path,
+        value=row.value,
+        unit=row.unit,
+        reference_range=row.reference_range,
+        abnormal=row.abnormal_flag,
+        collection_date=row.collection_date,
+        page_no=row.page_no,
+        bbox=list(row.bbox) if row.bbox is not None else None,
+        match_confidence=row.match_confidence,
+        supported=row.supported,
+    )
+
+
 async def _read_extractions(document_ids: list[str]) -> IntakeReport:
-    """Latest extraction confidence + supported-fact count for ingested docs.
+    """Latest extraction confidence + the supported facts for ingested docs.
 
     Read-only, deterministic: for each document id, the newest ``extraction``
-    row's ``confidence_overall`` is averaged and its supported facts counted. An
-    unparseable or unknown id is skipped (contributes nothing), so an empty /
-    bogus id set yields ``0.0`` confidence and ``0`` facts — never an error.
+    row's ``confidence_overall`` is averaged and its supported facts collected.
+    An unparseable or unknown id is skipped (contributes nothing), so an empty /
+    bogus id set yields ``0.0`` confidence and no facts — never an error.
+
+    The facts are sorted by ``(field_path, value)`` because the repository query
+    imposes no ordering: the graph feeds them to the answering agent, so a
+    stable order is what makes the same task produce the same answer.
     """
     confidences: list[float] = []
     fact_count = 0
+    facts: list[ExtractedFact] = []
     async with session_scope() as session:
         repo = MemoryRepository(session)
         for raw in document_ids:
@@ -68,9 +107,14 @@ async def _read_extractions(document_ids: list[str]) -> IntakeReport:
                 confidences.append(extraction.confidence_overall)
             supported = await repo.get_supported_extracted_facts(extraction.id)
             fact_count += len(supported)
+            facts.extend(fact for row in supported if (fact := _to_fact(row)) is not None)
     confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    facts.sort(key=lambda f: (f.field_path, f.value))
     return IntakeReport(
-        document_ids=list(document_ids), fact_count=fact_count, extraction_confidence=confidence
+        document_ids=list(document_ids),
+        fact_count=fact_count,
+        extraction_confidence=confidence,
+        facts=facts,
     )
 
 

@@ -20,7 +20,12 @@ from copilot.graph.critic import Critic, build_critic
 from copilot.graph.evidence_retriever import EvidenceRetriever, build_evidence_retriever
 from copilot.graph.factory import build_graph
 from copilot.graph.intake_extractor import IntakeExtractor, build_intake_extractor
-from copilot.graph.supervisor import AgentGraph, Supervisor, build_supervisor
+from copilot.graph.supervisor import (
+    AgentGraph,
+    Supervisor,
+    build_supervisor,
+    evidence_signals,
+)
 
 __all__ = [
     "AgentGraph",
@@ -38,4 +43,5 @@ __all__ = [
     "build_graph",
     "build_intake_extractor",
     "build_supervisor",
+    "evidence_signals",
 ]
