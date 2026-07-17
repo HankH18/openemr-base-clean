@@ -21,12 +21,37 @@ into the de-identified text (deidentify → expand → retrieve), so every
 downstream egress (embedder, reranker) sees only de-identified — and never
 raw — text, now enriched for recall. A bounded section-heading boost then
 re-prioritises hits whose section matches the query's key terms before the
-rerank. Sparse retrieval is Postgres full-text (``to_tsvector``/``plainto_tsquery``)
-with a portable term-overlap fallback on SQLite; dense retrieval scores cosine
-similarity over the stored embeddings (pgvector on Postgres, a JSON list on
-SQLite). The Cohere rerank is a best-effort refinement: its failure or absence
-falls back to the fused order and is logged, never raised — the answer path is
-never gated on the reranker.
+rerank. Sparse retrieval is BM25 (:func:`~copilot.rag._lexical.bm25_scores`),
+computed in-process over the retrieved rows on **both** backends; dense
+retrieval scores cosine similarity over the stored embeddings (pgvector on
+Postgres, a JSON list on SQLite). The Cohere rerank is a best-effort
+refinement: its failure or absence falls back to the fused order and is logged,
+never raised — the answer path is never gated on the reranker.
+
+**Why the sparse leg is not Postgres full-text.** It was, and that leg was
+dead in production. ``plainto_tsquery`` ANDs every term, so a chunk had to
+contain *all* of them; measured against the real corpus in the deploy's own
+``pgvector/pgvector:pg16``, the FTS leg returned **zero rows for every
+realistic clinical question** ("How do I reverse warfarin…" → ``'revers' &
+'warfarin' & 'major' & 'life-threaten' & …``, and no chunk says "reverse").
+Retrieval silently degraded to dense-only — the shipped "hybrid sparse+dense"
+was, keyless and on Postgres, a hashing-trick stub embedder alone. Worse, the
+defect was structurally invisible: every test and eval runs SQLite, which took
+the *other* branch, so the suite graded a ranker production never executed.
+OR-ing the tsquery does not rescue it — ``ts_rank`` uses no corpus-global
+statistics (no IDF, by Postgres's own documentation), and measured that way it
+ranked the wrong section first on 2 of 6 probes, i.e. it would have *imported*
+the IDF defect into production. BM25 in-process fixes both: it is the ranker
+``ts_rank`` and term-overlap were each approximating badly, and one path means
+the tests grade what ships. It costs nothing — ``retrieve`` already loads every
+row and ``_dense_rank`` already scores every row in Python, so the SQL leg
+bought no scan it was not already paying for.
+
+.. note::
+   ``W2_ARCHITECTURE.md`` §RAG still describes the sparse leg as "Postgres
+   FTS" and migration ``0006`` still creates a GIN index on
+   ``to_tsvector('english', content)``. Both are now inert and want updating;
+   the index is harmless but no longer read.
 
 **The rerank stage exists only when a real, keyed reranker is configured.**
 ``build_reranker`` answers "stub or Cohere?" and, keyless, hands back
@@ -75,8 +100,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from copilot.config import Settings
 from copilot.domain.primitives import CitationSourceType, GuidelineCitation
@@ -84,7 +107,7 @@ from copilot.memory.db import session_scope
 from copilot.memory.models import GuidelineChunkRow
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import NoopObservability, Observability, build_observability
-from copilot.rag._lexical import overlap_score, tokenize
+from copilot.rag._lexical import bm25_scores, tokenize
 from copilot.rag.deidentify import deidentify
 from copilot.rag.embeddings import Embedder, build_embedder
 from copilot.rag.query import expand_query
@@ -196,7 +219,6 @@ class GuidelineRetriever:
         self._settings = settings
         self._embedder = embedder
         self._reranker = reranker
-        self._is_postgres = settings.database_url.startswith("postgresql")
         self._obs: Observability = observability or NoopObservability()
 
     async def retrieve(self, query: str, top_k: int = 4) -> list[GuidelineEvidence]:
@@ -245,7 +267,7 @@ class GuidelineRetriever:
                     span.set_attribute("dense_degraded", True)
                 else:
                     dense_ids = _dense_rank(rows, query_vec)
-                sparse_ids = await self._sparse_rank(session, rows, expanded)
+                sparse_ids = _sparse_rank(rows, expanded)
                 candidates = {
                     str(row.id): _Candidate(
                         chunk_id=str(row.id),
@@ -277,20 +299,6 @@ class GuidelineRetriever:
             span.set_attribute("hits", len(evidence))
             span.set_output({"hits": len(evidence), "corpus_chunks": len(rows)})
             return evidence
-
-    async def _sparse_rank(
-        self, session: AsyncSession, rows: list[GuidelineChunkRow], query: str
-    ) -> list[str]:
-        """Postgres full-text ranking with a portable term-overlap fallback."""
-        if self._is_postgres:
-            try:
-                return await _sparse_rank_fulltext(session, query)
-            except Exception:  # best-effort FTS; retrieval never gates on it
-                _logger.warning(
-                    "guideline full-text search failed; using portable term overlap",
-                    exc_info=True,
-                )
-        return _portable_sparse_rank(rows, query)
 
     def _apply_rerank(
         self, query: str, candidates: list[_Candidate]
@@ -425,13 +433,33 @@ def _dense_rank(rows: list[GuidelineChunkRow], query_vec: Sequence[float]) -> li
 def _boost_section_matches(
     scores: dict[str, float], candidates: dict[str, _Candidate], query: str
 ) -> dict[str, float]:
-    """Add :data:`SECTION_MATCH_BOOST` to hits whose section matches the query.
+    """Boost hits by *how much* of their section heading the query matches.
 
     The heading path is a strong topical signal, so a chunk already retrieved by
-    sparse/dense ranking whose section shares a key term with the (de-identified,
+    sparse/dense ranking whose section shares key terms with the (de-identified,
     expanded) query is promoted by a bounded amount. Only ids already in
     ``scores`` are touched — the boost re-prioritises hits, never resurrects an
     unmatched chunk. Deterministic: a plain dict copy with additive boosts.
+
+    **Scaled by heading coverage** (``matched terms / heading terms``), not a
+    flat all-or-nothing step. The step function computed the very thing it then
+    threw away: it knew *which* heading terms matched and rounded that to a
+    single bit, so a heading the query names outright and a heading brushing it
+    with one incidental word were promoted identically. Measured on the shipped
+    corpus, that tie is the P1:
+
+        "How do I reverse warfarin in major life-threatening bleeding?"
+          major-bleeding-on-warfarin             matches 3/3 of its heading
+          supratherapeutic-inr-without-bleeding  matches 1/4 ("bleeding")
+
+    Both scored an *identical* flat boost, leaving an exact RRF tie to be broken
+    by dict insertion order — which is sparse-first, so the INR-hold section won
+    a coin toss it should have lost 3-to-1. Coverage also demotes accidental
+    heading collisions generally: a sepsis fluids question no longer gets AKI's
+    "Initial evaluation" promoted on the strength of the word "initial" alone
+    (1/2 coverage, half the boost). ``SECTION_MATCH_BOOST`` remains the ceiling,
+    reached only by a heading the query matches in full, so the bound the
+    constant documents still holds.
     """
     query_terms = set(tokenize(query))
     if not query_terms:
@@ -439,32 +467,29 @@ def _boost_section_matches(
     boosted = dict(scores)
     for chunk_id in boosted:
         candidate = candidates.get(chunk_id)
-        if candidate is not None and set(tokenize(candidate.section)) & query_terms:
-            boosted[chunk_id] += SECTION_MATCH_BOOST
+        if candidate is None:
+            continue
+        section_terms = set(tokenize(candidate.section))
+        if not section_terms:
+            continue
+        matched = len(section_terms & query_terms)
+        if matched:
+            boosted[chunk_id] += SECTION_MATCH_BOOST * (matched / len(section_terms))
     return boosted
 
 
-def _portable_sparse_rank(rows: list[GuidelineChunkRow], query: str) -> list[str]:
-    """Term-overlap sparse ranking (the SQLite / no-full-text fallback)."""
-    query_tokens = tokenize(query)
-    scored: list[tuple[str, float]] = [
-        (str(row.id), overlap_score(query_tokens, row.content)) for row in rows
-    ]
-    matches = [(chunk_id, score) for chunk_id, score in scored if score > 0.0]
+def _sparse_rank(rows: list[GuidelineChunkRow], query: str) -> list[str]:
+    """BM25 sparse ranking over the retrieved chunks (both backends).
+
+    Chunks sharing no query term score ``0.0`` and are dropped, so the ranking
+    stays a *retrieval* result — a candidate set — rather than a total order
+    over the corpus. Rows arrive id-ascending and the sort is stable, so equal
+    scores keep a deterministic order.
+    """
+    scores = bm25_scores(tokenize(query), {str(row.id): row.content for row in rows})
+    matches = [(chunk_id, score) for chunk_id, score in scores.items() if score > 0.0]
     matches.sort(key=lambda pair: -pair[1])
     return [chunk_id for chunk_id, _score in matches]
-
-
-async def _sparse_rank_fulltext(session: AsyncSession, query: str) -> list[str]:
-    """Postgres full-text ranking over ``guideline_chunk.content``."""
-    stmt = text(
-        "SELECT id FROM guideline_chunk "
-        "WHERE to_tsvector('english', content) @@ plainto_tsquery('english', :q) "
-        "ORDER BY ts_rank(to_tsvector('english', content), plainto_tsquery('english', :q)) "
-        "DESC, id"
-    )
-    result = await session.execute(stmt, {"q": query})
-    return [str(row[0]) for row in result.all()]
 
 
 def _rerank_document(candidate: _Candidate) -> str:
