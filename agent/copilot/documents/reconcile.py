@@ -438,13 +438,21 @@ def reconcile_value(
 
     A value is ``supported`` only when it clears BOTH — located AND legible. The
     pipeline passes ``Settings.doc_extraction_confidence_threshold`` as the
-    legibility floor. This function's own default ``threshold=0.0`` means "any real
-    token match is enough" (no legibility floor at all); the DEPLOYED default is a
-    small positive MINIMAL GUARD (see config.py) that withholds only a token OCR
-    marked with literal zero confidence, because measured OCR reads correct numeric
-    values as low as ~0.03 and confidence is not a reliable legibility signal for
-    them. ``match_confidence`` is still reported as ``similarity * min_conf`` (a
-    useful quality score for ranking), but it no longer decides support.
+    legibility floor. One residual coupling survives the decouple, BY DESIGN: the
+    winning span is chosen by ``similarity * min_conf > best_score`` with
+    ``best_score`` seeded at ``0.0``, so a span whose ``min_conf`` is LITERALLY
+    ``0.0`` scores a zero product and can never clear the seed — a matched span
+    must have ``min_conf`` strictly ``> 0`` to WIN, at every threshold. So this
+    function's own default ``threshold=0.0`` is not quite "any token match is
+    enough": it drops the legibility FLOOR (any positive confidence passes), but a
+    token OCR marked with literal zero confidence (OCR's own "I could not read
+    this") is still over-withheld — the safe over-withhold direction for a
+    no-invention gate. The DEPLOYED default is a small positive MINIMAL GUARD (see
+    config.py) that ADDITIONALLY withholds a span whose ``min_conf`` lands in
+    ``(0, guard)``, because measured OCR reads correct numeric values as low as
+    ~0.03 and confidence is not a reliable legibility signal for them.
+    ``match_confidence`` is still reported as ``similarity * min_conf`` (a useful
+    quality score for ranking), but it no longer decides support.
     """
     target = _normalize(value)
     best_score = 0.0
