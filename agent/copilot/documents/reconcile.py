@@ -188,6 +188,10 @@ class _Scan:
     max_window: int
     min_span_len: float
     max_span_len: float
+    # Minimum per-token OCR confidence a span's weakest token may have and still
+    # be legible enough to support (the decoupled legibility floor — see
+    # reconcile_value). 0.0 admits any real match.
+    conf_floor: float
 
 
 def _token_field(token: Mapping[str, Any], *names: str) -> Any:
@@ -365,11 +369,17 @@ def _best_contiguous_from(
             similarity = SequenceMatcher(None, scan.target, text).ratio()
             # Coverage is checked last: it costs a second pass of the matcher, and
             # only a span that already resembles the value and would win is worth
-            # asking about. A span that fails it never touches best_score, so a
-            # weaker span that does cover the value can still win — the winner is
-            # the best-scoring span among those clearing *both* gates.
+            # asking about. A span that fails any gate never touches best_score, so
+            # a weaker span that does clear them can still win — the winner is the
+            # best-scoring span among those clearing ALL THREE gates: it resembles
+            # the value (similarity), OCR read it legibly enough to trust
+            # (conf >= conf_floor — the decoupled legibility floor, see
+            # reconcile_value), and it actually covers the value (two-sided
+            # coverage). conf is the span's weakest per-token confidence, so the
+            # floor rejects a span the moment any one of its glyphs is illegible.
             if (
                 similarity >= _MATCH_MIN
+                and conf >= scan.conf_floor
                 and similarity * conf > best_score
                 and _coverage_ok(scan.target, text)
             ):
@@ -408,9 +418,29 @@ def reconcile_value(
     chain's tokens are unioned whether or not they are contiguous, giving a
     wrapped match a two-line bbox — which is what it actually occupies.
 
-    ``threshold`` is the minimum match confidence to count as supported (the
-    pipeline passes ``Settings.doc_extraction_confidence_threshold``; the default
-    0.0 means "any real token match is enough").
+    Support is decoupled into two independent questions, because they fail for
+    different reasons and a value can pass one while failing the other:
+
+    * *Located* — is this value on the page? Answered by two-sided coverage
+      (:func:`_coverage_ok`, >= :data:`_COVERAGE_MIN`) and similarity
+      (>= :data:`_MATCH_MIN`). Both are CONFIDENCE-INDEPENDENT: they compare the
+      value's characters against the printed span's, so they reject an invented or
+      a *shrunk* value (``180`` read as ``18``) no matter how legibly it printed.
+    * *Legible* — did OCR read the located span clearly enough to trust the read?
+      Answered by ``threshold``: the span's weakest per-token OCR confidence
+      (``min_conf``) must be >= ``threshold``. This gates OCR legibility ALONE; it
+      is no longer folded into a ``similarity * conf`` product. So a value that is
+      fully located (coverage 1.0, similarity 1.0) but carries one low-confidence
+      glyph is NOT stripped of its citation merely because that glyph read faintly
+      — the earlier product gate did exactly that, a false negative on a correctly
+      extracted value (min_conf 0.55 against a 0.7 product bar rejected the value
+      even at similarity 1.0).
+
+    A value is ``supported`` only when it clears BOTH — located AND legible. The
+    pipeline passes ``Settings.doc_extraction_confidence_threshold`` as the
+    legibility floor; the default 0.0 means "any real token match is enough".
+    ``match_confidence`` is still reported as ``similarity * min_conf`` (a useful
+    quality score for ranking), but it no longer decides support.
     """
     target = _normalize(value)
     best_score = 0.0
@@ -425,6 +455,7 @@ def reconcile_value(
             max_window=min(len(target.split()), _MAX_WINDOW_TOKENS),
             min_span_len=len(target) * _MIN_LEN_RATIO,
             max_span_len=len(target) * _MAX_LEN_RATIO,
+            conf_floor=threshold,
         )
         # Pass 1 — contiguous spans, the whole of what reconciliation used to be.
         for start in range(len(scan.texts)):
@@ -472,7 +503,12 @@ def reconcile_value(
                     span.append(following)
                     text = f"{text} {scan.texts[following]}"
                     conf = min(conf, scan.confs[following])
-    if best_chain is not None and best_score >= threshold:
+    # No product-vs-threshold check here: the legibility floor is ``conf_floor``,
+    # already applied per span during selection, so a chosen chain has ALREADY
+    # cleared both the located gate (coverage + similarity) and the legible gate
+    # (min_conf >= threshold). Re-comparing best_score (the similarity*conf product)
+    # to threshold would reintroduce the coupling this decoupling removed.
+    if best_chain is not None:
         boxes = [[float(v) for v in _token_field(tokens[i], "bbox", "box")] for i in best_chain]
         return Reconciliation(
             supported=True,

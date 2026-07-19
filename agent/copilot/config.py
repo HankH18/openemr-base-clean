@@ -381,12 +381,25 @@ class Settings(BaseSettings):
         ),
     )
     doc_extraction_confidence_threshold: float = Field(
-        default=0.7,
+        default=0.5,
         description=(
-            "Minimum OCR-reconciliation match confidence for an extracted "
-            "value to count as document-grounded (bbox-anchored). Values below "
-            "it are flagged low-confidence/unsupported — never silently "
-            "trusted. Conservative by default; tune via the eval rubrics."
+            "Minimum OCR LEGIBILITY confidence for an extracted value to count as "
+            "document-grounded (bbox-anchored): the weakest per-token OCR "
+            "confidence (min_conf) across the located span must be >= this floor. "
+            "SEMANTIC CHANGE (2026-07-19, decouple located from legible): this is "
+            "now a floor on OCR legibility ALONE. It is NO LONGER multiplied into a "
+            "similarity*confidence product — whether the value is actually on the "
+            "page is gated separately and confidence-independently by two-sided "
+            "coverage + similarity in documents/reconcile.py. The old product gate "
+            "(default 0.7) stripped the citation from a correctly located value "
+            "carrying a single faintly-read glyph: min_conf 0.55 at similarity 1.0 "
+            "scored a 0.55 product and failed the 0.7 bar — a false negative on a "
+            "correctly extracted value. Default 0.5 sits BELOW the real-OCR-noise "
+            "band (a genuine misread glyph on a crisp demo page scores min_conf "
+            "~0.53-0.55) so such values stay supported, while a genuinely illegible "
+            "read (min_conf well under 0.5) is still withheld. Values below the "
+            "floor are flagged low-confidence/unsupported — never silently trusted. "
+            "Tune via the eval rubrics."
         ),
     )
     document_ingestion_enabled: bool = Field(

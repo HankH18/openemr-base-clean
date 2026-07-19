@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 
+from copilot.config import Settings
 from copilot.documents.reconcile import reconcile_value
 
 # A word-level OCR page in reading order, mirroring what TesseractOcr emits:
@@ -153,12 +154,46 @@ class TestNoInventionGate:
         assert result.supported is False
         assert result.bbox is None
 
-    def test_threshold_withholds_support_below_the_bar(self) -> None:
-        """A located span still fails the gate when it cannot clear the threshold."""
-        result = reconcile_value("Metformin 500 mg PO BID", PAGE_TOKENS, threshold=0.99)
+    def test_threshold_gates_legibility_not_the_sim_conf_product(self) -> None:
+        """The threshold withholds support by OCR legibility (min_conf), not the product.
 
-        assert result.supported is False
-        assert result.bbox is None
+        justify-test-edit (2026-07-19). This method was previously
+        ``test_threshold_withholds_support_below_the_bar`` and read, verbatim:
+
+            # A located span still fails the gate when it cannot clear the threshold.
+            result = reconcile_value("Metformin 500 mg PO BID", PAGE_TOKENS, threshold=0.99)
+            assert result.supported is False
+            assert result.bbox is None
+
+        There "the threshold" gated the ``similarity * conf`` PRODUCT
+        (match_confidence 0.94 < 0.99 => withheld). Requirement change: USER
+        APPROVED option B — decouple coverage from legibility (2026-07-19).
+        ``threshold`` is now a floor on OCR legibility ALONE — the span's weakest
+        per-token confidence (min_conf) — never the product. The old value could
+        not even witness the new contract (at similarity 1.0 the product equals
+        min_conf, so any threshold decides both identically), so it is replaced
+        with a located value whose product and min_conf DIVERGE — the only case
+        the old and new gates disagree on.
+
+        ``REAL_OCR_NOISE_TOKENS`` (a module-level fixture defined below) is a real
+        page whose printed "·" read back as "-": fully located, similarity ~0.97,
+        weakest glyph min_conf 0.55, so the sim*conf product is ~0.533. A floor of
+        0.54 sits ABOVE the product but BELOW min_conf.
+        """
+        value = "Austin, TX 78701 · (512) 555-0130"
+
+        # Floor 0.54: above the ~0.533 product, at-or-below the 0.55 min_conf. The
+        # OLD product gate withheld here (0.533 < 0.54); the decoupled legibility
+        # gate supports, because OCR read it legibly enough (min_conf 0.55 >= 0.54).
+        supported = reconcile_value(value, REAL_OCR_NOISE_TOKENS, threshold=0.54)
+        assert supported.supported is True
+        assert supported.bbox is not None
+
+        # A floor ABOVE the weakest glyph's legibility still withholds support: the
+        # floor CAN say no — it just says it about min_conf, not the product.
+        withheld = reconcile_value(value, REAL_OCR_NOISE_TOKENS, threshold=0.60)
+        assert withheld.supported is False
+        assert withheld.bbox is None
 
     @pytest.mark.parametrize(
         "value",
@@ -667,3 +702,77 @@ class TestVerbatimValuesAreUnaffected:
 
         # similarity 1.0 x the span's weakest token ("BID", 0.94) — as before.
         assert result.match_confidence == pytest.approx(0.94)
+
+
+class TestLegibilityFloorIsDecoupledFromLocation:
+    """The threshold gates OCR legibility (min_conf), not whether the value is located.
+
+    Bite-proof for the P2 false negative (USER APPROVED option B, 2026-07-19). A
+    value that is fully LOCATED — two-sided coverage 1.0, similarity 1.0 — but
+    carrying one faintly-read glyph must NOT lose its citation merely because that
+    glyph's OCR confidence is low. The old gate multiplied similarity by the
+    weakest per-token confidence and compared the PRODUCT to the threshold, so a
+    min_conf of 0.55 scored a 0.55 product and failed the deployed 0.7 bar even at
+    similarity 1.0 — stripping the citation from a correctly extracted value. The
+    fix decouples: location is gated by coverage + similarity (confidence-
+    independent), legibility by min_conf >= threshold, and both must hold.
+    """
+
+    @staticmethod
+    def _one_token(text: str, conf: float) -> list[dict[str, object]]:
+        """A single verbatim OCR token printing ``text`` at OCR confidence ``conf``."""
+        return [{"text": text, "bbox": [0.20, 0.30, 0.08, 0.03], "conf": conf}]
+
+    def test_located_value_with_a_weak_glyph_is_supported_at_the_deployed_threshold(
+        self,
+    ) -> None:
+        """RED before the fix, GREEN after — at the REAL deployed configuration.
+
+        The value is on the page verbatim (coverage 1.0, similarity 1.0); its one
+        glyph read at conf 0.55. At the deployed legibility floor
+        (``doc_extraction_confidence_threshold``, default 0.5) this must be
+        supported: min_conf 0.55 clears the floor. On the pre-fix code — product
+        gate, 0.7 default — the same call returned supported=False, which is the
+        exact false negative being fixed.
+        """
+        deployed = Settings().doc_extraction_confidence_threshold
+
+        result = reconcile_value("abcde", self._one_token("abcde", 0.55), threshold=deployed)
+
+        assert result.supported is True
+        assert result.bbox is not None
+        # match_confidence is STILL the sim*conf product (1.0 * 0.55) — a quality
+        # score for ranking, no longer the support decision.
+        assert result.match_confidence == pytest.approx(0.55)
+
+    def test_a_genuinely_illegible_value_is_still_withheld(self) -> None:
+        """Decoupling is not softening: a read too faint to trust stays unsupported.
+
+        The same fully-located value, but the glyph read at conf 0.20 — well below
+        the deployed legibility floor. The floor exists to withhold exactly this: a
+        read OCR was not confident of, even though the characters line up.
+        """
+        deployed = Settings().doc_extraction_confidence_threshold
+
+        result = reconcile_value("abcde", self._one_token("abcde", 0.20), threshold=deployed)
+
+        assert result.supported is False
+        assert result.bbox is None
+        assert result.match_confidence == 0.0
+
+    def test_shrunk_value_stays_unsupported_independent_of_the_floor(self) -> None:
+        """Location is confidence-independent: the R1 shrink is rejected at ANY floor.
+
+        "18" is a subsequence of the printed "180" (span-side coverage 2/3 = 0.667),
+        so two-sided coverage rejects it — no matter how legibly "180" was printed
+        or how the legibility floor is set. The floor=0.0 row is the load-bearing
+        one: with the legibility gate disabled, ONLY coverage can reject, so its
+        rejection proves the shrink is caught by location, not by confidence.
+        """
+        printed = self._one_token("180", 0.97)
+
+        for floor in (0.0, Settings().doc_extraction_confidence_threshold, 0.99):
+            result = reconcile_value("18", printed, threshold=floor)
+            assert result.supported is False, f"shrink '18'->'180' leaked at floor {floor}"
+            assert result.bbox is None
+            assert result.match_confidence == 0.0
