@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from copilot.domain.contracts import VerificationDomainFlag
 from copilot.domain.primitives import PatientId, ResourceType
+from copilot.rounds.ranges import reference_bounds
 from copilot.rounds.summary import group_observations
 from copilot.verification.core import build_context_from_resources
 from copilot.verification.rules import critical_lab
@@ -171,14 +172,15 @@ def _magnitude(res: Mapping[str, Any]) -> float | None:
 
 
 def _ref_bounds(res: Mapping[str, Any]) -> tuple[float | None, float | None]:
-    ranges = res.get("referenceRange")
-    if not isinstance(ranges, list) or not ranges or not isinstance(ranges[0], Mapping):
-        return (None, None)
+    """Reference band for magnitude scoring — delegated to the single grounded
+    parser in :mod:`copilot.rounds.ranges`.
 
-    def bound(key: str) -> float | None:
-        node = ranges[0].get(key)
-        if isinstance(node, Mapping) and isinstance(node.get("value"), (int, float)):
-            return float(node["value"])
-        return None
-
-    return (bound("low"), bound("high"))
+    This was a third, independent referenceRange reader that returned an inverted
+    structured band (``low > high``) verbatim, unlike ``ranges.reference_bounds``
+    and the ``ReferenceRange`` validator (both fixed in R3 to swap). ``_magnitude``
+    then scored an out-of-range reading against a backwards band, diverging the
+    acuity signal from the chart and series views. Reusing ``reference_bounds``
+    makes all readers agree — the low>high swap, the non-finite bound guard, and
+    the free-text fallback now apply here too.
+    """
+    return reference_bounds(res)

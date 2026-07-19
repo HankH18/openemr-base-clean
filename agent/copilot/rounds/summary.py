@@ -614,7 +614,14 @@ def _fmt_num(x: float, decimals: int = 0) -> str:
 
     A whole number still renders as a whole number: no ``92.0``, and no
     significant-figure formatting that would turn 1234 into ``1.23e+03``.
+
+    Non-finite-safe: ``int(inf)`` raises ``OverflowError`` and ``int(nan)``
+    raises ``ValueError``, so a non-finite operand renders as its ``repr``
+    (``"inf"`` / ``"nan"``) rather than crashing. Callers guard upstream too
+    (:func:`_numeric`, :func:`_trend`); this is the last line of defence.
     """
+    if not math.isfinite(x):
+        return str(x)
     if x == int(x):
         return str(int(x))
     return f"{x:.{decimals}f}"
@@ -661,6 +668,12 @@ def _trend(group: list[Mapping[str, Any]]) -> str:
         return f" · updated{tail}" if tail else ""
     (lv_value, _), (pv_value, _) = pair
     delta = lv_value - pv_value
+    if not math.isfinite(delta):
+        # Both readings are finite (they cleared _numeric's isfinite guard) but
+        # their difference overflows the float range — e.g. ~+1e308 minus ~-1e308.
+        # The magnitude is unrepresentable, so there is no honest number to print;
+        # say so rather than crash in _fmt_num's int(inf) (OverflowError → 500).
+        return f"  · change out of representable range — verify record{tail}"
     if delta == 0:
         return f"  → no change{tail}"
     arrow = "↑" if delta > 0 else "↓"

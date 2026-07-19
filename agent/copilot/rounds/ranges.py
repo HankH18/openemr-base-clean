@@ -26,6 +26,7 @@ observation-series endpoint derive them identically:
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -91,10 +92,18 @@ def parse_range_text(text: str) -> tuple[float | None, float | None]:
 
 
 def _bound_value(node: Any) -> float | None:
-    """Read the numeric ``value`` out of a structured referenceRange low/high."""
+    """Read the numeric ``value`` out of a structured referenceRange low/high.
+
+    ``math.isfinite`` drops a NaN/Infinity bound closed, mirroring
+    :func:`copilot.rounds.summary._numeric`'s guard on reading values: JSON
+    forbids them, but ``json.loads``/``httpx`` parse them if a server emits them,
+    and a non-finite bound scores every reading in-range (``value > nan`` is
+    always False) — a real derangement would read as "steady". A dropped bound
+    behaves like an absent one (fail-closed → neutral / vitals fallback).
+    """
     if isinstance(node, Mapping):
         v = node.get("value")
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
             return float(v)
     return None
 

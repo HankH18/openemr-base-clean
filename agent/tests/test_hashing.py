@@ -22,9 +22,17 @@ def test_nested_dict_key_order_does_not_affect_hash() -> None:
     assert content_hash_for_resources(a) == content_hash_for_resources(b)
 
 
-def test_list_order_matters() -> None:
-    x = [{"id": "1"}, {"id": "2"}]
-    y = [{"id": "2"}, {"id": "1"}]
+def test_nested_list_order_still_matters() -> None:
+    # Contract change (FIX 4): the TOP-LEVEL resource-set order no longer affects
+    # the digest — a FHIR fetch is a set, not a sequence, and order-sensitivity
+    # there caused spurious re-synthesis (see test_hashing_list_order.py, and the
+    # module docstring's own "insertion order ... do not affect the digest").
+    # This test previously asserted top-level order mattered; that assertion
+    # encoded the defect and is replaced by the order-invariance contract. The
+    # surviving, still-true invariant is that the order of a NESTED list inside a
+    # resource remains significant (e.g. procedure_report_seq / result[]).
+    x = [{"resourceType": "DiagnosticReport", "id": "1", "result": ["a", "b"]}]
+    y = [{"resourceType": "DiagnosticReport", "id": "1", "result": ["b", "a"]}]
     assert content_hash_for_resources(x) != content_hash_for_resources(y)
 
 
