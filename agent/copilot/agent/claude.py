@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from copilot.agent.base import (
     AgentAnswer,
@@ -101,6 +101,12 @@ class _ClaudeClaim(BaseModel):
 
 class _ClaudeAnswer(BaseModel):
     """Full JSON shape Claude must return."""
+
+    # Untrusted LLM output. _parse_answer currently swallows a ValidationError,
+    # so nothing leaks today — but hide the parsed value from the error text
+    # anyway (defense-in-depth) so any future caller that stringifies it cannot
+    # emit the model's answer/claims. Matches the extraction schemas (edf8b24).
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     answer: str
     claims: list[_ClaudeClaim]

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from copilot.domain.contracts import Claim, MemoryFileSummary
 from copilot.domain.primitives import FhirReference, PatientId, ResourceType, utcnow
@@ -66,6 +66,13 @@ class _ClaudeClaim(BaseModel):
 
 class _ClaudeSynthesizerResponse(BaseModel):
     """Full JSON shape Claude must return."""
+
+    # Untrusted LLM output: a ValidationError here is stringified into
+    # SynthesisError and emitted in the poller.result observability event.
+    # Strip the parsed value (synthesized clinical claims) from the error text
+    # while keeping the field path + error type — matching the extraction
+    # schemas hardened in edf8b24 (see copilot.domain.documents).
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     claims: list[_ClaudeClaim]
     acuity_score: float
