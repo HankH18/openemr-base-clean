@@ -150,24 +150,65 @@ def test_document_ingestion_flag_defaults_on_preserving_todays_behavior() -> Non
     assert Settings().document_ingestion_enabled is True
 
 
-def test_upload_returns_503_when_ingestion_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upload_returns_503_when_ingestion_is_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     # The regression guarded: the flag was declared as a "master switch" and read
     # NOWHERE, so an operator could not actually stop intake.
+    #
+    # JUSTIFY-TEST-EDIT (Round-3 fix F2, R3-4): this previously asserted 503 for an
+    # UNauthenticated caller with no DB. F2 moved the document_ingestion_enabled 503
+    # check to AFTER authenticate + authorize (matching writes.py) so feature
+    # availability never leaks to an unauthorized caller. The flag-enforcement
+    # contract (disabled => 503) is PRESERVED — now for an AUTHORIZED caller — so we
+    # seed a rounding cursor (clinician 42 -> patient 1001) and still assert 503.
+    # Requirement: "authorize-before-feature-gate" (matches writes.py:163-171).
+    import asyncio
+
+    import sqlalchemy as sa
     from fastapi.testclient import TestClient
 
     from copilot.api.app import create_app
     from copilot.config import get_settings
+    from copilot.domain.primitives import ClinicianId
+    from copilot.memory.db import Base, get_engine, get_session_factory, session_scope
+    from copilot.memory.repository import MemoryRepository
 
+    db_file = tmp_path / "vision_contract.db"
+    monkeypatch.setenv("COPILOT_DATABASE_URL", f"sqlite+aiosqlite:///{db_file}")
+    monkeypatch.setenv("COPILOT_FHIR_BASE_URL", "http://oe.test/fhir")
     monkeypatch.setenv("COPILOT_DOCUMENT_INGESTION_ENABLED", "false")
     monkeypatch.setenv("COPILOT_ANTHROPIC_API_KEY", "")
     get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    import copilot.memory.models  # noqa: F401  (registers tables on Base.metadata)
+
+    sync_engine = sa.create_engine(f"sqlite:///{db_file}")
+    Base.metadata.create_all(sync_engine)
+    sync_engine.dispose()
+
+    async def _seed() -> None:
+        async with session_scope() as session:
+            await MemoryRepository(session).upsert_rounding_cursor(
+                ClinicianId(value=42), [1001], 0, []
+            )
+
     try:
+        asyncio.run(_seed())
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
         client = TestClient(create_app(get_settings(), probe_factories=[]))
         r = client.post(
             "/v1/documents",
             files={"file": ("x.pdf", b"%PDF-1.4\n", "application/pdf")},
             data={"patient_id": "1001", "clinician_id": "42", "doc_type": "lab_pdf"},
         )
-        assert r.status_code == 503, f"disabled ingestion must 503, got {r.status_code}"
+        assert r.status_code == 503, (
+            f"disabled ingestion must 503 for an authorized caller, got {r.status_code}"
+        )
     finally:
         get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()

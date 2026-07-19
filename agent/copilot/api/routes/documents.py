@@ -120,14 +120,12 @@ async def upload_document(
     settings = get_settings()
     correlation_id = current_correlation_id()
 
-    # The ingestion kill switch, genuinely enforced (it used to be declared in
-    # config and read nowhere). Same contract as the writeback gate: a clear 503,
-    # never a 500, and nothing is accepted or stored.
-    if not settings.document_ingestion_enabled:
-        raise HTTPException(status_code=503, detail=_INGESTION_DISABLED_DETAIL)
-
     # Identity per the auth-mode contract (disabled → the form clinician_id;
-    # smart → the session cookie, 401/403 on absence/mismatch).
+    # smart → the session cookie, 401/403 on absence/mismatch). Resolved BEFORE
+    # the ingestion kill switch below, matching the writes route (writes.py):
+    # authz (401/403) runs before the disabled-feature 503 so feature
+    # availability — whether ingestion is enabled on this deployment — never
+    # leaks to an unauthenticated or unauthorized caller.
     acting = await resolve_acting_context(settings, request, clinician_id)
     cid = acting.clinician_id
     pid = PatientId(value=patient_id)
@@ -137,6 +135,13 @@ async def upload_document(
     # no established round has an empty authorized set → refused.
     if not await is_authorized(cid, pid):
         raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
+
+    # The ingestion kill switch, genuinely enforced (it used to be declared in
+    # config and read nowhere). Same contract as the writeback gate: a clear 503,
+    # never a 500, and nothing is accepted or stored. Gated AFTER authz above so a
+    # caller must already be authenticated and on-round to observe it.
+    if not settings.document_ingestion_enabled:
+        raise HTTPException(status_code=503, detail=_INGESTION_DISABLED_DETAIL)
 
     # Fail loud on an unknown doc_type instead of silently coercing it to lab_pdf
     # — a mis-typed upload would otherwise extract an intake form / medication
@@ -247,15 +252,25 @@ async def get_document_page(
         doc = await repo.get_source_document(document_id)
         if doc is None:
             raise HTTPException(status_code=404, detail="Document not found")
-        pages = await repo.get_document_pages(document_id, page_no=page_no)
 
-    # Authorization boundary (UC-6): the document's patient must be on the
-    # clinician's rounding list before any page bytes are returned. Refuse with the
-    # SAME 404 as the missing-document branch (not a 403) so a 403-vs-404 split can
-    # never turn the guessable autoincrement id space into an existence oracle —
-    # identical to the get_document / conversation read contract above.
-    if not await is_authorized(cid, PatientId(value=doc.patient_id)):
-        raise HTTPException(status_code=404, detail="Document not found")
+        # Authorization boundary (UC-6): the document's patient must be on the
+        # clinician's rounding list before any page bytes are returned. Checked
+        # BEFORE loading the page image (get_document_pages reads a non-deferred
+        # LargeBinary PNG blob — PHI) so an unauthorized caller never causes the
+        # rasterized clinical page to be pulled from the store, and the refusal's
+        # latency does not depend on whether the id exists (a missing id 404s
+        # without a load; loading the image first turned that difference into a
+        # timing oracle). Mirrors the get_document read above, which authorizes
+        # before reading any facts.
+        #
+        # Refuse with the SAME 404 as the missing-document branch (not a 403) so a
+        # 403-vs-404 split can never turn the guessable autoincrement id space into
+        # an existence oracle — identical to the get_document / conversation read
+        # contract above.
+        if not await is_authorized(cid, PatientId(value=doc.patient_id)):
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        pages = await repo.get_document_pages(document_id, page_no=page_no)
 
     if not pages or pages[0].image is None:
         raise HTTPException(status_code=404, detail="Page not found")
