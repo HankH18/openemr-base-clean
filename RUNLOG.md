@@ -8,7 +8,7 @@ in the loop. One entry per work unit; append as you go.
 - Commit per working unit; push to `gitlab` remote after each.
 - Tests must pass before advancing to the next unit.
 - No deploys, no secrets typed in, no touching the droplet from this loop.
-- Stay within `ARCHITECTURE.md`. If reality contradicts it, note it and stop
+- Stay within `W2_ARCHITECTURE.md`. If reality contradicts it, note it and stop
   rather than diverging.
 - If stuck ~3 attempts, stop and record; don't hack.
 

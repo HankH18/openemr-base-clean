@@ -1,6 +1,6 @@
 # Clinical Co-Pilot — Users & Use Cases
 
-> This document is the source of truth for `ARCHITECTURE.md`. Every agent capability
+> This document is the source of truth for `W2_ARCHITECTURE.md`. Every agent capability
 > specified there traces back to a use case defined here.
 
 ---
@@ -94,5 +94,5 @@ them" means changes since they last completed that patient.
 | **UC-6** | **Authorization boundary** | Refuses queries about patients not on this physician's authorized list. | The correct behavior is a *refusal with a reason* — a security-relevant conversational response, and an explicit eval target. |
 | **UC-7** | **Graceful uncertainty** | When it can't verify enough to answer, says so and surfaces the raw source to check, rather than guessing. | Honest, contextual uncertainty communication is conversational; the alternative (a confident wrong field) is the exact failure the project exists to prevent. |
 
-Each capability specified in `ARCHITECTURE.md` maps to one or more of UC-1…UC-7. Capabilities
+Each capability specified in `W2_ARCHITECTURE.md` maps to one or more of UC-1…UC-7. Capabilities
 that do not map to a use case above are out of scope for v1.

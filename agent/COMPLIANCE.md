@@ -80,7 +80,7 @@ built-in self-hosted stack; see §3.1 and (b)).
 | **Live on reference deployment** | Code is present and **off by default in code**, but the reference deployment (`agentforge.hankholcomb.com`) opts it on — so it is an **active control there**. A fresh deploy must enable it. |
 | **Config surface only** | Configuration knobs exist, but the enforcing code path is not yet built/wired. |
 | **Operator / deployment step** | Depends on infrastructure or configuration outside the application code. |
-| **Planned** | Designed in `agent/research/PRODUCTION_GRADE_PLAN.md`; no implementing code yet. |
+| **Planned** | Designed in the project's Week-1 production-grade plan (archived); no implementing code yet. |
 
 ---
 
@@ -276,7 +276,7 @@ customer-managed** and is deliberately not over-claimed here.
   PHI-adjacent subprocessor** — a production deployment must cover it by BAA
   (see §3.1) or switch to the **self-hosted** Langfuse stack, which is **built
   into the deploy compose and off by default** (`docker-compose.deploy.yml`,
-  `agent/LANGFUSE_SETUP.md`, `PRODUCTION_GRADE_PLAN.md` §3) to keep trace
+  `agent/LANGFUSE_SETUP.md`) to keep trace
   metadata on the organization's own infrastructure. On a fresh deploy with no
   keys, tracing is a no-op.
 
@@ -369,7 +369,7 @@ the record.
 **Live on the reference deployment — browser edge.** HTTPS termination for
 browser-facing traffic is provided by the deployment's reverse proxy (Caddy with
 automatic Let's Encrypt certificates) and requires a real domain + DNS — an
-operator step (`Caddyfile.https.example`, `PRODUCTION_GRADE_PLAN.md` §2). **The
+operator step (`Caddyfile.https.example`). **The
 reference deployment now runs HTTPS at `https://agentforge.hankholcomb.com`**
 (Caddy + Let's Encrypt; verified live — HTTP/2 served with a valid certificate,
 plain HTTP redirects to HTTPS), and the earlier bare-IP demo's **basic-auth guard
@@ -510,7 +510,7 @@ individual physician. Browser-facing HTTPS (Caddy + Let's Encrypt) is live and
 the old basic-auth guard is removed. **All of this is off by default in code**
 (`auth_mode` defaults to `disabled`): a fresh deploy authenticates no individual
 user until an operator enables SMART login over HTTPS with an OpenEMR SMART-client
-registration (see `DEPLOY.md` §15–16 / `agent/research/PRODUCTION_GRADE_PLAN.md`).
+registration (see `DEPLOY.md` §15–16).
 
 **Still off, even on the reference deployment (kept honest):** the physician
 write-back path (`writeback_enabled=False` ⇒ routes return `503`) is the one

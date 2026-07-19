@@ -374,11 +374,12 @@ document + retrieval traffic.
   quality/latency alert, not an availability page for the answer itself.
 - **First response (runbook):** check the `embedder`/`reranker` entries on
   `/ready` (graded — `ok` / `degraded` / `down`) and the Cohere/Voyage key
-  configuration; confirm the `pgvector` dependency is `ok` (`readiness.py:54-81`
-  probes only that the `vector` **extension** is installed — without it the
-  `embedding` column cannot be stored, so no chunk carries a vector and dense
-  ranking silently contributes nothing: `retriever.py:244-248` skips rows whose
-  `embedding is None`, leaving sparse-only retrieval). Inspect a slow
+  configuration; confirm the `pgvector` dependency is `ok`
+  (`api/readiness.py:172-197`, `probe_pgvector`, probes only that the `vector`
+  **extension** is installed — without it the `embedding` column cannot be
+  stored, so no chunk carries a vector and dense ranking silently contributes
+  nothing: `rag/retriever.py:471-475` skips rows whose `embedding is None`,
+  leaving sparse-only retrieval). Inspect a slow
   `guideline.retrieve` trace for which sub-step (embed vs. **in-Python** cosine
   scan vs. rerank) dominates — note the scan is O(corpus) in the app process,
   **not** an indexed DB search (see `W2_ARCHITECTURE.md` §RAG index), so a

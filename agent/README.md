@@ -12,7 +12,7 @@ Reads OpenEMR **only through its FHIR/REST API** using two OAuth actors:
 - **SMART Backend Services** — `client_credentials` JWT assertion with `system/*.read` scopes
   for the background poller (always a scoped system actor, independent of any login).
 
-See `../ARCHITECTURE.md` for the full design and rationale.
+See `../W2_ARCHITECTURE.md` for the full design and rationale.
 
 ## Layout
 

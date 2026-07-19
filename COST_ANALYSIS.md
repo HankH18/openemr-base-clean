@@ -65,7 +65,7 @@ request path in the current build, so their LLM cost is **$0 today**:
 | Capability | Model | Status in current build |
 |---|---|---|
 | **Background synthesis** (`ClaudeSynthesizer`) | `claude-sonnet-5` | Defined + configured, but the wired poller, the serve-time refresh, and rounds-start all instantiate the deterministic **`StubSynthesizer`** (`worker/runtime.py`, `worker/pipeline.py`, `rounds/service.py`). The poller itself is also **OFF by default** (`poller_enabled=False`). So background synthesis calls no LLM today. |
-| **Verification entailment** (`LlmEntailment`, optional narrative-drift check) | `claude-haiku-4-5-20251001` | Defined + configured, but constructed nowhere; every call to the verifier passes `entailment=None`. `anthropic_model_gating` is referenced only in `config.py`. So the gating tier is dormant — **$0**. |
+| **Verification entailment** (`LlmEntailment`, optional narrative-drift check) | `claude-haiku-4-5-20251001` | Defined + configured, but constructed nowhere; every call to the verifier passes `entailment=None`. The gating model `anthropic_model_gating` *is* read beyond `config.py` — the graph-path critic `RealCritic` (`agent/copilot/graph/critic.py:211`) uses it for an LLM safety pass that would bill at the haiku rate — but that critic runs **only** on the multi-agent graph path, which is behind `chat_graph_enabled` (default **OFF**, `config.py:447`). The default build's inline chat path never constructs it, and `build_critic` returns the keyless `StubCritic` (no LLM) whenever the API key is unset. So the gating tier is dormant — **$0**. |
 
 The synthesis unit economics in §3b are therefore a **projection of what
 background synthesis costs once the LLM synthesizer is switched in** — not a
@@ -102,7 +102,7 @@ Week 2 adds two feature surfaces, each with its own model calls. Both are
 **key-gated**: with no `VOYAGE_API_KEY` / `COHERE_API_KEY` the embedder and
 reranker fall back to deterministic **keyless stubs** (no outbound call, **$0**),
 and with no `ANTHROPIC_API_KEY` the vision extractor falls back the same way
-(`build_vision` returns `StubVision()` — `agent/copilot/documents/vision.py:226-230`).
+(`build_vision` returns `StubVision()` — `agent/copilot/documents/vision.py:540-544`).
 So, exactly as with Week-1 synthesis, the Week-2 model spend is **$0 until an
 operator wires real keys.**
 
@@ -161,10 +161,13 @@ unknown model is never costed as free):
 | `rerank-v3.5` | **Week-2** retrieval rerank (per query) | **$0.25** (normalized — see below) | **$0.00** |
 | **Tesseract OCR** | **Week-2** local page OCR (bbox reconciliation) | **$0.00** (self-hosted, in-container) | **$0.00** |
 
-The intro sonnet-5 rate is a real per-token discount noted in the pricing
-docstring; the `cost_usd` table itself carries the **standard** $3/$15, so every
-figure below uses standard pricing and is therefore conservative — 2026 intro
-pricing would cut the Anthropic line ~33%. Note the **vision** model
+The intro sonnet-5 rate is a real per-token discount from Anthropic's
+**external, publicly-published rate card** — it is *not* encoded in `pricing.py`.
+That table carries only the **standard** row (`"claude-sonnet-5": (3.0, 15.0)`)
+and its docstring records "provider list prices … as of 2026-07"; there is **no
+intro-rate row or docstring note** in the code. So every figure below uses the
+standard $3/$15 the code actually costs at and is therefore conservative — the
+external 2026 intro pricing would cut the Anthropic line ~33%. Note the **vision** model
 (`anthropic_model_vision`) defaults to `claude-sonnet-5`, so it resolves to the
 same real $3/$15 row — never the unknown-model fallback.
 
@@ -294,7 +297,7 @@ of a fraction of chat turns, not all of them (§4).
 | Working days / month | 22 |
 | Chat turns / clinician / day | 25 |
 | Patients on a clinician's panel | 15 |
-| Substantive syntheses / patient / day (after change-gating; ~144 raw ticks/day at the 300s default interval, but only real changes cost) | 6 |
+| Substantive syntheses / patient / day (after change-gating; ~288 raw ticks/day at the 300 s default interval — 86,400 s ÷ 300 s — but only real changes cost) | 6 |
 | Patient-panel sharing (a patient synthesized once serves every clinician viewing them) | none at 100 users; grows with scale |
 | Documents ingested / clinician / day (Week-2) | 2 |
 | Guideline retrievals / clinician / day (Week-2; fires on ~half of the 25 chat turns) | 12 |
@@ -415,8 +418,10 @@ further ~33%.
   LLM line is chat-only. No caching or dedup yet — every chat turn is a
   full-price call.
 - **Bottleneck:** none at this scale; a single agent process comfortably serves
-  100 clinicians (see `loadtest/RESULTS.md` — the service layer sustains 50
-  concurrent users with sub-30 ms p95 on the serve paths).
+  100 clinicians (see `loadtest/RESULTS.md` — at 50 concurrent users the fast
+  serve paths stay well-bounded: `/health` sub-30 ms p95, and the readiness and
+  DB-read paths sub-60 ms p95 — `/ready` p95 53.1 ms, `rounds/current` p95
+  59.0 ms).
 
 ### 1,000 users — *horizontal agent fleet + shared caches*
 
@@ -503,10 +508,19 @@ of real traffic.
 Latency has two sources of truth, and each cell below is labeled **MEASURED** or
 **ESTIMATE**:
 
-1. **Measured service-layer percentiles** from `loadtest/RESULTS.md` (offline
-   httpx driver, `auth_mode=disabled`, **stubbed** LLM, throwaway SQLite —
-   *framework + transport only, no real model or FHIR call*; captured
-   2026-07-10). These are exact for the fast serve paths.
+1. **Measured service-layer percentiles** from the **2026-07-10 warm-stub
+   capture** of the offline httpx driver (`auth_mode=disabled`, **stubbed** LLM,
+   throwaway SQLite — *framework + transport only, no real model or FHIR call*).
+   These are the meaningful serve-layer floor: the fast paths *before* the
+   FHIR-retry-on-absent-backend cost was wired onto the stub fetch path.
+   **Important — the live `loadtest/RESULTS.md` was re-captured 2026-07-19** and
+   now shows materially higher end-to-end chat / `rounds/start` numbers (chat
+   p50 ~1,906 ms / p95 ~2,388 ms at 10 users, `RESULTS.md` line 96) purely
+   because that harness has no live FHIR backend and exhausts the client
+   retry-backoff (~1.9 s over 6 resource types) before failing — an
+   absent-dependency artifact the file's own provenance note documents (RESULTS.md
+   §Provenance), **not** production-representative. §9a below therefore reports
+   the archived 07-10 floor, not the 07-19 numbers now in that file.
 2. **SLO-anchored estimates** for the paths whose latency is dominated by an
    upstream model call. The stubbed p50/p95 harness
    (`agent/scripts/latency_report.py`) measures the LLM-free floor; the
@@ -514,7 +528,12 @@ Latency has two sources of truth, and each cell below is labeled **MEASURED** or
    (`OBSERVABILITY.md` §7.1 and Alert 2) because no production traces are
    retained yet. Every estimate states its basis.
 
-### 9a. Fast serve paths — MEASURED (service layer, 10 concurrent users)
+### 9a. Fast serve paths — MEASURED (2026-07-10 warm-stub floor, 10 concurrent users)
+
+> These are the archived **2026-07-10** serve-layer floor (the FHIR-absent retry
+> inflation stripped out), **not** the numbers currently in `loadtest/RESULTS.md`
+> — that file was re-captured 2026-07-19 and its chat / `rounds/start` rows are
+> retry-dominated (see the §9 note above and the file's own provenance section).
 
 | Path | p50 (ms) | p95 (ms) | Note |
 |---|---:|---:|---|
@@ -524,15 +543,20 @@ Latency has two sources of truth, and each cell below is labeled **MEASURED** or
 | `POST /v1/rounds/start` | **12.4** | **20.8** | 500 in-harness (no live FHIR); 200 on the deployed stack |
 | `POST /v1/chat` (serve layer, stubbed agent, 200 fail-closed) | **56.0** | **108.5** | full serve path **minus** the live Claude call |
 
-At **50** concurrent users the single uvicorn worker + SQLite become the write
-bottleneck: `rounds/current` widens to **p50 156.3 / p95 414.9 ms** and the
-stubbed chat serve path to **p50 369.9 / p95 1,055.5 ms**, while `/health` stays
-flat (~10 ms p95). This is the empirical motivation for the §7 1,000-user step
-(stateless replicas + managed Postgres + Redis).
+At **50** concurrent users in that same 2026-07-10 capture the single uvicorn
+worker + SQLite become the write bottleneck: `rounds/current` widens to **p50
+156.3 / p95 414.9 ms** and the stubbed chat serve path to **p50 369.9 / p95
+1,055.5 ms**, while `/health` stays flat (~10 ms p95). This is the empirical
+motivation for the §7 1,000-user step (stateless replicas + managed Postgres +
+Redis). (In the current 2026-07-19 `loadtest/RESULTS.md` the 50-user chat row is
+instead retry-dominated — **p50 ~1,884 / p95 ~2,420 ms**, RESULTS.md line 132 —
+so it no longer isolates the write bottleneck; the 07-10 numbers above do.)
 
 ### 9b. LLM chat turn (synthesis) — ESTIMATE (SLO-anchored)
 
-Real chat = the ~0.06 s p50 / ~0.1 s p95 **serve-layer floor** measured above
+Real chat = the ~0.06 s p50 / ~0.1 s p95 **serve-layer floor** (the 2026-07-10
+warm-stub chat serve path in §9a — i.e. with the FHIR-absent retry inflation
+stripped out, *not* the ~1.9 s retry-dominated figure now in `loadtest/RESULTS.md`)
 **plus** the Claude `sonnet-5` tool-use loop (2–3 sequential Anthropic calls +
 a live FHIR re-fetch, §3a). The model calls dominate:
 
@@ -566,7 +590,7 @@ Pipeline: de-identify → **Voyage embed** (query) → pgvector + FTS fuse →
 
 | Path | p50 | p95 | Basis |
 |---|---:|---:|---|
-| **Stub baseline** (keyless embed + rerank) | **low tens of ms** *(measured)* | **low tens of ms** *(measured)* | `latency_report.py` over the seeded corpus — DB fusion only, no network |
+| **Stub baseline** (keyless embed + rerank) | **low single-digit ms** *(measured)* | **low single-digit ms** *(measured)* | `latency_report.py` over the seeded corpus — DB fusion only, no network (`artifacts/latency_report.json`: `evidence_retrieval` p50 **1.37** / p95 **2.02** ms, n=5) |
 | **Real retrieval** (Voyage + Cohere) | **≈ 450 ms** *(est)* | **≈ 800 ms** *(est)* | `OBSERVABILITY.md` §7.1: `guideline.retrieve` **p95 < 800 ms** warn / **< 2 s** page; two network hops (embed + rerank) dominate |
 
 Retrieval is **fail-open**: a Cohere/Voyage timeout falls back to the fused
@@ -576,9 +600,10 @@ the grounded patient answer.
 ### 9e. Latency bottleneck reading (per path)
 
 - **Serve layer (Week-1):** single uvicorn worker + SQLite serialize writes at
-  50u — chat climbs to a ~1.06 s p95, `rounds/current` to ~415 ms. Fixed by the
-  §7 1,000-user tier (replicas + managed Postgres + Redis). *Bottleneck: write
-  serialization.*
+  50u — chat climbs to a ~1.06 s p95, `rounds/current` to ~415 ms (the 2026-07-10
+  warm-stub capture, §9a; the current 07-19 file's chat row is retry-dominated
+  instead). Fixed by the §7 1,000-user tier (replicas + managed Postgres +
+  Redis). *Bottleneck: write serialization.*
 - **Chat / synthesis:** the **Anthropic tool-use loop** — 2–3 sequential model
   calls plus a live FHIR re-fetch — is the whole tail. `tool_calls` is the
   lever (fewer round-trips ⇒ lower p95); prompt caching cuts per-call input
@@ -588,7 +613,7 @@ the grounded patient answer.
   this non-interactive path. *Bottleneck: the vision model call (+ CPU OCR per
   page).*
 - **Retrieval:** the **two network hops** (Voyage embed + Cohere rerank)
-  dominate; DB fusion is sub-tens-of-ms. Co-locating/caching the embedder and
+  dominate; DB fusion is low single-digit ms. Co-locating/caching the embedder and
   reranker near the app trims the tail, and fail-open bounds the worst case.
   *Bottleneck: embed + rerank network round-trips.*
 

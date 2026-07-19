@@ -179,7 +179,7 @@ Two **distinct** tiers — keep them straight:
 
    *Scope, stated honestly:* the gate scores **recorded rubric fixtures** — it verifies the rubric
    logic and the fixtures' consistency, and blocks a regression in that scored set. Coverage of the
-   **live agent's behavior** comes from the 578-case `pytest tests evals` + acceptance suites (also
+   **live agent's behavior** comes from the ~1454-case `pytest tests evals` + acceptance suites (also
    run in the same CI job). The two together — behavioral suites + the rubric gate — are what block a
    regression from reaching the demo.
 

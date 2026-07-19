@@ -106,12 +106,28 @@ Save `PW3` somewhere safe — that's the initial OpenEMR admin password.
 
 ## 5. Bring the stack up
 
+The default stack includes the `caddy` public-ingress service — it has no
+compose profile, so it starts with everything else. Caddy bind-mounts
+`./Caddyfile` and `./agent/web/dist`, and **both are gitignored** (see
+`.gitignore`), so on a fresh clone neither exists. Left alone, Docker
+auto-creates them as empty directories and caddy crash-loops trying to parse a
+directory as its config — which makes the `--wait` below exit nonzero. Create
+the real files first: copy the committed HTTP-on-`:80` Caddyfile (the same file
+§12's rollback restores) and build the SPA bundle caddy serves.
+
+```bash
+cp Caddyfile.example Caddyfile
+cd agent/web && npm ci && npm run build && cd -   # -> agent/web/dist
+```
+
+Then bring the stack up:
+
 ```bash
 docker compose -f docker-compose.deploy.yml --env-file .env up -d --wait
 ```
 
-First boot pulls the images and runs OpenEMR's install script — expect
-~3 minutes. `--wait` blocks until both containers report healthy.
+First boot pulls/builds the images and runs OpenEMR's install script — expect
+~3 minutes. `--wait` blocks until the stack's containers report healthy.
 
 If it fails on `--wait`, check logs:
 
@@ -161,8 +177,12 @@ pnotes         1
 From the droplet:
 
 ```bash
-curl -I  http://localhost/interface/login/login.php
-curl -s  http://localhost/apis/default/fhir/metadata | head -c 400 ; echo
+CF="docker compose -f docker-compose.deploy.yml"
+# OpenEMR publishes no host port and caddy (:80) does not route these paths, so
+# smoke it from inside its own container — the agent reaches it the same way
+# (http://openemr), which is why plain http on :80 serves both the UI and API.
+$CF exec openemr curl -I  http://localhost/interface/login/login.php
+$CF exec openemr curl -s  http://localhost/apis/default/fhir/metadata | head -c 400 ; echo
 ```
 
 The first should return `HTTP/1.1 200 OK`; the second should be JSON
@@ -285,7 +305,8 @@ the keyless stubs — reported `degraded` advisory when running on the stub), an
 `openemr_fhir` + `llm` + `langfuse`. A 503 means a **gating** dependency is down
 (advisory ones — `langfuse`, `guideline_corpus`, the keyless stubs — never cause
 a 503). `GET /status` returns the agent health aggregates (ingestion count,
-extraction pass rate, eval-by-rubric over the 62-case golden set (53 fixture + 9 live), p50/p95
+extraction pass rate, eval-by-rubric over the **53-case fixture golden set** (the gate also
+scores 9 baseline-free live cases → 62 total), p50/p95
 latency, error rate), each labelled `measured:` (live agent-DB) or `recorded:`
 (committed artifact) in its `metric_sources` block. `retrieval_hit_rate` is
 reported **unavailable** — no retrieval telemetry is persisted, so the `0.0` is a
@@ -392,7 +413,7 @@ SITE_ADDR_OATH=https://agentforge.<your-domain>          # OpenEMR's advertised 
 COPILOT_PUBLIC_BASE_URL=https://agentforge.<your-domain> # builds the SMART redirect_uri + post-login redirect
 ```
 
-The registered SMART app redirect URI (see PRODUCTION_GRADE_PLAN.md §A.8) must be exactly
+The registered SMART app redirect URI must be exactly
 `${COPILOT_PUBLIC_BASE_URL}/v1/auth/callback`. CORS stays empty — the SPA and API are
 same-origin behind Caddy, so cookies are first-party and no CORS middleware is needed.
 
@@ -473,7 +494,7 @@ be presented as a customer-controlled safeguard. Only 14.1 (token encryption) an
 
 > Compliance framing (technical-safeguard map, BAAs, operator-owned administrative and
 > physical safeguards) is tracked separately in the compliance write-up
-> (PRODUCTION_GRADE_PLAN.md §7 / `COMPLIANCE.md`).
+> (`agent/COMPLIANCE.md`).
 
 ## 15. Redeploy the agent with new backend code (rebuild + migrate)
 
@@ -495,7 +516,7 @@ docker compose -f docker-compose.deploy.yml build agent
 docker compose -f docker-compose.deploy.yml run --rm --entrypoint alembic agent upgrade head
 # 3. Restart the agent on the new image.
 docker compose -f docker-compose.deploy.yml --env-file .env up -d agent
-# 4. Verify (should still report postgres / openemr_fhir / llm ok).
+# 4. Verify (should still report document_store / openemr_fhir / llm ok).
 docker compose -f docker-compose.deploy.yml exec agent \
   python -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/ready').read().decode())"
 ```
@@ -694,7 +715,7 @@ docker compose -f docker-compose.deploy.yml exec agent \
 
 **Smoke the Week-2 flow** (server-side, no browser login needed) — upload a fixture
 lab PDF and confirm extraction + citations round-trip: hit `POST /v1/documents`
-then `GET /v1/documents/{id}/evidence` (see the Postman/Bruno collection in
+then `GET /v1/documents/{id}` (which returns the extraction's facts + citations; see the Postman/Bruno collection in
 `api-collection/`, "Week 2" folder), or drive the browser flow at
 `https://agentforge.hankholcomb.com` after SMART sign-in.
 

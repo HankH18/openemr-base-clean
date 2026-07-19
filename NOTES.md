@@ -1,7 +1,7 @@
 # Interview Prep Notes — AgentForge Clinical Co-Pilot
 
 Short answers to the questions the checkpoint interview probes. Backed by `AUDIT.md`,
-`ARCHITECTURE.md`, `USERS.md`, and the built agent (`agent/`) + UI (`agent/web/`).
+`W2_ARCHITECTURE.md`, `USERS.md`, and the built agent (`agent/`) + UI (`agent/web/`).
 
 ## 1. The most important audit finding — and what building-first would have missed
 **The shipped demo data is demographics-only.** A repo-wide search for inserts into
