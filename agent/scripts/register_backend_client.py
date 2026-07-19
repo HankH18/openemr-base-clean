@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import secrets
 from pathlib import Path
 
@@ -74,6 +75,9 @@ def main() -> None:
             serialization.NoEncryption(),
         )
     )
+    # Private key: owner read/write only (0600). write_bytes() honours the
+    # process umask (typically 0644 = world-readable), so tighten explicitly.
+    os.chmod(key_path, 0o600)
     jwk = JsonWebKey.import_key(key.public_key(), {"kty": "RSA"}).as_dict()
     jwk.update({"kid": secrets.token_hex(8), "use": "sig", "alg": "RS384"})
 

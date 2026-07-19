@@ -31,6 +31,13 @@ from typing import Final
 #   under-reported; recalibrate if chunking or candidate count changes.
 _PRICING: Final[dict[str, tuple[float, float]]] = {
     "claude-sonnet-5": (3.0, 15.0),
+    # Opus/Fable list prices per the claude-api skill's current rate card
+    # ($ per 1M input / output tokens). Without these rows an Opus- or
+    # Fable-tier synthesis model falls through to the Sonnet default and
+    # under-reports spend (Opus ~40% low, Fable much more).
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-fable-5": (10.0, 50.0),
     "claude-haiku-4-5-20251001": (1.0, 5.0),
     "voyage-3.5": (0.06, 0.0),
     "rerank-v3.5": (0.25, 0.0),

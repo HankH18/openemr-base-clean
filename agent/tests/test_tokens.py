@@ -45,6 +45,23 @@ def test_cost_usd_haiku() -> None:
     assert cost_usd("claude-haiku-4-5-20251001", 1200, 340) == 0.0029
 
 
+def test_cost_usd_opus() -> None:
+    # Opus 4.8 resolves to its own row ($5 in / $25 out), NOT the Sonnet
+    # fallback. (1200 * $5 + 340 * $25) / 1e6 = (6000 + 8500) / 1e6 = 0.0145
+    assert rates_for("claude-opus-4-8") == (5.0, 25.0)
+    assert rates_for("claude-opus-4-8") != rates_for("claude-sonnet-5")
+    assert cost_usd("claude-opus-4-8", 1200, 340) == 0.0145
+    # Opus 4.7 shares the Opus tier.
+    assert rates_for("claude-opus-4-7") == (5.0, 25.0)
+
+
+def test_cost_usd_fable() -> None:
+    # Fable 5 resolves to its own row ($10 in / $50 out), NOT the Sonnet
+    # fallback. (1200 * $10 + 340 * $50) / 1e6 = (12000 + 17000) / 1e6 = 0.029
+    assert rates_for("claude-fable-5") == (10.0, 50.0)
+    assert cost_usd("claude-fable-5", 1200, 340) == 0.029
+
+
 def test_cost_is_zero_for_zero_tokens() -> None:
     assert cost_usd("claude-sonnet-5", 0, 0) == 0.0
 

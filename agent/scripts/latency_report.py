@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -181,21 +182,25 @@ def main() -> None:
 
     # Isolate on a throwaway SQLite file — deterministic, never touches a real DB.
     tmp_dir = tempfile.mkdtemp(prefix="latency-report-")
-    db_file = Path(tmp_dir) / "latency.db"
-    os.environ["COPILOT_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file}"
+    try:
+        db_file = Path(tmp_dir) / "latency.db"
+        os.environ["COPILOT_DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file}"
 
-    from copilot.config import get_settings
-    from copilot.memory.db import get_engine, get_session_factory
+        from copilot.config import get_settings
+        from copilot.memory.db import get_engine, get_session_factory
 
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
 
-    report = asyncio.run(_measure(max(args.samples, 1)))
+        report = asyncio.run(_measure(max(args.samples, 1)))
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=2))
-    print(f"latency report written to {args.out}")
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=2))
+        print(f"latency report written to {args.out}")
+    finally:
+        # The throwaway SQLite dir is otherwise never removed — clean it up.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

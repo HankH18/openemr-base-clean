@@ -336,7 +336,7 @@ copilot.example.com {
     handle /v1/*   { reverse_proxy agent:8000 }
     handle /health { reverse_proxy agent:8000 }
     handle /ready  { reverse_proxy agent:8000 }
-    handle         { root * /srv/web ; file_server }
+    handle         { root * /srv/dist ; file_server }
 }
 ```
 
@@ -350,7 +350,7 @@ mount `agent/web/dist` + the Caddyfile, publish 80/443):
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./agent/web/dist:/srv/web:ro
+      - ./agent/web/dist:/srv/dist:ro
       - caddy_data:/data
     networks: [agent]
 # add `caddy_data: {}` under top-level volumes.

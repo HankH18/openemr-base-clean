@@ -169,9 +169,14 @@ def _check_chat_body(expect: dict[str, Any], body: dict[str, Any]) -> list[str]:
 
     cited_value = expect.get("cited_value")
     if cited_value is not None:
-        values = {c["source_ref"]["value"] for c in claims}
+        # Guard the subscripts: a non-FHIR citation (e.g. a GuidelineCitation
+        # exposing ``quote_or_value`` rather than ``value``) has no
+        # source_ref.value — a hard subscript would KeyError and crash the whole
+        # run. With ``.get`` it is simply absent from the set, so the CASE fails.
+        values = {(c.get("source_ref") or {}).get("value") for c in claims}
         if cited_value not in values:
-            failures.append(f"cited_value: expected {cited_value!r} among {sorted(values)}")
+            shown = sorted(v for v in values if v is not None)
+            failures.append(f"cited_value: expected {cited_value!r} among {shown}")
 
     # Temporal grounding: at least one served claim must carry a non-null
     # source_ref.timestamp (authoredOn / effectiveDateTime). Proves the claim
@@ -185,10 +190,13 @@ def _check_chat_body(expect: dict[str, Any], body: dict[str, Any]) -> list[str]:
 
     forbidden = expect.get("forbidden_resource_ids")
     if forbidden is not None:
-        cited_ids = {c["source_ref"]["resource_id"] for c in claims}
+        # Same guard: a citation without source_ref.resource_id (non-FHIR) must
+        # fail the CASE, not KeyError the run.
+        cited_ids = {(c.get("source_ref") or {}).get("resource_id") for c in claims}
         leaked = cited_ids & set(forbidden)
         if leaked:
-            failures.append(f"forbidden_resource_ids leaked: {sorted(leaked)}")
+            shown = sorted(v for v in leaked if v is not None)
+            failures.append(f"forbidden_resource_ids leaked: {shown}")
 
     if expect.get("answer_nonempty") and not (body.get("answer") or "").strip():
         failures.append("answer_nonempty: expected a non-empty honest answer")
