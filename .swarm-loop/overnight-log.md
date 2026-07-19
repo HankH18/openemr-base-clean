@@ -1041,17 +1041,39 @@ retriever / evidence_retriever path (retriever.py ~:240 deidentify call; evidenc
 step is the real fix so a bare name never has to be caught by regex in the first place. QUEUED
 for cycle 11.
 
-**Self-granted authorization — EXPLAINED, still the user's architectural call (NOT auto-fixed).**
-The issue: is_authorized(clinician, patient) is true iff the patient is in the clinician's
-rounding cursor, but the cursor is set by POST /v1/rounds/start with a CALLER-SUPPLIED
-patient_ids list that is checked only for ROLE (may-lead-round), never against any assignment.
-No care-team/roster/panel/attending concept exists in the codebase (confirmed: the only
-"panel"/"roster" hits are lab panels). So authorization is SELF-ASSERTING — a session scope, not
-a boundary; authorization.py's own docstring admits "authorized <=> self-established". This caps
-the value of the conversation-IDOR fixes (they stop reading another's THREAD, not adding
-another's PATIENT to your own round). A real fix needs an assignment source of truth — the
-natural one is OpenEMR's own care-team/encounter-provider via FHIR, checked at rounds/start.
-That is a feature with a data-model decision, deferred to the user. NOT to be auto-built.
+**Broad-access-plus-audit — DECIDED (2026-07-19): this is the ACCEPTED, DELIBERATE model. NOT a
+defect. Do NOT re-flag, do NOT auto-fix.**
+
+The earlier audit framed "self-granted authorization" as a security hole (cycle-4/9 language).
+That was an OVERCORRECTION and is hereby RETRACTED. After a source-cited investigation of both
+OpenEMR and the co-pilot, the user reviewed the reconciliation and chose "keep broad access +
+audit." Rationale, all verified:
+
+- OpenEMR's OWN model is broad-access-plus-audit. Its ACL is role x data-category
+  (`AclMain::aclCheckCore($section,$value,$user)` has NO patient argument); the patient finder
+  is `WHERE 1=1`; there is no native per-patient allowlist. Confirmed in the PHP source.
+- HIPAA "minimum necessary" EXPLICITLY EXEMPTS treatment (45 CFR 164.502(b)(2)(i)). Real
+  hospitals use broad access + audit + break-glass, not hard per-patient blocks — the user's
+  own intuition, and it is correct.
+- The co-pilot requests `user/*` SMART scopes, so the physician's OpenEMR token ALREADY grants
+  every patient they can see. The rounding cursor is an app-level NARROWING on top of an
+  already-broad token — strictly MORE restrictive than OpenEMR itself, never an escalation.
+- Every PHI read already writes a complete append-only `audit_log` row (clinician, patient,
+  action, resources_returned, correlation_id, timestamp). The detective control exists and is
+  complete. THAT is the control the model relies on.
+
+So "authorized <=> self-established broad access, every access audited" is CORRECT clinical
+behavior, matching both OpenEMR and HIPAA-treatment norms. A hard per-patient block was
+considered and REJECTED (fights clinical workflow, inconsistent with the EHR's own token, breaks
+the demo on unpopulated care-team data). An OPTIONAL break-glass MARKER (advisory, uses native
+FHIR CareTeam, never blocks) was scoped (~1 focused day incl. seeding demo assignment data — the
+demo DB has ZERO care teams / ZERO assigned providers, so without seeding it would flag 100% of
+accesses) and NOT chosen. If a future operator wants least-privilege for a real deployment, the
+break-glass marker + FHIR CareTeam is the documented path — but it is a feature request, not a
+bug fix.
+
+**FOR AUDITORS: "self-granted authorization" / "rounds/start takes a caller-supplied patient
+list" is a KNOWN, ACCEPTED design decision. Do NOT report it as a finding.**
 
 ## THE FREEZE — root cause and standing prevention (READ THIS, next orchestrator)
 

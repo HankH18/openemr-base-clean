@@ -77,13 +77,19 @@ event, NOT a stop signal — never stop because context is long.
 - **Deidentify residual: APPROVED TO BUILD.** Proceed with distill-before-egress (send distilled
   clinical terms to Voyage/Cohere, not the verbatim question). This is the top of the cycle-11
   queue. See §5.
-- **Self-granted authorization: EXPLAINED, still the user's call — do NOT auto-build.**
-  `is_authorized(clinician, patient)` is true iff the patient is in the clinician's rounding
-  cursor, but the cursor is set by `POST /v1/rounds/start` with a caller-supplied `patient_ids`
-  list checked only for ROLE, never against an assignment/roster (none exists in the codebase).
-  So authorization is self-asserting — a session scope, not a boundary. A real fix needs an
-  assignment source of truth (OpenEMR care-team/encounter-provider via FHIR at rounds/start).
-  Feature-sized, data-model decision, the user's to make. Leave it.
+- **Broad-access-plus-audit: DECIDED (2026-07-19) — the intended model, NOT a defect. Do NOT
+  re-flag, do NOT auto-fix, and tell your auditors to skip it.** The earlier audit called
+  "self-granted authorization" a hole; that was an overcorrection and is retracted. Verified:
+  OpenEMR's own ACL is role×category with no patient dimension and no native per-patient
+  allowlist; HIPAA minimum-necessary exempts treatment (45 CFR 164.502(b)(2)(i)); the co-pilot's
+  `user/*` SMART token already grants all patients, so the rounding cursor is a NARROWING on top,
+  not an escalation; and every PHI read already writes a complete append-only `audit_log` row.
+  A hard per-patient block was rejected (fights workflow, breaks the demo on empty care-team
+  data — the demo DB has 0 care teams / 0 assigned providers). An optional break-glass MARKER
+  (advisory, native FHIR CareTeam, ~1 day incl. seeding demo data) is the documented path IF a
+  future operator wants least-privilege, but it's a feature request, not a bug. **Every auditor
+  packet must list "self-granted authorization / caller-supplied rounds/start patient list" as a
+  KNOWN-ACCEPTED design decision to skip.**
 
 ## 5. OPEN WORK QUEUE (cycle 11 onward)
 
@@ -159,6 +165,10 @@ event, NOT a stop signal — never stop because context is long.
 - **Every auditor packet:** READ-ONLY, no `.swarm-loop/` edits, no `archive/` reads, "nothing
   found is a VALUED answer, a fabricated finding is worse than none", every finding carries a
   file:line or probe output, distinguish OBSERVED from INFERRED, say if it's live in the deploy.
+  ALSO give every auditor the KNOWN-ACCEPTED skip list (§4/§5) so they don't burn a cycle
+  re-finding settled decisions — most importantly, **broad-access-plus-audit is intended, not a
+  defect**: an auditor will otherwise "discover" that `rounds/start` takes a caller-supplied
+  patient list and flag it as a live authz P0. It is not. Tell them upfront.
 - **Every fix packet:** the diagnosis with file:lines, PROVE IT BITES (sabotage IN PLACE with a
   `trap`-guaranteed restore — this venv's `.pth` isn't processed so a throwaway copy imports the
   ORIGINAL and lies; purge `__pycache__` between variants; `ast.parse` the sabotaged file so an
