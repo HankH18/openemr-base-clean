@@ -521,8 +521,9 @@ class WriteService:
                     mode=candidate.entry_mode,
                     source=candidate.source,
                 )
-                await self._read_back(patient_id, candidate, committed)
-                return committed
+                # Fold the read-back outcome onto the proof (and the trail): the
+                # returned value may come back flagged ``unconfirmed``. Non-gating.
+                return await self._read_back(clinician_id, patient_id, candidate, committed)
 
         return await self._idempotency.run_once(idempotency_key, _commit_once)
 
@@ -697,31 +698,62 @@ class WriteService:
                 )
 
     async def _read_back(
-        self, patient_id: PatientId, candidate: AnyWriteCandidate, committed: CommittedWrite
-    ) -> None:
-        """Close the loop: re-read through the read client, log any mismatch.
+        self,
+        clinician_id: ClinicianId,
+        patient_id: PatientId,
+        candidate: AnyWriteCandidate,
+        committed: CommittedWrite,
+    ) -> CommittedWrite:
+        """Close the loop: re-read through the read client and *record* the outcome.
 
-        Fail-open and log-only — a write that landed is append-only, so a failed
-        or mismatched read-back is *surfaced*, never rolled back (there is no
-        destructive delete in Phase 1). Any error here is swallowed after logging.
+        Fail-open and non-gating — a write that landed is append-only, so a value
+        the read-back could not observe is **surfaced**, never rolled back (there
+        is no destructive delete in Phase 1). The outcome is no longer a silent
+        log line: when the read-back does not corroborate the write, the returned
+        ``CommittedWrite`` comes back ``unconfirmed=True`` *and* a
+        ``write_unconfirmed`` audit row is appended, so a "201 returned but the
+        value was not observed on a same-metric read" is on the physician-facing
+        proof and on the HIPAA §164.312(b) trail.
+
+        Two outcomes count as not-confirmed: the value was not observed on a
+        same-metric re-fetch, or the read-back itself raised (the swallowed error).
+        Either way the write is honestly flagged unconfirmed and the exception is
+        still swallowed — a broken read-back can never turn a committed write into
+        a failure.
         """
         try:
             async with self._read_client() as reader:
                 confirmed = await self._value_round_trips(reader, patient_id, candidate)
-            if not confirmed:
-                _logger.warning(
-                    "post-write read-back did not observe the committed value",
-                    extra={
-                        "patient_id": patient_id.value,
-                        "resource_kind": committed.resource_kind.value,
-                        "new_id": committed.new_id,
-                    },
-                )
         except Exception:
             _logger.exception(
                 "post-write read-back failed",
                 extra={"patient_id": patient_id.value, "new_id": committed.new_id},
             )
+            confirmed = False
+
+        if confirmed:
+            return committed
+
+        _logger.warning(
+            "post-write read-back did not observe the committed value",
+            extra={
+                "patient_id": patient_id.value,
+                "resource_kind": committed.resource_kind.value,
+                "new_id": committed.new_id,
+            },
+        )
+        # Record the non-confirmation durably alongside the write_committed row, so
+        # the trail carries what a bare log line could not. Fail-open (the helper
+        # swallows its own errors); non-gating (we never raise — the append stands).
+        await self._record_write_audit(
+            "write_unconfirmed",
+            clinician_id,
+            patient_id,
+            resource_id=committed.new_id,
+            mode=candidate.entry_mode,
+            source=candidate.source,
+        )
+        return committed.model_copy(update={"unconfirmed": True})
 
     async def _value_round_trips(
         self, reader: FhirClient, patient_id: PatientId, candidate: AnyWriteCandidate
@@ -740,7 +772,13 @@ class WriteService:
                 if vital is None:
                     return False
                 bundle = await reader.search(ResourceType.Observation, {"patient": str(patient_id)})
-                return any(math.isclose(v, vital.value) for v in _observation_values(bundle))
+                # Metric-specific: compare ONLY against Observations coded for the
+                # written metric, so a coincidentally-equal reading of a different
+                # metric (a weight 72 vs a heart-rate 72) can never false-confirm.
+                codes = _metric_loinc_codes(vital.metric)
+                return any(
+                    math.isclose(v, vital.value) for v in _observation_values(bundle, codes)
+                )
             case WriteKind.medication:
                 med = candidate.medication
                 if med is None:
@@ -939,15 +977,103 @@ def _bundle_resources(bundle: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return out
 
 
-def _observation_values(bundle: Mapping[str, Any]) -> list[float]:
-    """Numeric ``valueQuantity.value`` of each Observation in a search Bundle."""
+_LOINC_SYSTEM = "http://loinc.org"
+
+
+def _metric_loinc_codes(metric: WritableMetric) -> frozenset[str]:
+    """The LOINC code(s) OpenEMR emits for a written vital — exhaustive, no ``default``.
+
+    The read-back analogue of ``write_client._vital_column``: adding a
+    ``WritableMetric`` without a case here fails type-checking. These are the codes
+    the read-back matches an Observation against, so a coincidentally-equal reading
+    of a *different* metric cannot corroborate the write. Blood-pressure and pulse
+    oximetry are emitted as panels whose systolic/diastolic/SpO2 numbers live in
+    component observations carrying their own code — ``_observation_values`` reads
+    those too. (See ``FhirObservationVitalsService`` for the column→LOINC mapping.)
+    """
+    match metric:
+        case WritableMetric.heart_rate:
+            return frozenset({"8867-4"})
+        case WritableMetric.spo2:
+            return frozenset({"2708-6", "59408-5"})
+        case WritableMetric.systolic_bp:
+            return frozenset({"8480-6"})
+        case WritableMetric.diastolic_bp:
+            return frozenset({"8462-4"})
+        case WritableMetric.respiratory_rate:
+            return frozenset({"9279-1"})
+        case WritableMetric.temperature:
+            return frozenset({"8310-5"})
+        case WritableMetric.weight:
+            return frozenset({"29463-7"})
+        case WritableMetric.height:
+            return frozenset({"8302-2"})
+
+
+def _codeable_loinc_codes(concept: Any) -> set[str]:
+    """The LOINC codes carried by a FHIR ``CodeableConcept``'s ``coding`` list.
+
+    Only LOINC codings count: a coding is kept when its ``system`` is the LOINC URI
+    or is absent (OpenEMR's vitals are always LOINC), never when it names a
+    *different* code system that happens to reuse the same code string.
+    """
+    codes: set[str] = set()
+    if not isinstance(concept, Mapping):
+        return codes
+    coding = concept.get("coding")
+    if not isinstance(coding, list):
+        return codes
+    for entry in coding:
+        if not isinstance(entry, Mapping):
+            continue
+        code = entry.get("code")
+        system = entry.get("system")
+        if isinstance(code, str) and code and system in (None, _LOINC_SYSTEM):
+            codes.add(code)
+    return codes
+
+
+def _coded_quantities(resource: Mapping[str, Any]) -> list[tuple[Any, Any]]:
+    """``(code, valueQuantity)`` pairs for an Observation and each of its components.
+
+    A simple vital carries one top-level pair; a blood-pressure / pulse-oximetry
+    panel carries its numbers in ``component`` entries, each with its own code, so
+    those are included too.
+    """
+    pairs: list[tuple[Any, Any]] = [(resource.get("code"), resource.get("valueQuantity"))]
+    components = resource.get("component")
+    if isinstance(components, list):
+        for comp in components:
+            if isinstance(comp, Mapping):
+                pairs.append((comp.get("code"), comp.get("valueQuantity")))
+    return pairs
+
+
+def _quantity_value(value_quantity: Any) -> float | None:
+    """The numeric ``valueQuantity.value``, or ``None`` when absent/non-numeric."""
+    if isinstance(value_quantity, Mapping):
+        v = value_quantity.get("value")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
+def _observation_values(bundle: Mapping[str, Any], codes: frozenset[str]) -> list[float]:
+    """Numeric values from Observations (or components) coded for ``codes``.
+
+    Metric-specific by construction: an Observation — or panel component — whose
+    LOINC code is not in ``codes`` is skipped entirely, even when its value equals
+    the written number. That is what stops a decoy weight of 72 from confirming a
+    heart-rate write of 72. When ``codes`` is empty nothing matches.
+    """
     values: list[float] = []
     for res in _bundle_resources(bundle):
-        vq = res.get("valueQuantity")
-        if isinstance(vq, Mapping):
-            v = vq.get("value")
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                values.append(float(v))
+        for concept, value_quantity in _coded_quantities(res):
+            if not _codeable_loinc_codes(concept) & codes:
+                continue
+            num = _quantity_value(value_quantity)
+            if num is not None:
+                values.append(num)
     return values
 
 

@@ -191,9 +191,12 @@ components:
 
         The agent-proposed analogue of ``WriteCandidate``: same closed-surface
 
-        discipline (exactly one payload matching ``kind``, client-generated
+        discipline (exactly one payload matching ``kind``, server-generated
 
-        ``idempotency_key``, typed principal ids), but over the issue kinds and
+        ``idempotency_key`` minted by ``writeback/service.py`` at propose and only
+
+        re-sent by the client on confirm, typed principal ids), but over the issue
+        kinds and
 
         defaulting to the strict ``agent_proposed_physician_confirmed`` entry mode.
 
@@ -705,9 +708,13 @@ components:
 
         in ``verification/writes.py`` matches exhaustively over it; the issue kinds
 
-        live on ``IssueWriteCandidate``. ``idempotency_key`` is client-generated so
+        live on ``IssueWriteCandidate``. ``idempotency_key`` is **server-generated**
 
-        a retried/double-clicked confirm cannot create a duplicate record.
+        (``writeback/service.py`` mints a fresh ``secrets.token_urlsafe`` per propose
+
+        and returns it on the echo-back); the client only re-sends that value on the
+
+        confirm, so a retried/double-clicked confirm cannot create a duplicate record.
 
         ``patient_id`` / ``clinician_id`` scope the write; the route enforces
 

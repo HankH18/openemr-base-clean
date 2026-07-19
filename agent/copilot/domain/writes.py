@@ -236,8 +236,10 @@ class WriteCandidate(BaseModel):
     Carries exactly one payload (``vital`` xor ``medication``) matching ``kind``.
     ``kind`` is deliberately the *direct* subset — the vital/medication verifier
     in ``verification/writes.py`` matches exhaustively over it; the issue kinds
-    live on ``IssueWriteCandidate``. ``idempotency_key`` is client-generated so
-    a retried/double-clicked confirm cannot create a duplicate record.
+    live on ``IssueWriteCandidate``. ``idempotency_key`` is **server-generated**
+    (``writeback/service.py`` mints a fresh ``secrets.token_urlsafe`` per propose
+    and returns it on the echo-back); the client only re-sends that value on the
+    confirm, so a retried/double-clicked confirm cannot create a duplicate record.
     ``patient_id`` / ``clinician_id`` scope the write; the route enforces
     ``is_authorized`` before a candidate is trusted.
 
@@ -276,8 +278,9 @@ class IssueWriteCandidate(BaseModel):
     """A typed intake-derived issue write (medical problem / allergy) — F4b.
 
     The agent-proposed analogue of ``WriteCandidate``: same closed-surface
-    discipline (exactly one payload matching ``kind``, client-generated
-    ``idempotency_key``, typed principal ids), but over the issue kinds and
+    discipline (exactly one payload matching ``kind``, server-generated
+    ``idempotency_key`` minted by ``writeback/service.py`` at propose and only
+    re-sent by the client on confirm, typed principal ids), but over the issue kinds and
     defaulting to the strict ``agent_proposed_physician_confirmed`` entry mode.
     The agent may only *construct and propose* one of these; committing it
     requires the separate physician confirm transaction in
@@ -378,6 +381,16 @@ class CommittedWrite(BaseModel):
     it raises instead (see ``fhir/write_client.py``). ``encounter_id`` is set for
     vitals (which attach to an encounter) and ``None`` for medication and
     issue (medical problem / allergy) writes.
+
+    ``unconfirmed`` records the *post-write read-back* outcome, which is a
+    separate question from the write's own 201. The append landed (that is what
+    produced this object); ``unconfirmed=True`` means the fail-open, non-gating
+    read-back could not corroborate the value on a same-metric live re-fetch —
+    either the value was not observed, or the read-back itself failed. It is
+    carried here (and mirrored on a ``write_unconfirmed`` audit row) so a "201
+    returned but the value was not observed" surfaces to the physician instead of
+    being buried in a log line. It never blocks or rolls back the write: appends
+    are append-only, and a read-back is advisory by design.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -386,3 +399,12 @@ class CommittedWrite(BaseModel):
     new_id: str = Field(min_length=1)
     encounter_id: str | None = None
     committed_at: datetime
+    unconfirmed: bool = Field(
+        default=False,
+        description=(
+            "True when the post-write read-back did not positively observe the "
+            "written value on a same-metric re-fetch (value-not-observed or a "
+            "failed read-back). Advisory and NON-gating — the append already "
+            "landed and is never rolled back."
+        ),
+    )
