@@ -20,8 +20,9 @@ version into `archive/week-N/` **in the same change** that adds the new one; nev
 on the active surface.
 
 **Active project documents (the current source of truth):**
-- *Deliverables* — `W2_ARCHITECTURE.md` (current architecture), `AUDIT.md`, `USERS.md`,
-  `COST_ANALYSIS.md`, `README.md`; eval set + results under `agent/evals/`.
+- *Deliverables* — `W2_ARCHITECTURE.md` (current architecture), `WALKTHROUGH.md` (per-feature
+  onboarding + submission-readiness), `AUDIT.md`, `USERS.md`, `COST_ANALYSIS.md`, `README.md`; eval
+  set + results under `agent/evals/`.
 - *This week's planning / ideation* — `agent/research/week2/` (customer summary, architecture spec,
   mermaid diagram, decisions log).
 - *Operational / agent docs* — `DEPLOY.md`, `ACCESS.md`, `OBSERVABILITY.md`, `NOTES.md`, `RUNLOG.md`,
