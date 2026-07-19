@@ -65,7 +65,7 @@ request path in the current build, so their LLM cost is **$0 today**:
 | Capability | Model | Status in current build |
 |---|---|---|
 | **Background synthesis** (`ClaudeSynthesizer`) | `claude-sonnet-5` | Defined + configured, but the wired poller, the serve-time refresh, and rounds-start all instantiate the deterministic **`StubSynthesizer`** (`worker/runtime.py`, `worker/pipeline.py`, `rounds/service.py`). The poller itself is also **OFF by default** (`poller_enabled=False`). So background synthesis calls no LLM today. |
-| **Verification entailment** (`LlmEntailment`, optional narrative-drift check) | `claude-haiku-4-5-20251001` | Defined + configured, but constructed nowhere; every call to the verifier passes `entailment=None`. The gating model `anthropic_model_gating` *is* read beyond `config.py` — the graph-path critic `RealCritic` (`agent/copilot/graph/critic.py:211`) uses it for an LLM safety pass that would bill at the haiku rate — but that critic runs **only** on the multi-agent graph path, which is behind `chat_graph_enabled` (default **OFF**, `config.py:447`). The default build's inline chat path never constructs it, and `build_critic` returns the keyless `StubCritic` (no LLM) whenever the API key is unset. So the gating tier is dormant — **$0**. |
+| **Verification entailment** (`LlmEntailment`, optional narrative-drift check) | `claude-haiku-4-5-20251001` | Defined + configured, but constructed nowhere; every call to the verifier passes `entailment=None`. The gating model `anthropic_model_gating` *is* read beyond `config.py` — the graph-path critic `RealCritic` (`agent/copilot/graph/critic.py:211`) uses it for an LLM safety pass that would bill at the haiku rate — but that critic runs **only** on the multi-agent graph path, gated by `chat_graph_enabled` (**default OFF** in code, `config.py:449`, so a keyless local clone + the deterministic eval gate run the inline path — **but the deployed demo sets it ON** (`COPILOT_CHAT_GRAPH_ENABLED=true`), so the graph *and* its critic ARE live there). In the default/keyless build `build_critic` returns the keyless `StubCritic` (no LLM), so the gating tier is dormant — **$0**. **On the deploy** (Anthropic key set + graph on), `build_critic` constructs the real `RealCritic`, which makes one haiku gating call per graph chat turn — a small per-turn cost the **$0** default-build figure does not include. |
 
 The synthesis unit economics in §3b are therefore a **projection of what
 background synthesis costs once the LLM synthesizer is switched in** — not a
@@ -156,7 +156,7 @@ unknown model is never costed as free):
 | Model | Role in system | Input $/1M | Output $/1M |
 |---|---|---|---|
 | `claude-sonnet-5` | chat (live) + synthesis (projected) + **Week-2 vision extraction** | **$3.00** (intro **$2.00** through 2026‑08‑31) | **$15.00** (intro **$10.00**) |
-| `claude-haiku-4-5-20251001` | optional entailment / gating tier (dormant today) | **$1.00** | **$5.00** |
+| `claude-haiku-4-5-20251001` | optional entailment (dormant) / gating tier (**on in the deployed graph**; dormant in the keyless default build) | **$1.00** | **$5.00** |
 | `voyage-3.5` | **Week-2** guideline embeddings (corpus ingest + per query) | **$0.06** | **$0.00** (embeddings emit no output tokens) |
 | `rerank-v3.5` | **Week-2** retrieval rerank (per query) | **$0.25** (normalized — see below) | **$0.00** |
 | **Tesseract OCR** | **Week-2** local page OCR (bbox reconciliation) | **$0.00** (self-hosted, in-container) | **$0.00** |
@@ -447,9 +447,9 @@ further ~33%.
   - **Batch API (50% off)** for the non-interactive synthesis, once the LLM
     synthesizer is enabled — it is background and tolerant of minutes of latency,
     so it is a perfect batch fit.
-  - **Haiku routing** — wire the dormant `claude-haiku-4-5-20251001` gating tier
-    (5× cheaper) for the optional entailment / any classification, rather than
-    sonnet-5.
+  - **Haiku routing** — the `claude-haiku-4-5-20251001` gating tier already backs
+    the graph-path critic (5× cheaper than sonnet); extend it to the still-dormant
+    optional entailment / any other classification, rather than sonnet-5.
   - Aggressive prompt caching across the fleet.
 - **Bottleneck:** poller fan-out (10k users × 15 patients = 150k patient-polls
   per interval) → sharded workers + change-gating keep model spend flat because
