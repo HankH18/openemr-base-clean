@@ -33,7 +33,7 @@ SMART-on-FHIR scopes**, including **SMART Backend Services** (`client_credential
 means access control has a native, standards-based primitive: an external agent can query as
 the physician (SMART App Launch) and let OpenEMR enforce visibility, and a background poller
 can act as a legitimate, scoped *system* actor rather than forging a user session. The
-integration architecture (see `ARCHITECTURE.md`) is built directly on this.
+integration architecture (see `W2_ARCHITECTURE.md`) is built directly on this.
 
 A **verification/grounding** asset: FHIR **Provenance** is genuinely implemented
 (`FhirProvenanceService.php`, ~485 lines, with full domain classes), so "this claim traces to
@@ -76,7 +76,7 @@ Services/FHIR layer is the sane path.
   key) — must live in a secrets manager, never in code or logs.
 - **Prompt injection (new surface):** free-text note fields become an injection vector once
   an LLM reads them. Mitigation is architectural (deterministic verification gate; PHI treated
-  as data, never instructions) — see `ARCHITECTURE.md` §Security.
+  as data, never instructions) — see `W2_ARCHITECTURE.md` §Security.
 
 ## 2. Architecture audit
 

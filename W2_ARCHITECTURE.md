@@ -83,7 +83,7 @@ rasterization → OCR → Claude-vision structured extraction → schema validat
 answer.
 
 **Evidence-retriever worker** (`copilot/graph/evidence_retriever.py`) — owns hybrid retrieval over
-the guideline corpus: de-identify query → sparse (Postgres FTS) + dense (pgvector storage,
+the guideline corpus: de-identify query → sparse (**in-process BM25**; the legacy Postgres FTS leg is inert — see §RAG index) + dense (pgvector storage,
 Python-side cosine over the loaded chunk set — see §RAG index) → RRF fusion → Cohere rerank →
 top-K grounded snippets with `chunk_id + section`. Returns evidence, explicitly typed as guideline
 (not patient) facts.
@@ -117,10 +117,14 @@ rerank. All behind swappable/stubbable `Protocol`s.
 > `copilot/memory/db.py:49`). There is **no vector operator** (`<=>`, `<->`, `cosine_distance`) and
 > **no ANN index** (no `ivfflat`, no `hnsw`) in any SQL in this repo. Dense retrieval is an
 > **in-Python full scan**: `MemoryRepository.list_guideline_chunks()` loads *every* chunk row
-> (`copilot/memory/repository.py:710-719` — "the hybrid retriever loads the full chunk set to rank
+> (`copilot/memory/repository.py:856-860` — "the hybrid retriever loads the full chunk set to rank
 > it in memory"), and `_dense_rank()` computes cosine similarity over each row in Python
-> (`copilot/rag/retriever.py:238-250`). Only the **sparse** half touches Postgres query planning
-> (`to_tsvector`/`plainto_tsquery`, `retriever.py:286-295`), with a term-overlap fallback on SQLite.
+> (`copilot/rag/retriever.py:454`). The **sparse** half now ranks in Python too — BM25 over the
+> loaded rows (`_sparse_rank`, `retriever.py:554`); the legacy Postgres full-text leg
+> (`to_tsvector`/`plainto_tsquery`, plus the GIN index from migration `0006`) is **inert and no
+> longer read** — its `plainto_tsquery` AND-semantics returned zero rows for realistic clinical
+> questions, so it was replaced by in-process BM25 (see the `retriever.py` module docstring). So
+> both retrieval legs now rank in Python; only the row load touches Postgres.
 >
 > This is **correct and fast at the committed corpus size** — 4 guideline documents / 19 heading
 > sections (`agent/corpus/`), so the scan is ~19 vectors per query and the measured retrieval floor
@@ -226,9 +230,9 @@ owner. All four Week-2 artifact types, made explicit:
 
 | Artifact | Owner / authority | Lineage (where it came from) | Access control | Validation |
 |---|---|---|---|---|
-| **Extracted lab observations** (`extracted_fact`, `category IS NULL`) | **Agent DB — agent-store-authoritative.** Not OpenEMR: labs/Observations are **read-only** in both the FHIR and Standard APIs (verified against the route maps), so a lab fact *cannot* be written back as a FHIR resource. OpenEMR still owns the **source PDF**. | `source_document` (→ `openemr_document_id`, the authoritative source ref) → `document_page` (raster + OCR tokens) → `extraction` (model, schema_version) → `extracted_fact` (+ `page_no`, `bbox`, `match_confidence`). **Append-only**: re-ingest = new `extraction` row, never an overwrite. | PHI. Route-gated: session auth + **rounding-list RBAC** — `is_authorized(clinician_id, patient_id)` on every route (`api/routes/documents.py:131,188,236`), which requires a persisted rounding cursor covering that patient (`auth/authorization.py:20-28`). Every read writes an `audit_log` row. | Strict Pydantic `LabReport` schema — a field that fails validation is **rejected, not coerced**. Plus OCR reconciliation: a value not locatable in the page tokens gets `supported=false` and **cannot pass the document-grounding gate** (threshold `doc_extraction_confidence_threshold`, default 0.7, `config.py:306`). |
+| **Extracted lab observations** (`extracted_fact`, `category IS NULL`) | **Agent DB — agent-store-authoritative.** Not OpenEMR: labs/Observations are **read-only** in both the FHIR and Standard APIs (verified against the route maps), so a lab fact *cannot* be written back as a FHIR resource. OpenEMR still owns the **source PDF**. | `source_document` (→ `openemr_document_id`, the authoritative source ref) → `document_page` (raster + OCR tokens) → `extraction` (model, schema_version) → `extracted_fact` (+ `page_no`, `bbox`, `match_confidence`). **Append-only**: re-ingest = new `extraction` row, never an overwrite. | PHI. Route-gated: session auth + **rounding-list RBAC** — `is_authorized(clinician_id, patient_id)` on every route (`api/routes/documents.py:173,245,313`), which requires a persisted rounding cursor covering that patient (`auth/authorization.py:20-28`). Every read writes an `audit_log` row. | Strict Pydantic `LabReport` schema — a field that fails validation is **rejected, not coerced**. Plus OCR reconciliation, with two **decoupled** confidence controls: whether a value is *on the page* is decided (confidence-independently) by two-sided coverage + similarity (`documents/reconcile.py`) — an unlocatable value gets `supported=false` and cannot ground a claim — while `doc_extraction_confidence_threshold` (default **0.01**, `config.py:383`) is only a minimal OCR-**legibility** floor on keeping a value's citation bbox. A document fact must additionally clear the higher `doc_grounding_confidence_threshold` (default **0.5**, `config.py:413`, applied in `verification/serve.py`) before it can **ground a verified clinical claim**. |
 | **Intake facts** (`extracted_fact` with a non-NULL `category`) | **Split, deliberately.** The agent DB owns the *extraction*; **OpenEMR owns the clinical record** once a physician confirms it. The agent **never self-commits** — write-back goes through the propose→confirm gate, and the confirmed row is OpenEMR's, attributed to the physician's own token. | Same chain as lab facts, plus `IntakeFact.category` (`IntakeCategory` enum) mapping each fact to its OpenEMR record type (`demographic`→`patient_data`, `medication`/`allergy`/`medical_problem`→`lists.type`, …; migration `0007`). Confirmed facts then become OpenEMR-owned records — lineage crosses the boundary **only** through the gate. | PHI. Identical to lab facts (same routes, same RBAC). Write-back additionally requires `writeback_enabled` **and** the physician's delegated write scopes; propose and commit are separately audited. | Strict Pydantic `IntakeForm` / `IntakeFact` schema + the same OCR-reconciliation gate. `IntakeCategory` is a **closed enum** — an uncategorizable fact is not silently written back. |
-| **Guideline chunks** (`guideline_document`, `guideline_chunk`) | **Agent DB — agent-owned, and fully repo-reproducible.** The corpus is *derived data*, not a system of record: the committed Markdown under `agent/corpus/` is the real source of truth and `agent/scripts/ingest_guidelines.py` deterministically rebuilds every row from it. Losing the table costs a re-ingest, not data (see `DEPLOY.md` §19.2). | `agent/corpus/*.md` (committed, each with front-matter `source` + a license recorded in `guideline_document.license`) → heading-aware chunking (`rag/ingest.py`) → Voyage embedding (or the keyless stub) → `guideline_chunk.{text, embedding, fts}`. **Idempotent by CONTENT** — `guideline_document.content_hash` (sha256 over the derived chunks) decides: unchanged is skipped before any embed call, changed is re-ingested automatically, and a NULL hash (a pre-`0009` row) is treated as *unknown* and rebuilt once. It keyed on the `source` natural key alone until `0009`, which meant a **corrected guideline silently did not apply** — and because the serve-time verifier re-materializes the chunk from that same stale row, the old text then re-verified as *grounded*. Staleness was self-consistent, so the fail-closed verifier structurally could not catch it. `--force` remains, and is still genuinely required for an **embedder** change: that degradation lives in the vectors, not the text, so no content hash can see it. | **Non-PHI — public clinical text.** No patient scoping applies or is needed. There is **no public guideline endpoint**: chunks are reachable only *through* an authorized chat turn (`api/routes/chat.py:117`, same RBAC), so no unauthenticated read path exists even though the content is public. Egress: only **scrubbed** queries reach Voyage/Cohere (§Security), never patient facts. | Structural, not clinical: `title` + `source` + `license` front-matter are **required at ingest** (`_REQUIRED_KEYS`, `rag/ingest.py:45`) — a file missing any is rejected; chunk text carries `section` + `chunk_index`. Retrieval returns typed `GuidelineEvidence`, never a patient-fact `Claim`, and a chunk is served **verbatim from storage** — the retrieval path cannot invent one. **But the corpus content itself is demo material, and the docs must say so:** each file's front-matter records `provenance: Original text synthesized for the AgentForge demo corpus from general medical knowledge; not excerpted from any copyrighted guideline. Demonstration only — not for clinical use.` It is **not** a published clinical guideline and carries **no clinical authority** — it exercises the RAG path with license-clean text. A real deployment must replace `agent/corpus/` with licensed guideline sources; the ingest contract (front-matter + heading chunking) is unchanged by that swap. |
+| **Guideline chunks** (`guideline_document`, `guideline_chunk`) | **Agent DB — agent-owned, and fully repo-reproducible.** The corpus is *derived data*, not a system of record: the committed Markdown under `agent/corpus/` is the real source of truth and `agent/scripts/ingest_guidelines.py` deterministically rebuilds every row from it. Losing the table costs a re-ingest, not data (see `DEPLOY.md` §19.2). | `agent/corpus/*.md` (committed, each with front-matter `source` + a license recorded in `guideline_document.license`) → heading-aware chunking (`rag/ingest.py`) → Voyage embedding (or the keyless stub) → `guideline_chunk.{text, embedding, fts}`. **Idempotent by CONTENT** — `guideline_document.content_hash` (sha256 over the derived chunks) decides: unchanged is skipped before any embed call, changed is re-ingested automatically, and a NULL hash (a pre-`0009` row) is treated as *unknown* and rebuilt once. It keyed on the `source` natural key alone until `0009`, which meant a **corrected guideline silently did not apply** — and because the serve-time verifier re-materializes the chunk from that same stale row, the old text then re-verified as *grounded*. Staleness was self-consistent, so the fail-closed verifier structurally could not catch it. `--force` remains, and is still genuinely required for an **embedder** change: that degradation lives in the vectors, not the text, so no content hash can see it. | **Non-PHI — public clinical text.** No patient scoping applies or is needed. There is **no public guideline endpoint**: chunks are reachable only *through* an authorized chat turn (`api/routes/chat.py:145`, same RBAC), so no unauthenticated read path exists even though the content is public. Egress: only **scrubbed** queries reach Voyage/Cohere (§Security), never patient facts. | Structural, not clinical: `title` + `source` + `license` front-matter are **required at ingest** (`_REQUIRED_KEYS`, `rag/ingest.py:62`) — a file missing any is rejected; chunk text carries `section` + `chunk_index`. Retrieval returns typed `GuidelineEvidence`, never a patient-fact `Claim`, and a chunk is served **verbatim from storage** — the retrieval path cannot invent one. **But the corpus content itself is demo material, and the docs must say so:** each file's front-matter records `provenance: Original text synthesized for the AgentForge demo corpus from general medical knowledge; not excerpted from any copyrighted guideline. Demonstration only — not for clinical use.` It is **not** a published clinical guideline and carries **no clinical authority** — it exercises the RAG path with license-clean text. A real deployment must replace `agent/corpus/` with licensed guideline sources; the ingest contract (front-matter + heading chunking) is unchanged by that swap. |
 | **Citation records** (`Citation` union in `memory_file.summary` JSON) | **Agent store — authoritative.** No separate table: the discriminated union is persisted with the claim it belongs to, so a claim and its provenance can never drift apart or be independently deleted. | Emitted by whichever path produced the claim: `FhirCitation` ← a live FHIR read; `DocumentCitation` ← `extracted_fact` (carrying `source_id`, `page_no`, `bbox`, `confidence`); `GuidelineCitation` ← `guideline_chunk` (`chunk_id` + `section`). Each points back to a **re-materializable** row — that is the whole design. | Inherits the access control of the claim it accompanies: served only on routes gated by session auth + rounding-list RBAC. A `GuidelineCitation` is non-PHI; `DocumentCitation`/`FhirCitation` are PHI-bearing. | **Pydantic discriminated union on `source_type`** — an unknown type fails deserialization rather than degrading to an untyped ref. Enforced at serve time by the **fail-closed verifier**: every claim must re-materialize its cited source *and* pass a value re-check, or it is dropped; if no claims survive, the answer is withheld. Legacy rows with no `source_type` default to `"fhir"` (migration note above). |
 
 **The invariant this table encodes:** *the agent owns what it derived; OpenEMR owns what a physician
@@ -297,17 +301,17 @@ bbox highlighted. Full trace reconstructable from the correlation ID.
   - **Known limitation — state it plainly.** `deidentify()` (`copilot/rag/deidentify.py`) is a
     deterministic regex scrub, not a model. It removes **structured identifiers by shape** — email,
     SSN, dates, phone, and any run of 5+ digits (MRN/account) — and **label-gated names** only:
-    the `_LABELED_NAME_RE` pattern (`deidentify.py:50-53`) requires an explicit `Patient:` / `Pt:` /
+    the `_LABELED_NAME_RE` pattern (`deidentify.py:123-126`) requires an explicit `Patient:` / `Pt:` /
     `Name -` label followed by Title-Case tokens. It therefore **does not scrub an arbitrary
     free-text name**: a clinician typing *"Marisol's lactate is 4.2 — what does the sepsis guideline
     say?"* sends that name to Voyage/Cohere. This is a deliberate trade, not an oversight — the
     label gate is scoped precisely so a greedy Title-Case match can't swallow clinical prose
     (`"pt: severe sepsis with lactate elevation"` → `"patient"` would destroy the query before
-    retrieval; see the comment at `deidentify.py:44-49`). The bounded blast radius: the scrub
+    retrieval; see the comment at `deidentify.py:113-122`). The bounded blast radius: the scrub
     protects the **retrieval query egress only** (Voyage/Cohere), the two vendors that never need a
     name; Claude — which does receive full PHI including document images — is covered by a BAA, not
     by this scrub. **The choke-point is a real architectural control (one function, one place, every
-    query routed through it — `retriever.py:150`), but it is a shape-based scrub with a known
+    query routed through it — `retriever.py:253`), but it is a shape-based scrub with a known
     free-text-name gap. Do not describe it as de-identification in the HIPAA Safe Harbor sense.**
     Closing the gap needs an NER pass or a chart-name denylist (patient names are known per
     request) — neither is built.
@@ -316,6 +320,15 @@ bbox highlighted. Full trace reconstructable from the correlation ID.
   `extraction.run`, `guideline.retrieve`, plus existing write-propose/commit).
 - **Fail-closed verification** across all three citation types is the primary safety control; the
   critic is additional.
+- **Prose safety posture (stated honestly).** The verified, cited, and audited surface is the
+  grounded **claim chips**: the deterministic verifier grounds each chip and the critic screens the
+  machine-generated claim *text*. The free-text **narrative** the synthesis model writes around
+  those chips is prompt-constrained **trusted narration — it is not itself hard-screened** by the
+  verifier or the critic. What closes the worst gap is *option-a*: a demoted (`degraded`)
+  verification, or a critic `narrative_inconsistency` / `unsafe_action` flag, withholds the **entire
+  turn** (not just the offending chip) on the serve path, so a dropped claim cannot survive as
+  unfootnoted prose. A dedicated screening pass over the narrative itself is **Week-3 scope**, not a
+  guarantee this build makes.
 - **Secrets** (`VOYAGE_API_KEY`, `COHERE_API_KEY`, write creds) live only in the gitignored droplet
   `.env`; never committed.
 - **CI PHI-check:** `no_phi_in_logs` rubric + a PHI-detector scan over logs/traces/eval artifacts;
@@ -346,12 +359,14 @@ deliberate call:)
 ## Assumptions & open questions
 
 - **Model ids and cost rates are settled — DONE.** `claude-sonnet-5` is the real configured model,
-  not a placeholder: it is the default for both synthesis/chat (`copilot/config.py:242`) and vision
-  extraction (`copilot/config.py:249`), with gating on `claude-haiku-4-5-20251001`
-  (`copilot/config.py:245`). Every model the agent calls has an explicit row in
-  `copilot/observability/pricing.py:33-37` — `claude-sonnet-5` (3.0/15.0), `claude-haiku-4-5-20251001`
+  not a placeholder: it is the default for both synthesis/chat (`copilot/config.py:276`) and vision
+  extraction (`copilot/config.py:283`), with gating on `claude-haiku-4-5-20251001`
+  (`copilot/config.py:279`). Every model the agent calls has an explicit row in
+  `copilot/observability/pricing.py:33-43` — `claude-sonnet-5` (3.0/15.0), `claude-haiku-4-5-20251001`
   (1.0/5.0), `voyage-3.5` (0.06/0.0), `rerank-v3.5` (0.25/0.0, a documented per-search-unit
-  normalization) — so no call resolves the unknown-model fallback. These are the rates
+  normalization) — so no call resolves the unknown-model fallback. The same table also carries
+  the Opus (`claude-opus-4-8`/`-4-7`, 5.0/25.0) and `claude-fable-5` (10.0/50.0) tiers so a model
+  swap is costed at its real rate rather than the sonnet fallback. These are the rates
   `COST_ANALYSIS.md` is sourced from.
 - Guideline **corpus content**: curate a small hospitalist-relevant set (e.g., DKA, sepsis, AKI,
   anticoagulation) from openly licensed sources; store source files + ingest script in-repo.
@@ -363,16 +378,16 @@ deliberate call:)
 - Page-image storage is agent-DB `bytea` for demo scale; MinIO object store is the noted scale path,
   not built.
 - **`document_ingestion_enabled` is a real ingestion kill switch, on by default — DONE.** Declared at
-  `copilot/config.py:315` with `default=True`, and genuinely enforced at
-  `copilot/api/routes/documents.py:126`: when false, `POST /v1/documents` returns **503**
-  (`_INGESTION_DISABLED_DETAIL`, `documents.py:55`) and no document is accepted or stored. It gates
+  `copilot/config.py:431` with `default=True`, and genuinely enforced at
+  `copilot/api/routes/documents.py:180`: when false, `POST /v1/documents` returns **503**
+  (`_INGESTION_DISABLED_DETAIL`, `documents.py:58`) and no document is accepted or stored. It gates
   the **upload surface only** — the pipeline service stays directly invocable (tests, CLI,
   background jobs) and already-ingested documents remain readable. It defaults `True` because
   ingestion is a core Week-2 capability that is already live; the flag exists so an operator can
   actually stop intake (e.g. pending an incident). Plumbed through deploy as
-  `COPILOT_DOCUMENT_INGESTION_ENABLED` (`docker-compose.deploy.yml:199`, defaulting `true`), and
-  locked by two tests (`agent/tests/test_vision_contract.py:150` asserts the default is on; `:161`
-  asserts a disabled deployment 503s). The routes remain protected as before by session auth +
+  `COPILOT_DOCUMENT_INGESTION_ENABLED` (`docker-compose.deploy.yml:215`, defaulting `true`), and
+  locked by two tests (`agent/tests/test_vision_contract.py:150` asserts the default is on;
+  `test_upload_returns_503_when_ingestion_is_disabled` at `:153` asserts a disabled deployment 503s). The routes remain protected as before by session auth +
   rounding-list RBAC, like every PHI route. **History:** this field previously defaulted `False` and
   was read nowhere — a phantom switch. That defect is fixed; docs may cite the flag as a control.
 - **Intake schema ↔ OpenEMR record types — DONE.** Each intake fact is tagged with a typed

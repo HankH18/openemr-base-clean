@@ -226,13 +226,27 @@ customer-managed** and is deliberately not over-claimed here.
   (`memory/repository.py`), which performs an **INSERT only** — there is no
   update or delete path for audit rows anywhere in the codebase. The trail is
   therefore append-only by construction, not merely by policy.
-- **Reads are trailed.** Every PHI read produces a row: interactive chat
-  (`chat/service.py`, action `"chat"`, recording exactly the FHIR resources the
-  answer cited), the observation series endpoint
-  (`api/routes/observations.py`, action `"observations.series"`), and each
-  background poller tick (`worker/runtime.py`, action `"poller.read"`). Audit
-  writes are **fail-open** — a broken audit write is logged and swallowed so it
-  can never turn a served read into an error — a deliberate trade-off that
+- **Reads are trailed.** Every PHI read produces an `audit_log` row (each written
+  through `MemoryRepository.record_audit`, INSERT-only). The full set of read
+  actions in the current build:
+  - `"chat"` (`chat/service.py`) — an interactive chat turn, recording exactly the
+    FHIR resources the answer cited.
+  - `"conversation.read"` (`api/routes/chat.py`) — replaying a stored transcript.
+  - `"observations.series"` (`api/routes/observations.py`) — the per-metric
+    observation series endpoint.
+  - `"document.read"` and `"document.page.read"` (`api/routes/documents.py`) — the
+    extracted clinical values and the rendered scan-page image of an ingested
+    document.
+  - `"document.ingest"` and `"extraction.run"` (`documents/pipeline.py`) — source
+    ingestion and the extraction pass over it.
+  - `"rounds.start"` / `"rounds.current"` / `"rounds.advance"` / `"rounds.jump"`
+    (`rounds/service.py`) — the physician-facing rounding-cursor reads.
+  - `"rounds.refresh"` and `"rounds.alerts"` (`worker/pipeline.py`) — the
+    clinician-scoped refresh and deterioration-alert reads.
+  - `"poller.read"` (`worker/runtime.py`) — each background poller tick.
+
+  Audit writes are **fail-open** — a broken audit write is logged and swallowed so
+  it can never turn a served read into an error — a deliberate trade-off that
   favors clinical availability; monitor audit-write failures operationally.
 - **Writes are trailed with attribution.** The write path records
   `write_proposed`, `write_committed`, and `write_failed`
@@ -243,6 +257,16 @@ customer-managed** and is deliberately not over-claimed here.
   validated `X-Correlation-ID` per request and echoes it on the response;
   background ticks mint their own. Every audit row stores the correlation id,
   so a trail entry can be tied back to the originating request or tick.
+- **PHI-free per-request access log.** The same `CorrelationIdMiddleware`
+  (`api/middleware.py`) also emits one structured JSON record per request to the
+  `copilot.api.access` logger — HTTP method, the **route template only**
+  (`/v1/documents/{document_id}`, resolved from `scope["route"].path` so the
+  concrete patient/document/conversation id is never in the record), status code,
+  and latency — stamped with the request's correlation id. It carries **no**
+  path-param id, query string, or exception message, and is emitted on both the
+  success and the unhandled-exception (status `500`) paths, so the request-level
+  access trail is complete rather than silently dropping failed requests. This is a
+  lightweight §164.312(b) access trail that complements the row-level `audit_log`.
 - **Distributed tracing (active on the reference deployment via Langfuse
   Cloud).** `observability/factory.py` returns a real Langfuse tracer only when
   all three Langfuse env vars are set; otherwise a no-op. The reference
@@ -289,8 +313,14 @@ the reference deployment has *not* opted on).
   literal presence, and temporal grounding. The gate is **not promptable** (a
   claim injected via free text still has to cite a real resource and match its
   value) and **fail-closed**: if no claim verifies the result is `withheld`; a
-  mixed result is `degraded` (only proven claims survive). Fabrications fail
-  attribution or value match.
+  mixed result is `degraded` (only proven claims survive). **At serve time the
+  whole turn is withheld, not merely trimmed:** a `degraded` verification escalates
+  to a whole-turn `withheld` on **both** serve paths (the inline verify path and
+  the multi-agent graph — `chat/service.py`), and on the graph path a critic
+  `narrative_inconsistency` or `unsafe_action` flag likewise withholds the entire
+  turn — so a demoted claim can never survive as unfootnoted free-text prose (the
+  served chat action is therefore only ever `served` or `withheld`, never
+  `degraded`). Fabrications fail attribution or value match.
 - **Deterministic write-side verification gate.** `verification/writes.py`
   (`verify_write`) validates a typed `WriteCandidate` against a closed set of
   metrics (exhaustive `match`, no `default`), enforces unit sanity (mismatch is
@@ -387,11 +417,11 @@ organization's behalf.
   text** leaves the deployment to Voyage (embedding) and Cohere (rerank). Keyless
   is the default and the deterministic stubs make **zero outbound calls**, so an
   unkeyed deploy has no Voyage/Cohere egress at all. Every query is routed through
-  the `deidentify()` choke point first (`copilot/rag/retriever.py:150`) — a single,
+  the `deidentify()` choke point first (`copilot/rag/retriever.py:253`) — a single,
   real, architecturally-enforced control. **But state its limit honestly:** the
   scrub is a deterministic regex pass (`copilot/rag/deidentify.py`), not a model.
   It removes structured identifiers by shape (email, SSN, dates, phone, 5+-digit
-  runs such as MRNs) and *label-gated* names (`Patient: <Name>`, `deidentify.py:50-53`),
+  runs such as MRNs) and *label-gated* names (`Patient: <Name>`, `deidentify.py:123-126`),
   and it **does not remove an arbitrary free-text name** a clinician types into a
   question. It is therefore **not de-identification in the §164.514 Safe Harbor
   sense**, and a keyed deployment must not treat it as such. An organization

@@ -19,6 +19,16 @@ replaces it. The authoritative served/withheld decision remains the
 :class:`~copilot.domain.contracts.VerificationResult` the verifier produces; the
 verdict is advisory telemetry recorded alongside it.
 
+**Prose safety posture — what the safety pass screens, and what it does not.**
+The pass reviews the machine-generated CLAIM TEXT (the cited claim chips), not the
+free-text answer NARRATIVE the synthesis model writes around them. So the critic
+gates the cited, audited surface; the surrounding narrative is prompt-constrained
+*trusted narration* and is NOT itself hard-screened here. When the pass flags a
+claim, the chat service withholds the WHOLE turn (see ``unsafe``), which is what
+prevents a dropped claim from surviving as unfootnoted prose — the protection is
+the withhold, not a screen of the sentence. A dedicated prose-screening pass over
+the narrative is Week-3 scope.
+
 Stub/Real sit behind the :class:`Critic` Protocol; ``build_critic`` selects on
 API-key presence (keyless → Stub, keyed → Real).
 """

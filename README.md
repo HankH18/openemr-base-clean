@@ -27,8 +27,9 @@ The accepted Week 1 system, still the foundation everything else builds on:
 
 - **Rounds** — opens on the most-acute patient, with a grounded source-cited chart summary and an
   overnight-change digest; sickest-first ranking across the census.
-- **Cited chat** — every claim traces to a record; answers render *served / withheld / degraded*
-  states. A deterministic **fail-closed verifier** re-materializes and re-checks each claim's
+- **Cited chat** — every claim traces to a record; a chat answer is either *served* or *withheld*
+  (a partial-grounding `degraded` verification escalates to a whole-turn withhold before the reply
+  is returned). A deterministic **fail-closed verifier** re-materializes and re-checks each claim's
   cited source, or drops it; if no claims survive, the answer is withheld.
 - **Memory with provenance, temporal Q&A, per-metric observation series** and trend charts; a
   background **poller** flags silent deterioration.
@@ -55,7 +56,7 @@ New this week (authoritative design: [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md))
   **per-fact citation with a page bbox**; a value that can't be located on the page is flagged
   `supported=false`, never invented.
 - **Hybrid RAG + rerank** over a small hospitalist guideline corpus (4 documents / 19 chunks) —
-  sparse (Postgres FTS) + dense (Voyage `voyage-3.5` embeddings; **pgvector stores** the vectors,
+  sparse (**in-process BM25**; the legacy Postgres FTS leg is inert) + dense (Voyage `voyage-3.5` embeddings; **pgvector stores** the vectors,
   ranking is a **Python-side cosine over the loaded chunk set** — no vector operator, no ANN index,
   honest at this corpus size, see [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md) §RAG index for the
   scale path) → **RRF fusion** → **Cohere `rerank-v3.5`**. Only **scrubbed** clinical-topic queries
@@ -132,7 +133,7 @@ Read with the `COPILOT_` prefix (pydantic settings — `.env` or shell env). Ful
 | `COPILOT_ANTHROPIC_API_KEY` | _(blank)_ | Real Claude vision extraction + synthesis; also gates `/ready`. Blank ⇒ deterministic stub path (no network). |
 | `COPILOT_VOYAGE_API_KEY` | _(blank)_ | Voyage `voyage-3.5` guideline embeddings. Blank ⇒ keyless stub embeddings (CI-safe). |
 | `COPILOT_COHERE_API_KEY` | _(blank)_ | Cohere `rerank-v3.5` retrieval rerank. Blank ⇒ keyless stub rerank (CI-safe). |
-| `COPILOT_DOC_EXTRACTION_CONFIDENCE_THRESHOLD` | `0.7` | Min OCR-reconciliation match confidence for an extracted value to count as document-grounded (bbox-anchored). Below it ⇒ flagged low-confidence/unsupported, never trusted. |
+| `COPILOT_DOC_EXTRACTION_CONFIDENCE_THRESHOLD` | `0.01` | Minimal OCR-**legibility** floor: the weakest per-token OCR confidence across the *located* span must clear it for a value to keep its citation bbox. Gates legibility ONLY — whether the value is on the page is decided separately (and confidence-independently) by two-sided coverage + similarity, the real gate. A token OCR marked literal-zero confidence is still withheld; a value below the floor is flagged unsupported, never trusted. (Claim-grounding uses the separate `COPILOT_DOC_GROUNDING_CONFIDENCE_THRESHOLD`, default `0.5`.) |
 
 Week-1 auth / write-back flags (`COPILOT_AUTH_MODE`, `COPILOT_WRITEBACK_ENABLED`), model ids,
 OCR language/DPI, and Langfuse creds are also in `config.py`.

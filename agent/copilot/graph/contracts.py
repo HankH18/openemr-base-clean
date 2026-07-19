@@ -81,6 +81,12 @@ class CriticVerdict(BaseModel):
     it can drop a claim from the served answer but can never add or resurrect one
     the verifier already rejected. It is not advisory: a rejected claim is not
     served.
+
+    Note on scope: what the critic reviewed to produce this verdict is the
+    machine-generated claim TEXT (the cited chips), not the LLM's free-text answer
+    narrative. The narrative is trusted narration, not hard-gated here; the
+    whole-turn withhold on ``unsafe`` (below) is what protects against a dropped
+    claim surviving in prose, and a dedicated prose screen is Week-3 scope.
     """
 
     model_config = ConfigDict(frozen=True)

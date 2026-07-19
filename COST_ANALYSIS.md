@@ -106,25 +106,25 @@ and with no `ANTHROPIC_API_KEY` the vision extractor falls back the same way
 So, exactly as with Week-1 synthesis, the Week-2 model spend is **$0 until an
 operator wires real keys.**
 
-> **Correction — the key gate is the *only* gate.** An earlier version of this
-> section also credited a `document_ingestion_enabled` flag defaulting to `False`
-> as a second, flag-level control on this spend. **That control does not exist.**
-> The setting is declared (`agent/copilot/config.py:315`, description: "Gates the
-> API surface") but is **never read anywhere in the codebase** — `register_routers`
-> (`agent/copilot/api/app.py:39-58`) mounts every module exposing a `router`
-> attribute **unconditionally**, with no reference to the flag. Setting it to
-> `True` or `False` changes nothing. The document-ingestion HTTP surface is
-> therefore **mounted and reachable whenever the agent runs**, gated by auth +
-> RBAC (as every PHI route is), *not* by a feature flag.
+> **The key gate is what makes Week-2 model spend $0 by default.** With no
+> `VOYAGE_API_KEY` / `COHERE_API_KEY` / `ANTHROPIC_API_KEY`, the embedder, reranker,
+> and vision extractor all fall back to deterministic keyless stubs that make **zero
+> outbound calls** — the reachable upload endpoint runs the stub extractor and bills
+> nothing until a real key is set. This key gate is load-bearing and verified.
 >
-> **Cost consequence: none.** The real $0-by-default guarantee is the **key gate**,
-> which is load-bearing and verified: the reachable endpoint runs the deterministic
-> stub extractor and bills nothing until `ANTHROPIC_API_KEY` is set. **Exposure
-> consequence: real but bounded** — an operator who assumed the flag kept the
-> upload endpoint unmounted was mistaken; the endpoint is live and its actual
-> protection is the SMART session + rounding-list RBAC gate. The dead flag is
-> slated for deletion (tracked in `W2_ARCHITECTURE.md` §Assumptions & open
-> questions); no cost or exposure claim in this document rests on it.
+> **Note on the `document_ingestion_enabled` flag.** An earlier version of this
+> section described this setting as a *dead* flag — declared but read nowhere, so it
+> gated nothing and was "slated for deletion." **That is no longer true.** The flag is
+> now a genuine ingestion kill switch: declared at `agent/copilot/config.py:431` with
+> `default=True`, and enforced at `agent/copilot/api/routes/documents.py:180` — when
+> false, `POST /v1/documents` returns **503** and no document is accepted. It is an
+> *operator control on the upload surface, not a cost control*: it defaults on, so the
+> $0-by-default guarantee is the **key gate** above, not this flag. The
+> document-ingestion HTTP surface is still mounted whenever the agent runs
+> (`register_routers`, `agent/copilot/api/app.py:40-59`) and is protected by the SMART
+> session + rounding-list RBAC gate like every PHI route; the flag adds an intake-off
+> switch on top. See `W2_ARCHITECTURE.md` §Assumptions. **No cost claim in this
+> document rests on it.**
 
 | Week-2 path | Model / tool | When it fires | Cost lever |
 |---|---|---|---|
@@ -167,6 +167,16 @@ figure below uses standard pricing and is therefore conservative — 2026 intro
 pricing would cut the Anthropic line ~33%. Note the **vision** model
 (`anthropic_model_vision`) defaults to `claude-sonnet-5`, so it resolves to the
 same real $3/$15 row — never the unknown-model fallback.
+
+**Model-swap coverage (higher tiers now on the rate card).** Beyond the SKUs in the
+table above, `pricing.py` also carries explicit rows for the **Opus** and **Fable**
+tiers — `claude-opus-4-8` and `claude-opus-4-7` at **$5.00 / $25.00** per 1M
+input/output, and `claude-fable-5` at **$10.00 / $50.00** — so that if an operator
+points `anthropic_model_synthesis` (or `anthropic_model_vision`) at one of them, spend
+is costed at the real rate rather than silently falling through to the sonnet-tier
+default (Opus would be ~40% under-reported, Fable much more). **The reference
+deployment runs `claude-sonnet-5` ($3/$15)**, so these rows change no figure in this
+document; they exist only to keep the cost accounting correct across a model swap.
 
 **Two Week-2 rates are documented normalizations, straight from the
 `pricing.py` docstring:**

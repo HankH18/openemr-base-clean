@@ -9,6 +9,13 @@ suggestion is worse than useless — it launders the recommendation.
 
 `narrative_inconsistency` needs no escalation: dropping the unsupported claim
 contains it.
+
+Posture, stated plainly: the critic screens the machine-generated claim CHIPS,
+not the free-text answer narrative. The narrative is trusted narration, not
+hard-gated, and a dedicated prose-screening pass is Week-3 scope. What this test
+pins is the whole-turn withhold that keeps a flagged claim from surviving as
+unfootnoted prose — the safety comes from withholding the turn, not from
+screening the sentence.
 """
 
 from __future__ import annotations

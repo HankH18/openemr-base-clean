@@ -61,6 +61,17 @@ citation chips, must never assert a claim that was dropped. On the inline
 serve-time screen and its guarantee is exactly its four checks: there, the
 claim "fabrications fail every time" would be false.
 
+**Prose safety posture — stated honestly.** What this gate (and the critic)
+verify, cite, and audit is the grounded CLAIM CHIPS: the verifier grounds each
+chip, and the critic screens the machine-generated claim TEXT. The free-text
+NARRATIVE the synthesis model writes around those chips is prompt-constrained
+*trusted narration* — it is NOT itself hard-screened by this gate or by the
+critic. The whole-turn withhold above is what keeps a demoted claim from
+surviving as unfootnoted prose; a dedicated screening pass over the narrative
+itself is Week-3 scope, not a guarantee this build makes. Do not read "the
+served prose must never assert a dropped claim" as "the prose is verified" — it
+is enforced by withholding the turn, not by screening the sentence.
+
 Domain rules are separate (`rules.py`) — they don't gate the claim,
 they surface findings that must be shown to the user regardless.
 """
