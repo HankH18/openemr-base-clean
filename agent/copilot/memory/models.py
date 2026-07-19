@@ -184,6 +184,12 @@ class AuditLogRow(Base):
         DateTime, nullable=False, default=_utc_default, server_default=text("CURRENT_TIMESTAMP")
     )
 
+    # Mirrors migration 0003: the retention sweep (§164.312(b)) range-scans by
+    # timestamp, so ``at`` needs an index. Declaring it here keeps the SQLite
+    # ``create_all`` schema (used by every functional test) in step with the
+    # migration-built Postgres schema — without it the index is a test blind spot.
+    __table_args__ = (Index("ix_audit_log_at", "at"),)
+
 
 # --- Per-physician SMART login (auth_mode="smart"; inert while "disabled") ----
 #
@@ -203,9 +209,16 @@ class ClinicianRow(Base):
     """
 
     __tablename__ = "clinician"
+    # Name the unique constraint to match migration 0004 (``uq_clinician_fhir_user``)
+    # instead of leaving it anonymous, so --autogenerate doesn't see the named
+    # migration constraint and the anonymous model one as a drift to reconcile.
+    # Semantics are identical: still a single-column UNIQUE on ``fhir_user`` that
+    # raises IntegrityError on a duplicate (the R1 auth-race fix keys on that error,
+    # not on the constraint name).
+    __table_args__ = (UniqueConstraint("fhir_user", name="uq_clinician_fhir_user"),)
 
     id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
-    fhir_user: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    fhir_user: Mapped[str] = mapped_column(String(512), nullable=False)
     openemr_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     npi: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -423,13 +436,17 @@ class GuidelineChunkRow(Base):
     """A retrievable chunk: text + its dense embedding + section metadata."""
 
     __tablename__ = "guideline_chunk"
+    # Name the FK index to match migration 0006 (``ix_guideline_chunk_document_id``)
+    # rather than SQLAlchemy's auto name (``ix_guideline_chunk_guideline_document_id``),
+    # so a future --autogenerate diff doesn't treat the two as drift. Same column,
+    # same index — name only.
+    __table_args__ = (Index("ix_guideline_chunk_document_id", "guideline_document_id"),)
 
     id: Mapped[int] = mapped_column(AutoIncBigInt, primary_key=True, autoincrement=True)
     guideline_document_id: Mapped[int] = mapped_column(
         BigInteger,
         ForeignKey("guideline_document.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     section: Mapped[str | None] = mapped_column(String(255), nullable=True)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
