@@ -53,6 +53,24 @@ def resolve_correlation_id(raw: str | None) -> str:
     return generate_correlation_id()
 
 
+def _access_log_path(request: Request) -> str:
+    """Return the route TEMPLATE for the access record, never a concrete path.
+
+    Once ``call_next`` has run, routing has resolved and the matched route is
+    published on ``scope["route"]``; its ``.path`` is the template
+    (``/v1/documents/{document_id}``), which keeps resource ids — patient,
+    document, conversation — out of the record billed as the PHI-free access
+    trail. Query strings are already excluded, and remain so.
+
+    Falls back to the concrete ``request.url.path`` only when no route matched
+    (e.g. a 404 to an unrouted path), which carries no path-param id to leak.
+    """
+    template = getattr(request.scope.get("route"), "path", None)
+    if isinstance(template, str):
+        return template
+    return request.url.path
+
+
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """Publish a correlation ID for the request and echo it on the response."""
 
@@ -68,7 +86,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
                 "http.request",
                 extra={
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    "http_path": _access_log_path(request),
                     "http_status": response.status_code,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 },
@@ -91,7 +109,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
                 "http.request",
                 extra={
                     "http_method": request.method,
-                    "http_path": request.url.path,
+                    "http_path": _access_log_path(request),
                     "http_status": 500,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 },
