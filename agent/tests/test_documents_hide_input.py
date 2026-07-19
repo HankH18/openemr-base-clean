@@ -43,18 +43,27 @@ def test_extracted_fact_wrong_typed_value_is_not_in_the_error() -> None:
     assert "string_type" in message, "the error type must survive — we hide the value, not the fault"
 
 
-def test_extracted_fact_bad_date_string_is_not_in_the_error() -> None:
-    # The exact PHI shape the defect names: a date string on collection_date that
-    # fails the datetime parse. '07/13/2026' is a birth/collection date — precisely
-    # what must not appear in a traceback.
-    with pytest.raises(ValidationError) as excinfo:
-        ExtractedFact.model_validate(
-            {"field_path": "collected", "value": "x", "collection_date": "07/13/2026"}
-        )
+def test_extracted_fact_us_date_parses_instead_of_crashing() -> None:
+    # Regression (live 500): a US-format collection date used to raise a datetime
+    # ValidationError and CRASH the whole extraction — one bad header date discarding
+    # every fact on the page. LenientDate now parses US MM/DD/YYYY and degrades an
+    # unparseable value to None, so ingestion never 500s over a date format. (The
+    # date can no longer reach a traceback either — there is no error to leak into.)
+    us = ExtractedFact.model_validate(
+        {"field_path": "collected", "value": "x", "collection_date": "07/13/2026"}
+    )
+    assert us.collection_date is not None
+    assert (
+        us.collection_date.year,
+        us.collection_date.month,
+        us.collection_date.day,
+    ) == (2026, 7, 13)
 
-    message = str(excinfo.value)
-    assert "07/13/2026" not in message, "a birth/collection date must never leak into the error"
-    assert "collection_date" in message, "the field path must survive"
+    # An unparseable date is a recorded absence, never a crash.
+    unparseable = ExtractedFact.model_validate(
+        {"field_path": "collected", "value": "x", "collection_date": "not a date"}
+    )
+    assert unparseable.collection_date is None
 
 
 def test_lab_report_nested_fact_value_is_not_in_the_error() -> None:

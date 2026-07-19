@@ -26,8 +26,59 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+#: Date formats a US clinical document actually prints, tried after ISO 8601.
+_DATE_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y",
+    "%m-%d-%Y",
+    "%b %d, %Y",
+    "%B %d, %Y",
+    "%d %b %Y",
+)
+
+
+def _lenient_date(v: object) -> datetime | None:
+    """Parse a vision-extracted date string leniently; NEVER raise.
+
+    Vision models print whatever format the document uses — ISO, US ``MM/DD/YYYY``,
+    with or without a time. Pydantic's ``datetime`` parser accepts only ISO
+    (``strict=False`` does NOT help), so a US-format header date raised a
+    ``ValidationError`` and crashed the ENTIRE extraction — one unreadable date
+    discarding every fact on the page (a live 500). Here an unparseable value
+    degrades to ``None`` (a recorded absence), exactly like the intake form's
+    ``str`` dates. Ambiguous ``DD/MM`` vs ``MM/DD`` is read US-style — acceptable
+    for the specimen-collection metadata this guards; the clinical
+    ``date_of_birth`` stays a verbatim ``str`` precisely to avoid that guess.
+    """
+    if v is None or isinstance(v, datetime):
+        return v
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+#: A ``datetime`` field that tolerates any vision-extracted date string, degrading
+#: an unparseable one to ``None`` rather than crashing the whole extraction.
+LenientDate = Annotated[datetime | None, BeforeValidator(_lenient_date)]
 
 
 class LabField(StrEnum):
@@ -80,10 +131,11 @@ class ExtractedFact(BaseModel):
     unit: str | None = None
     reference_range: str | None = None
     abnormal: str | None = None
-    # Vision models return dates as ISO strings (JSON has no datetime), so this one
-    # field parses leniently even though the model is strict — otherwise a real
-    # extraction with a collection date (a required lab field) fails validation.
-    collection_date: datetime | None = Field(default=None, strict=False)
+    # Vision models print dates in whatever format the document uses (ISO or US
+    # MM/DD/YYYY). LenientDate parses both and degrades an unparseable one to None
+    # — a bare `datetime` (even strict=False) raised on a US date and crashed the
+    # whole extraction (see _lenient_date).
+    collection_date: LenientDate = Field(default=None)
     page_no: int | None = Field(default=None, ge=1)
     bbox: list[float] | None = Field(
         default=None, description="Normalized [x, y, w, h] of the reconciled OCR span."
@@ -155,7 +207,7 @@ class LabReport(BaseModel):
     facts: list[ExtractedFact] = Field(min_length=1)
     ordering_provider: str | None = None
     specimen: str | None = None
-    collected_at: datetime | None = Field(default=None, strict=False)
+    collected_at: LenientDate = Field(default=None)
 
     @property
     def incomplete_facts(self) -> tuple[tuple[ExtractedFact, frozenset[LabField]], ...]:
