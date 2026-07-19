@@ -288,3 +288,95 @@ class TestObservationSeriesAudit:
         assert r.status_code == 200
         # The series is still produced and returned intact.
         assert [p["value"] for p in r.json()["points"]] == ["0.02", "0.03", "0.8", "2.34"]
+
+
+# A heart-rate reading carrying NO FHIR ``referenceRange`` — like every vital
+# (HR/SpO2/BP/resp/temp). ``effectiveDateTime`` is present so the series endpoint
+# keeps the point; the reference-band helpers ignore it.
+def _hr(rid: str, value: float, effective: str) -> dict[str, Any]:
+    return {
+        "resourceType": "Observation",
+        "id": rid,
+        "status": "final",
+        "code": {"text": "Heart Rate"},
+        "valueQuantity": {"value": value, "unit": "/min"},
+        "effectiveDateTime": effective,
+    }
+
+
+class TestVitalSeriesReferenceBand:
+    """P2 regression: a vital's drill-down chart must shade the same normal band
+    the rounds card does. Vitals carry no FHIR ``referenceRange``, so the series
+    helpers must fall back to the standard vitals table — parity with the card's
+    ``copilot.rounds.summary._metric_bounds`` (which ``ranges.py`` documents both
+    paths as sharing). Before the fix the helpers returned ``None`` for a vital.
+    """
+
+    def test_reference_range_of_falls_back_to_vitals_band(self) -> None:
+        from copilot.api.routes.observations import _reference_range_of
+        from copilot.domain.contracts import ReferenceRange
+
+        res = _hr("hr-1", 82.0, "2026-07-09T00:00:00Z")
+        # RED (pre-fix): reference_bounds finds no referenceRange → returns None.
+        # GREEN (post-fix): the standard adult heart-rate band 60-100.
+        assert _reference_range_of(res) == ReferenceRange(low=60.0, high=100.0)
+
+    def test_series_range_falls_back_to_vitals_band(self) -> None:
+        from copilot.api.routes.observations import _series_range
+        from copilot.domain.contracts import ReferenceRange
+
+        series = [_hr("hr-1", 82.0, "2026-07-09T00:00:00Z"), _hr("hr-2", 91.0, "2026-07-09T04:00:00Z")]
+        assert _series_range(series) == ReferenceRange(low=60.0, high=100.0)
+
+    def test_lab_reference_range_still_wins_over_vitals_fallback(self) -> None:
+        """A lab carries its own ``referenceRange`` → the vitals fallback never fires."""
+        from copilot.api.routes.observations import _reference_range_of
+        from copilot.domain.contracts import ReferenceRange
+
+        res = {
+            "resourceType": "Observation",
+            "id": "trop-1",
+            "status": "final",
+            "code": {"text": "Troponin I"},
+            "valueQuantity": {"value": 0.02, "unit": "ng/mL"},
+            "referenceRange": [{"low": {"value": 0.0}, "high": {"value": 0.04}}],
+        }
+        assert _reference_range_of(res) == ReferenceRange(low=0.0, high=0.04)
+
+    def test_non_vital_without_reference_range_stays_neutral(self) -> None:
+        """A non-vital lab lacking a recorded range gets NO band (fail-closed)."""
+        from copilot.api.routes.observations import _reference_range_of
+
+        res = {
+            "resourceType": "Observation",
+            "id": "hgb-1",
+            "status": "final",
+            "code": {"text": "Hemoglobin"},
+            "valueQuantity": {"value": 13.5, "unit": "g/dL"},
+        }
+        assert _reference_range_of(res) is None
+
+    def test_endpoint_hr_series_carries_the_vitals_band(
+        self, _db_file: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """End-to-end: the live drill-down endpoint now returns the shaded band."""
+        from copilot.api.routes import observations
+
+        hr_cohort = {
+            str(PID): {
+                "Observation": [
+                    _hr("hr-1", 82.0, "2026-07-09T00:00:00Z"),
+                    _hr("hr-2", 91.0, "2026-07-09T04:00:00Z"),
+                ]
+            }
+        }
+        monkeypatch.setattr(observations, "_fhir_client", lambda: _FakeFhir(hr_cohort))
+
+        client = _client()
+        r = _get(client, metric="Heart Rate")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["metric"] == "Heart Rate"
+        assert len(body["points"]) == 2
+        # The chart shades the same 60-100 band the summary card shades.
+        assert body["reference_range"] == {"low": 60.0, "high": 100.0}

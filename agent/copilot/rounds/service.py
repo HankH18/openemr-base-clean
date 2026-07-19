@@ -325,7 +325,14 @@ def _card_from_summary(summary: MemoryFileSummary) -> PatientCard:
 
 
 def _watermark(resources: Sequence[Mapping[str, object]]) -> datetime:
-    """Highest ``meta.lastUpdated`` across the pulled set, else now."""
+    """Highest ``meta.lastUpdated`` across the pulled set, else now.
+
+    Real FHIR data mixes tz-aware stamps (``...Z``) with naive ones; comparing
+    the two raises ``TypeError`` (not ``ValueError``). Each parsed stamp is
+    normalized to UTC when naive before comparison — mirroring
+    :func:`copilot.rounds.summary._parse` — so a naive stamp beside an aware one
+    can never propagate a 500 out of :meth:`RoundsService.start`.
+    """
     best: datetime | None = None
     for res in resources:
         meta = res.get("meta")
@@ -336,6 +343,7 @@ def _watermark(resources: Sequence[Mapping[str, object]]) -> datetime:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             continue
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         if best is None or dt > best:
             best = dt
     return best or utcnow()

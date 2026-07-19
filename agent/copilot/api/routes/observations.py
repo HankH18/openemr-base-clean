@@ -50,7 +50,7 @@ from copilot.fhir.provider import build_fhir_client, build_fhir_client_for_sessi
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import Observability, current_correlation_id
-from copilot.rounds.ranges import reference_bounds
+from copilot.rounds.ranges import reference_bounds, vitals_range
 from copilot.rounds.summary import _unit, group_observations
 
 _logger = logging.getLogger(__name__)
@@ -302,12 +302,27 @@ def _series_unit(points: Sequence[tuple[datetime, str, ObservationSeriesPoint]])
 
 
 def _series_range(resources: Sequence[Mapping[str, Any]]) -> ReferenceRange | None:
-    """The metric's reference band — the first derivable across its readings.
+    """The metric's reference band for the axis the points are plotted on.
 
     The caller passes only the readings recorded in the series' unit, so the band
-    describes the axis the points are plotted on: a ``Cel`` record's 36.1-37.2
-    can never end up bounding a °F chart.
+    describes that axis: a ``Cel`` record's 36.1-37.2 can never end up bounding a
+    °F chart.
+
+    A band the record actually carries wins, and it is searched for across ALL
+    the readings **before** any fallback: a series' newest reading routinely omits
+    the ``referenceRange`` an older same-unit reading still carries, so a
+    per-reading fallback would shade a heart-rate-style default over a more
+    specific recorded band. Only when no reading records a band does the series
+    fall back to the standard vitals table (via :func:`_reference_range_of`) — so a
+    heart-rate chart, whose readings never carry a range, is shaded rather than
+    neutral, matching the summary card.
     """
+    # Pass 1 — a recorded band from any same-unit reading takes precedence.
+    for res in resources:
+        low, high = reference_bounds(res)
+        if low is not None or high is not None:
+            return ReferenceRange(low=low, high=high)
+    # Pass 2 — nothing recorded: supplement vitals from the standard table.
     for res in resources:
         rng = _reference_range_of(res)
         if rng is not None:
@@ -316,14 +331,27 @@ def _series_range(resources: Sequence[Mapping[str, Any]]) -> ReferenceRange | No
 
 
 def _reference_range_of(res: Mapping[str, Any]) -> ReferenceRange | None:
-    """The metric's reference band, via the shared grounded parser.
+    """The metric's reference band: the record's own range, else the vitals band.
 
-    Reuses :func:`copilot.rounds.ranges.reference_bounds`, which reads the
+    Prefers :func:`copilot.rounds.ranges.reference_bounds`, which reads the
     structured ``low.value`` / ``high.value`` and falls back to parsing a
     free-text ``referenceRange[0].text`` — so a one-sided text range like
-    troponin's ``"<0.04"`` now yields a (half-open) band instead of nothing.
+    troponin's ``"<0.04"`` yields a (half-open) band (labs).
+
+    When the record carries no ``referenceRange`` at all — which is EVERY vital
+    (HR/SpO2/BP/resp/temp) — supplements from the closed standard-vitals table via
+    :func:`copilot.rounds.ranges.vitals_range`, keyed by the reading's own
+    humanized metric label and unit. This mirrors the rounds card's
+    :func:`copilot.rounds.summary._metric_bounds` so the drill-down chart and the
+    summary card derive the SAME band (as ``ranges.py`` documents they must),
+    instead of the chart rendering unshaded while the card shades it. A non-vital
+    lab with no recorded range still gets ``None`` (fail-closed → neutral axis).
     """
     low, high = reference_bounds(res)
+    if low is None and high is None:
+        described = describe_resource(res)
+        if described is not None:
+            low, high = vitals_range(humanize_label(described[0]), _unit(res))
     if low is None and high is None:
         return None
     return ReferenceRange(low=low, high=high)

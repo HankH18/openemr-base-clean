@@ -250,3 +250,54 @@ class TestRoundsLoop:
             json={"clinician_id": 4242, "completed_patient_id": 1},
         )
         assert r.status_code == 404
+
+
+# --- watermark timezone robustness (P3) ------------------------------------
+
+
+def _res_last_updated(last_updated: str) -> dict[str, Any]:
+    """A minimal resource carrying just ``meta.lastUpdated`` for _watermark."""
+    return {
+        "resourceType": "Observation",
+        "id": "wm",
+        "meta": {"lastUpdated": last_updated},
+    }
+
+
+class TestWatermarkTimezone:
+    """P3 regression: ``_watermark`` mixes real FHIR data where some
+    ``meta.lastUpdated`` stamps are tz-aware (``...Z``) and some are naive.
+    Comparing an aware datetime against a naive one raises ``TypeError`` — which
+    the ``ValueError``-only ``try`` does not catch — so before the fix a single
+    naive stamp alongside an aware one propagated out of ``RoundsService.start``
+    as a 500. Each parsed stamp is now normalized to UTC before comparison.
+    """
+
+    def test_naive_then_aware_returns_max_utc(self) -> None:
+        from datetime import UTC, datetime
+
+        from copilot.rounds.service import _watermark
+
+        # naive stamp first (sets ``best``), aware stamp second (the compare):
+        # pre-fix ``aware > naive`` raises TypeError.
+        resources = [
+            _res_last_updated("2026-07-08T00:00:00"),
+            _res_last_updated("2026-07-09T06:30:00Z"),
+        ]
+        result = _watermark(resources)
+        assert result == datetime(2026, 7, 9, 6, 30, 0, tzinfo=UTC)
+        assert result.tzinfo is not None
+
+    def test_aware_then_naive_returns_max_utc(self) -> None:
+        """Order-independent: aware first, naive second must also not raise."""
+        from datetime import UTC, datetime
+
+        from copilot.rounds.service import _watermark
+
+        # aware stamp first, naive stamp second: pre-fix ``naive > aware`` raises.
+        resources = [
+            _res_last_updated("2026-07-09T06:30:00Z"),
+            _res_last_updated("2026-07-08T00:00:00"),
+        ]
+        result = _watermark(resources)
+        assert result == datetime(2026, 7, 9, 6, 30, 0, tzinfo=UTC)
