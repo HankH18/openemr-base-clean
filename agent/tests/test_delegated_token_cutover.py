@@ -383,7 +383,16 @@ class TestPollerIsolation:
             provider = client._token_provider
             assert isinstance(provider, StaticTokenProvider)
             assert not isinstance(provider, SessionTokenProvider)
-            assert provider.token.access_token == "rounds-refresh-token"
+            # CONTRACT CORRECTED (defect P2). This asserted the magic string
+            # "rounds-refresh-token" — the hardcoded bearer the pipeline used to
+            # bake in, bypassing build_fhir_client. That bearer is 401'd by a real
+            # OpenEMR, so the assertion encoded a functional defect as the contract.
+            # The legitimate half of this test — the *background* (no-session) path
+            # uses a SYSTEM StaticTokenProvider, never a per-session SessionTokenProvider
+            # (asserted above) — is preserved. Only the token VALUE is corrected to
+            # the real system stub build_token_provider emits, exactly what the
+            # sibling test_system_read_provider_is_the_stub_bearer already asserts.
+            assert provider.token.access_token == SYSTEM_STUB
 
     def test_worker_modules_never_reference_session_builders(self) -> None:
         import copilot.worker.pipeline as pipeline
@@ -393,6 +402,132 @@ class TestPollerIsolation:
             src = inspect.getsource(module)
             assert "for_session" not in src
             assert "SessionTokenProvider" not in src
+
+    async def test_runtime_poller_path_uses_system_client_not_refresh_stub(self) -> None:
+        # Defect P2, second path: the BACKGROUND poller (runtime) constructs the
+        # pipeline WITHOUT a factory, so its per-tick reader is the system
+        # build_fhir_client client — NOT the old hardcoded "rounds-refresh-token"
+        # bearer. Proves the root-cause fix reaches the runtime call sites too,
+        # not just the interactive refresh route.
+        from copilot.worker.runtime import _RuntimePoller
+
+        runtime_poller = _RuntimePoller(Settings(fhir_base_url=FHIR_BASE))
+        async with runtime_poller._pipeline._fhir_client() as client:
+            provider = client._token_provider
+            assert isinstance(provider, StaticTokenProvider)
+            assert not isinstance(provider, SessionTokenProvider)
+            assert provider.token.access_token == SYSTEM_STUB
+            assert provider.token.access_token != "rounds-refresh-token"
+
+
+# --- the INTERACTIVE refresh route rides the physician's delegated token -----
+#
+# Defect P2: POST /v1/rounds/refresh is a clinician-triggered, serve-time route —
+# NOT a background poller tick. In smart mode it must ride the logged-in
+# physician's delegated per-session token (like /chat, /rounds, /observations),
+# so OpenEMR attributes the read to that physician and does not 401. It used to
+# reuse the poller's hardcoded static "rounds-refresh-token" bearer, which a real
+# OpenEMR rejects — the "force re-sync" button silently no-op'd (every patient
+# outcome=error). These tests fail against the pre-fix code (bite-proof).
+
+
+class TestRefreshRouteDelegatedToken:
+    def test_refresh_reader_factory_none_without_session(self) -> None:
+        # Mirrors the chat/rounds route factories: a per-session reader in smart
+        # mode, None (system path) in disabled mode. Absent entirely pre-fix.
+        from copilot.api.routes.refresh import _reader_factory
+
+        assert _reader_factory(None) is None
+        assert _reader_factory("sid") is not None
+
+    def test_pipeline_honors_injected_session_reader(self) -> None:
+        # The pipeline must accept a route-injected per-session reader factory and
+        # use it verbatim — the seam that lets the interactive route deliver the
+        # physician's delegated client. Pre-fix RefreshPipeline takes no such arg.
+        from copilot.worker.pipeline import RefreshPipeline
+
+        sentinel = object()
+        pipe = RefreshPipeline(
+            Settings(fhir_base_url=FHIR_BASE), fhir_client_factory=lambda: sentinel
+        )
+        assert pipe._fhir_client() is sentinel
+
+    def test_pipeline_system_path_is_not_the_refresh_stub(self) -> None:
+        # With no factory (background/system path) the reader must come from
+        # build_fhir_client — i.e. the real system stub — NOT the hardcoded
+        # "rounds-refresh-token" bearer the defect baked in.
+        from copilot.worker.pipeline import RefreshPipeline
+
+        client = RefreshPipeline(Settings(fhir_base_url=FHIR_BASE))._fhir_client()
+        provider = client._token_provider
+        assert isinstance(provider, StaticTokenProvider)
+        assert provider.token.access_token == SYSTEM_STUB
+        assert provider.token.access_token != "rounds-refresh-token"
+
+    @respx.mock
+    def test_refresh_read_carries_physician_token(self, _smart_app: str) -> None:
+        # End-to-end proof against the real route: in smart mode the outbound FHIR
+        # read carries the physician's delegated bearer, read straight off the wire
+        # — not the system/static stub. This is the live-behaviour discriminator
+        # the acceptance fake (accepts any token) is blind to.
+        cid = _seed_session(_smart_app)
+        _seed_cursor(_smart_app, cid, [PID])
+        # A no-change tick still issues one count query per watched type; mock them
+        # all so respx sees no unmatched request. total=0 ⇒ no pull/synthesis.
+        watched = (
+            "Observation",
+            "DiagnosticReport",
+            "MedicationRequest",
+            "Condition",
+            "AllergyIntolerance",
+            "Encounter",
+        )
+        routes = {
+            rtype: respx.get(f"{FHIR_BASE}/{rtype}").mock(
+                return_value=Response(200, json=_bundle([]))
+            )
+            for rtype in watched
+        }
+
+        r = _authed_client().post("/v1/rounds/refresh", json={"clinician_id": cid})
+
+        assert r.status_code == 200, r.text
+        obs_route = routes["Observation"]
+        assert obs_route.called, "refresh never reached the FHIR reader"
+        auth = obs_route.calls.last.request.headers["Authorization"]
+        assert auth == f"Bearer {PHYSICIAN_TOKEN}"
+        assert auth != "Bearer rounds-refresh-token"
+        assert auth != f"Bearer {SYSTEM_STUB}"
+
+    @respx.mock
+    def test_disabled_mode_refresh_uses_system_stub_bearer(self, _disabled_app: str) -> None:
+        # Keyless/stub path PRESERVED: disabled mode ⇒ no session ⇒ factory=None ⇒
+        # the pipeline falls to build_fhir_client's system stub bearer. Exercises
+        # the REAL build_fhir_client (no _fhir_client monkeypatch) end-to-end, so it
+        # is the same client the keyless acceptance flow runs — which accepts any
+        # token. Confirms the fix did not break the offline/no-credential path.
+        _seed_cursor(_disabled_app, 5, [PID])
+        watched = (
+            "Observation",
+            "DiagnosticReport",
+            "MedicationRequest",
+            "Condition",
+            "AllergyIntolerance",
+            "Encounter",
+        )
+        routes = {
+            rtype: respx.get(f"{FHIR_BASE}/{rtype}").mock(
+                return_value=Response(200, json=_bundle([]))
+            )
+            for rtype in watched
+        }
+
+        r = TestClient(_new_disabled_app()).post("/v1/rounds/refresh", json={"clinician_id": 5})
+
+        assert r.status_code == 200, r.text
+        obs_route = routes["Observation"]
+        assert obs_route.called, "refresh never reached the FHIR reader"
+        assert obs_route.calls.last.request.headers["Authorization"] == f"Bearer {SYSTEM_STUB}"
 
 
 # --- helper ----------------------------------------------------------------

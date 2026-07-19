@@ -34,7 +34,7 @@ serialise).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -42,8 +42,8 @@ from pydantic import BaseModel, ConfigDict
 from copilot.config import Settings
 from copilot.domain.contracts import Claim, MemoryFileSummary
 from copilot.domain.primitives import ClinicianId, PatientId, utcnow
-from copilot.fhir.auth import OAuthToken, StaticTokenProvider
 from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.rounds.ranking import assess_patient
@@ -76,8 +76,20 @@ class DeteriorationAlert(BaseModel):
 class RefreshPipeline:
     """Serve-time orchestration for the background update loop."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        fhir_client_factory: Callable[[], FhirClient] | None = None,
+    ) -> None:
         self._settings = settings
+        # Optional per-request reader factory. ``refresh`` is an INTERACTIVE,
+        # clinician-triggered route, so in ``smart`` mode the route injects a
+        # factory that builds the physician's delegated per-session client (same
+        # seam as ``RoundsService``/``ChatService``); when absent (disabled mode,
+        # or the background poller path) the reader falls back to the
+        # environment-appropriate system client via ``build_fhir_client``.
+        self._fhir_client_factory = fhir_client_factory
 
     # --- public API -------------------------------------------------------
 
@@ -223,14 +235,15 @@ class RefreshPipeline:
     def _fhir_client(self) -> FhirClient:
         """Build the FHIR reader for a refresh tick.
 
-        A static bearer is used deliberately — same rationale as
-        :meth:`RoundsService._fhir_client`: the acceptance fake accepts any
-        token, and the real backend-services credential is operator-injected,
-        not carried in ``Settings``.
+        Mirrors :meth:`RoundsService._fhir_client` exactly (interactive read
+        path): when the route injects a per-session factory (``smart`` mode), use
+        the physician's delegated client so OpenEMR attributes the read to that
+        physician and does not 401. Otherwise — disabled mode, or the background
+        poller path that constructs the pipeline without a factory — fall back to
+        the environment-appropriate system client (real Backend Services token
+        when configured, else the keyless stub bearer from
+        :func:`copilot.fhir.provider.build_token_provider`).
         """
-        token = OAuthToken(
-            access_token="rounds-refresh-token",
-            token_type="Bearer",
-            expires_at=utcnow() + timedelta(hours=1),
-        )
-        return FhirClient(self._settings.fhir_base_url, StaticTokenProvider(token=token))
+        if self._fhir_client_factory is not None:
+            return self._fhir_client_factory()
+        return build_fhir_client(self._settings)

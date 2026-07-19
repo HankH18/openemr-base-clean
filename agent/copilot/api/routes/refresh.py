@@ -12,16 +12,32 @@ module-level ``router``); no edit to ``app.py`` is required.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
-from copilot.api.deps import resolve_acting_clinician
+from copilot.api.deps import resolve_acting_context
 from copilot.config import get_settings
+from copilot.fhir.client import FhirClient
+from copilot.fhir.provider import build_fhir_client_for_session
 from copilot.worker.pipeline import RefreshPipeline
 
 router = APIRouter(prefix="/v1/rounds", tags=["rounds"])
+
+
+def _reader_factory(session_id: str | None) -> Callable[[], FhirClient] | None:
+    """A per-session reader factory in smart mode; ``None`` (system path) otherwise.
+
+    Same seam the sibling read routes (``rounds``/``chat``/``observations``) use:
+    in ``smart`` mode the physician's delegated per-session client goes out, so
+    OpenEMR attributes the re-sync read to that physician; in ``disabled`` mode
+    the pipeline falls back to the system client.
+    """
+    if session_id is None:
+        return None
+    return lambda: build_fhir_client_for_session(get_settings(), session_id)
 
 
 class RefreshRequest(BaseModel):
@@ -39,7 +55,12 @@ class RefreshRequest(BaseModel):
 async def refresh(req: RefreshRequest, request: Request) -> dict[str, Any]:
     # Identity per the auth-mode contract: disabled → the body clinician_id;
     # smart → the session cookie (401 if none, 403 if the body id disagrees).
-    cid = await resolve_acting_clinician(get_settings(), request, req.clinician_id)
-    pipeline = RefreshPipeline(get_settings())
-    results = await pipeline.refresh(cid)
+    # Resolve the full acting context (not just the id) so the smart-mode session
+    # id survives to select the physician's delegated read token — refresh is an
+    # interactive route and must ride the physician, not a system/static bearer.
+    acting = await resolve_acting_context(get_settings(), request, req.clinician_id)
+    pipeline = RefreshPipeline(
+        get_settings(), fhir_client_factory=_reader_factory(acting.session_id)
+    )
+    results = await pipeline.refresh(acting.clinician_id)
     return {"results": [r.model_dump(mode="json") for r in results]}
