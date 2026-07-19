@@ -30,11 +30,13 @@ RUN uv pip install --no-cache -e .
 COPY corpus ./corpus
 COPY scripts ./scripts
 
-# Metric artifacts the /v1/status dashboard reads (api/routes/status.py resolves
-# /app/evals/eval_results.json and /app/artifacts/latency_report.json). Without
+# Metric artifacts the /status dashboard reads (api/routes/status.py resolves
+# /app/evals/gate_baseline.json and /app/artifacts/latency_report.json). Without
 # these the deployed status page serves zeros for every eval/latency metric — the
-# dashboard requirement fails silently. Only the JSON artifacts are copied, not
-# the eval suite itself: the runtime image ships no test code.
+# dashboard requirement fails silently. eval_results.json is the superseded Week-1
+# grounding artifact — no longer read by status.py, retained only for provenance.
+# Only the JSON artifacts are copied, not the eval suite itself: the runtime image
+# ships no test code.
 COPY evals/gate_baseline.json ./evals/gate_baseline.json
 COPY evals/eval_results.json ./evals/eval_results.json
 COPY artifacts/latency_report.json ./artifacts/latency_report.json

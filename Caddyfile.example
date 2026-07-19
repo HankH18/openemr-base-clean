@@ -22,8 +22,11 @@
 	}
 
 	# Agent API → internal agent service (same-origin; the SPA calls /v1/*)
+	# /status is the documented bare-path health page (week2.yaml); /v1/status is
+	# already covered by /v1/*, but the un-versioned alias needs listing here or it
+	# falls through to the SPA.
 	@api {
-		path /v1/* /health /ready /openapi.json /docs /docs/*
+		path /v1/* /status /health /ready /openapi.json /docs /docs/*
 	}
 	handle @api {
 		reverse_proxy agent:8000
