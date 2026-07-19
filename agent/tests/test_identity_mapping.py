@@ -11,7 +11,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from copilot.auth.identity import IdentityError, parse_identity, resolve_clinician
-from copilot.memory import Base, MemoryRepository
+from copilot.memory import Base, ClinicianRow, MemoryRepository
 
 _NOW = datetime(2026, 7, 11, 9, 0, 0, tzinfo=UTC)
 
@@ -97,3 +97,81 @@ class TestResolveClinician:
             repo, parse_identity(id_token=_id_token(fhirUser="p/b")), now=_NOW
         )
         assert a.value != b.value
+
+
+class TestConcurrentFirstLoginRace:
+    """Defect P3 — two simultaneous first logins for the same physician.
+
+    Both requests see ``get_clinician_by_fhir_user() is None`` and both
+    ``create_clinician``; the loser hits the ``clinician.fhir_user`` unique
+    constraint. On the pre-fix code that surfaces as an unhandled ``IntegrityError``
+    that propagates to a raw HTTP 500 on the OAuth callback. The loser's login must
+    instead SUCCEED on the winner's stable id.
+
+    Reproduced deterministically: the winner has already committed its row, and the
+    loser's pre-check is forced to miss (its snapshot predates the winner's insert)
+    so ``resolve_clinician`` takes the create path and the ``INSERT`` violates the
+    live unique constraint — exactly the loser's position in a real race.
+    """
+
+    async def test_race_loser_resolves_to_the_winners_id(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = MemoryRepository(session)
+        fhir_user = "https://fhir/Practitioner/uuid-race"
+        # Winner commits the row first, arming the unique constraint.
+        winner = await repo.create_clinician(
+            fhir_user=fhir_user, openemr_username=None, display_name="Dr. Winner", npi=None
+        )
+        await session.commit()
+
+        # Force the loser's pre-check to miss once (the temporal window that makes
+        # the race a race); the fix's re-SELECT then hits the real DB and finds
+        # the winner.
+        real_lookup = repo.get_clinician_by_fhir_user
+        pre_check_done = {"value": False}
+
+        async def miss_first_then_real(fhir_user_arg: str) -> ClinicianRow | None:
+            if not pre_check_done["value"]:
+                pre_check_done["value"] = True
+                return None
+            return await real_lookup(fhir_user_arg)
+
+        monkeypatch.setattr(repo, "get_clinician_by_fhir_user", miss_first_then_real)
+
+        identity = parse_identity(id_token=_id_token(fhirUser=fhir_user, name="Dr. Loser"))
+        cid = await resolve_clinician(repo, identity, now=_NOW)
+
+        # Login SUCCEEDS on the winner's stable id — no IntegrityError, no 500.
+        assert cid.value == winner.id
+        # last_login_at was stamped on the shared row.
+        row = await real_lookup(fhir_user)
+        assert row is not None
+        assert row.last_login_at is not None
+
+    async def test_provision_fails_closed_when_winner_row_unreadable(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pathological residual: the constraint fires but the re-SELECT still
+        finds nothing. Must fail CLOSED (a mapped domain error the callback turns
+        into a generic login-error redirect), never a raw ``IntegrityError``/500.
+        """
+        from copilot.auth.identity import ClinicianProvisioningError
+
+        repo = MemoryRepository(session)
+        fhir_user = "https://fhir/Practitioner/uuid-vanish"
+        # A committed row makes the loser's INSERT raise IntegrityError...
+        await repo.create_clinician(
+            fhir_user=fhir_user, openemr_username=None, display_name="Dr. Ghost", npi=None
+        )
+        await session.commit()
+
+        # ...but every lookup misses, so even the fix's re-SELECT comes back empty.
+        async def always_miss(_fhir_user: str) -> ClinicianRow | None:
+            return None
+
+        monkeypatch.setattr(repo, "get_clinician_by_fhir_user", always_miss)
+        identity = parse_identity(id_token=_id_token(fhirUser=fhir_user))
+
+        with pytest.raises(ClinicianProvisioningError):
+            await resolve_clinician(repo, identity, now=_NOW)

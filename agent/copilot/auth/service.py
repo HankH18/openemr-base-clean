@@ -36,7 +36,12 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from copilot.auth.identity import IdentityError, parse_identity, resolve_clinician
+from copilot.auth.identity import (
+    ClinicianProvisioningError,
+    IdentityError,
+    parse_identity,
+    resolve_clinician,
+)
 from copilot.auth.session import (
     SessionCrypto,
     SessionCryptoError,
@@ -345,7 +350,15 @@ class AuthService:
 
         async with self.session_scope_factory() as session:
             repo = MemoryRepository(session)
-            clinician_id = await resolve_clinician(repo, identity, now=now)
+            try:
+                clinician_id = await resolve_clinician(repo, identity, now=now)
+            except ClinicianProvisioningError as exc:
+                # A concurrent first-login race that could not be reconciled — the
+                # common case (loser re-reads the winner's row) already succeeds
+                # inside resolve_clinician; this is the fail-closed residual. Map it
+                # to the recoverable callback error so the route redirects to the
+                # generic /?login_error= page instead of raising a raw 500.
+                raise LoginCallbackError("clinician identity could not be resolved") from exc
             await repo.create_physician_session(
                 session_id=session_hash,
                 clinician_id=clinician_id.value,

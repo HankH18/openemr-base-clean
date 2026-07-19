@@ -26,12 +26,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from copilot.domain.primitives import ClinicianId
+from copilot.memory.models import ClinicianRow
 from copilot.memory.repository import MemoryRepository
 
 
 class IdentityError(RuntimeError):
     """The identity token/userinfo carried no usable ``fhirUser`` claim."""
+
+
+class ClinicianProvisioningError(RuntimeError):
+    """First-login auto-provision lost the race AND the winner's row was unreadable.
+
+    A genuinely concurrent first login for the same ``fhirUser`` is expected and is
+    handled transparently: the loser rolls its failed ``INSERT`` back to a savepoint
+    and re-SELECTs the row the winner committed (see :func:`resolve_clinician`), so
+    that login still succeeds. This is the should-not-happen residual — the
+    unique-constraint ``IntegrityError`` fired, yet the re-SELECT still found
+    nothing. Raised so the login FAILS CLOSED (the caller maps it to a generic
+    ``/?login_error=`` redirect) rather than surfacing a raw ``IntegrityError`` HTTP
+    500.
+    """
 
 
 @dataclass(frozen=True)
@@ -114,11 +131,47 @@ async def resolve_clinician(
     """
     row = await repo.get_clinician_by_fhir_user(identity.fhir_user)
     if row is None:
-        row = await repo.create_clinician(
-            fhir_user=identity.fhir_user,
-            openemr_username=identity.username,
-            display_name=identity.display_name,
-            npi=identity.npi,
-        )
+        row = await _provision_clinician(repo, identity)
     await repo.set_clinician_last_login(row.id, now)
     return ClinicianId(value=row.id)
+
+
+async def _provision_clinician(repo: MemoryRepository, identity: ParsedIdentity) -> ClinicianRow:
+    """Create the first-login clinician row, tolerating a concurrent-login race.
+
+    Two simultaneous first logins for the same ``fhirUser`` both see no row and both
+    ``INSERT``; the loser hits the ``clinician.fhir_user`` unique constraint. Rather
+    than 500 the loser's OAuth callback, wrap the ``INSERT`` in a SAVEPOINT so a
+    unique-constraint :class:`~sqlalchemy.exc.IntegrityError` rolls back only that one
+    statement — leaving the surrounding transaction usable — then re-SELECT the row
+    the winner committed and return it. The loser's login then SUCCEEDS on the shared
+    clinician id (an upsert, not an error).
+
+    Without the savepoint, a bare flush failure poisons the whole session
+    (``PendingRollbackError`` on the very next statement), so the re-SELECT could not
+    run on the same session.
+
+    Fails closed: if the re-SELECT still finds nothing — the constraint fired yet the
+    row is not readable, which should never happen — raise
+    :class:`ClinicianProvisioningError` so the caller can surface a generic login
+    error instead of a raw 500.
+    """
+    try:
+        # SAVEPOINT: contain a possible unique-constraint violation to just this
+        # INSERT. ``MemoryRepository`` exposes no transaction API of its own, so we
+        # drive the nested transaction on its session directly.
+        async with repo._session.begin_nested():
+            return await repo.create_clinician(
+                fhir_user=identity.fhir_user,
+                openemr_username=identity.username,
+                display_name=identity.display_name,
+                npi=identity.npi,
+            )
+    except IntegrityError as exc:
+        existing = await repo.get_clinician_by_fhir_user(identity.fhir_user)
+        if existing is None:
+            raise ClinicianProvisioningError(
+                "clinician auto-provision lost the first-login race "
+                "and the winning row could not be re-read"
+            ) from exc
+        return existing
