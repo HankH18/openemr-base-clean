@@ -61,9 +61,11 @@ CLI contract (pinned by ``.swarm-loop/acceptance/evalgate``):
 - ``--tolerance F`` relative regression tolerance (default 0.05 = 5%).
 - ``--min-pass-rate F`` absolute floor, aggregate and per-category.
 - ``--write-baseline`` rewrite the committed baseline from a clean run.
-- ``--write-phi-corpus PATH`` write the live tier's real scrubbed log lines as a
-  JSONL corpus for the frozen ``phi_check`` (the GitLab ``agent:phi`` job), then
-  exit — an otherwise-empty corpus would scan as a vacuous 0.
+- ``--write-phi-corpus PATH`` write the real scrubbed telemetry lines — the live
+  tier's ``chat.answer`` egress plus the five lifecycle event families' captured
+  span/event output — as a JSONL corpus for the frozen ``phi_check`` (the GitLab
+  ``agent:phi`` job), then exit — an otherwise-empty corpus would scan as a
+  vacuous 0.
 - Exit 0 = no blocking regression; nonzero = regression detected.
 
 The FIXTURE golden set is every ``*.jsonl`` case under ``agent/evals/`` (filename
@@ -93,6 +95,7 @@ _AGENT_DIR = Path(__file__).resolve().parents[1]
 if str(_AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(_AGENT_DIR))
 
+from evals.lifecycle_phi_corpus import lifecycle_corpus_lines  # noqa: E402
 from evals.live_cases import live_cases  # noqa: E402
 from evals.rubrics import RUBRICS, evaluate_record, inject_regression  # noqa: E402
 
@@ -384,22 +387,33 @@ def _write_out(path: Path, results: list[dict[str, Any]], pass_rate: float) -> N
 
 
 def _write_phi_corpus(path: Path) -> int:
-    """Write the LIVE tier's real captured log lines as a JSONL scan corpus.
+    """Write the real captured, scrubbed telemetry lines as a JSONL scan corpus.
 
     Feeds the frozen ``.swarm-loop/acceptance/phi_check.py`` (run, never edited)
-    a corpus of genuinely captured OUTPUT: each line is the product of the real
-    ``copilot.rag.deidentify.deidentify`` scrub over a PHI-bearing probe. Without
-    this the checker's default roots are empty in CI, and an empty corpus scores
-    a vacuous 0 — a pass that proves nothing.
+    a corpus of genuinely captured OUTPUT. Without this the checker's default
+    roots are empty in CI, and an empty corpus scores a vacuous 0 — a pass that
+    proves nothing. Two complementary sources are captured:
 
-    Scope, stated honestly: this is the chat/RAG scrub egress only. It is NOT a
-    full-pipeline capture, so ``phi_check`` still warns that the five lifecycle
-    event families are absent. The number it reports over this corpus is real but
-    narrow — it can catch a broken scrub, not an unscrubbed ingestion path.
+    - the LIVE-tier ``chat.answer`` egress — each line the product of the real
+      ``copilot.rag.deidentify.deidentify`` scrub over a PHI-bearing probe; and
+    - the five LIFECYCLE event families (``doc.ingest``, ``extraction.run``,
+      ``guideline.retrieve``, ``worker.handoff``, ``verification.result``) via
+      :func:`evals.lifecycle_phi_corpus.lifecycle_corpus_lines`, which drives each
+      family's REAL ``copilot.observability`` span/event emission with a synthetic
+      PHI probe and captures what it forwards THROUGH the real scrub layers (the
+      ``PatientPseudonymizer.scrub`` egress transform and the ``deidentify``
+      free-text choke point).
 
-    Returns the number of lines written. Only the live tier is exported: the
-    FIXTURE golden set deliberately carries adversarial planted PHI as *input*
-    and is explicitly out of scope for the captured-output corpus.
+    Adding the lifecycle families is what clears ``phi_check``'s prior WARNING
+    that those five families were absent: the scan now covers the ingestion,
+    retrieval, graph and verification stages, not just the chat/RAG egress. It
+    stays PHI-clean because the real scrubs hold, and it BITES — neutering
+    ``deidentify`` leaks the probe's identifiers on the free-text-bearing family
+    lines too, so the scanner's count jumps above zero.
+
+    Returns the number of lines written. The FIXTURE golden set is deliberately
+    NOT exported: it carries adversarial planted PHI as *input* and is out of
+    scope for the captured-output corpus.
     """
     lines: list[str] = []
     for case in live_cases():
@@ -409,6 +423,9 @@ def _write_phi_corpus(path: Path) -> int:
         log = record.get("log")
         if isinstance(log, str) and log:
             lines.append(json.dumps({"event": "chat.answer", "case": case.get("id"), "log": log}))
+    # The five lifecycle event families, captured through the real scrub layers,
+    # so phi_check no longer warns they are missing from the corpus.
+    lines.extend(lifecycle_corpus_lines())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n" if lines else "")
     return len(lines)

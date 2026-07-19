@@ -130,21 +130,24 @@ agent:tests:
 # agent/{artifacts,var/capture,logs}. In CI those are empty, and phi_check
 # honestly prints 0 for an empty corpus — a pass that proves nothing. So this
 # job GENERATES a real corpus first: `gate.py --write-phi-corpus` emits the eval
-# gate's live-tier log lines, each one the product of the real
-# copilot.rag.deidentify scrub over a PHI-bearing probe. Verified to bite:
-# neutering deidentify to an identity function takes this corpus from 0 to 30
-# detected occurrences, failing this job. The `test -s` guard fails the job if
+# gate's live-tier chat log lines AND real telemetry from all five lifecycle
+# event families (doc.ingest, extraction.run, guideline.retrieve, worker.handoff,
+# verification.result), each line the product of the real copilot scrub layers
+# (copilot.rag.deidentify + PatientPseudonymizer) over a PHI-bearing probe.
+# Verified to bite: neutering deidentify to an identity function turns this
+# corpus from 0 to dozens of detected occurrences across the chat egress and the
+# lifecycle families, failing this job. The `test -s` guard fails the job if
 # the corpus is ever empty, so the scan can never silently degrade back to
 # vacuous.
 #
-# HONEST SCOPE — this is real but NARROW. The corpus covers the chat/RAG scrub
-# egress only, so phi_check still WARNs that all five lifecycle event families
-# (doc.ingest, extraction.run, guideline.retrieve, worker.handoff,
-# verification.result) are absent: no full-pipeline capture exists to scan in a
-# keyless CI run. This job catches a broken scrub; it does NOT yet prove the
-# ingestion/graph paths are clean. That warning is echoed below on purpose —
-# read it, do not silence it. Widen the corpus once the pipeline writes captured
-# artifacts, and this job's number gets stronger for free.
+# SCOPE — the corpus now spans the chat/RAG scrub egress AND the five lifecycle
+# event families (via evals/lifecycle_phi_corpus.py, which drives each family's
+# real span/event emission through the real scrub layers), so phi_check no
+# longer warns that families are absent. Known limit: phi_check has no
+# bare-integer detector (deliberately — it would flag latency/token counts), so
+# an UNpseudonymized patient_id reaching telemetry would slip the free-text scan;
+# the PatientPseudonymizer is exercised, but the scanner-visible bite is the
+# deidentify free-text path. Any phi_check stderr is still echoed below.
 #
 # phi_check's exit-code contract: 0 + a bare number = a real measurement (so
 # exit 0 is NOT sufficient — the NUMBER is the verdict); 2 = usage error; 3 =
