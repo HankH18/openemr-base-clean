@@ -7,8 +7,16 @@ from datetime import UTC, datetime
 import pytest
 
 from copilot.domain.contracts import Claim, MemoryFileSummary, VerificationAction
-from copilot.domain.primitives import FhirReference, PatientId, ResourceType
+from copilot.domain.primitives import (
+    DocumentCitation,
+    FhirReference,
+    GuidelineCitation,
+    PatientId,
+    ResourceType,
+)
 from copilot.verification.core import (
+    DocumentFact,
+    VerificationContext,
     Verifier,
     build_context_from_resources,
     extract_field_value,
@@ -230,3 +238,113 @@ class TestTemporalGate:
         assert result.action == VerificationAction.withheld
         assert result.claims[0].value_match is False
         assert "temporal drift" in result.claims[0].reason
+
+
+# --- Non-fhir claim-text numeric fabrication (F2) --------------------------
+#
+# The fhir path re-checks every numeric literal in `claim.text` against the
+# cited resource (`_numbers_not_in_resource`); the covering fhir case is
+# `TestValueMatch.test_fails_when_extra_number_in_text_not_in_resource`. The
+# document and guideline paths ground only their stored value / verbatim quote,
+# so a fabricated number in the surrounding `claim.text` was ungated: a document
+# claim whose stored fact == its cited quote, or a guideline claim whose quote
+# appears verbatim, would pass the gate while the prose asserted a number no
+# source ever recorded. These lock the mirrored check on both non-fhir paths.
+
+
+def _doc_claim(text: str, quote: str = "2.34", fact_id: str = "907") -> Claim:
+    return Claim(
+        text=text,
+        source_ref=DocumentCitation(
+            source_id="41",
+            page_or_section=1,
+            field_or_chunk_id=fact_id,
+            quote_or_value=quote,
+        ),
+    )
+
+
+def _doc_context(
+    value: str = "2.34", fact_id: str = "907", supported: bool = True, confidence: float = 0.99
+) -> VerificationContext:
+    return build_context_from_resources(
+        [],
+        document_facts={
+            fact_id: DocumentFact(value=value, supported=supported, match_confidence=confidence)
+        },
+        doc_confidence_threshold=0.5,
+    )
+
+
+def _guideline_claim(text: str, quote: str, chunk_id: str = "338") -> Claim:
+    return Claim(
+        text=text,
+        source_ref=GuidelineCitation(
+            source_id="12",
+            page_or_section="Insulin therapy",
+            field_or_chunk_id=chunk_id,
+            quote_or_value=quote,
+        ),
+    )
+
+
+def _guideline_context(content: str, chunk_id: str = "338") -> VerificationContext:
+    return build_context_from_resources([], guideline_chunks={chunk_id: content})
+
+
+@pytest.mark.asyncio
+class TestDocumentNumericFabrication:
+    async def test_fabricated_number_in_text_absent_from_fact_withheld(self) -> None:
+        # Stored fact 2.34 == cited quote 2.34 (value match passes), but the
+        # claim prose asserts 9.99 — a number no document fact recorded.
+        ctx = _doc_context(value="2.34")
+        verifier = Verifier(rules=())
+        summary = _summary(_doc_claim("troponin is 9.99 ng/mL", quote="2.34"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "9.99" in result.claims[0].reason
+
+    async def test_number_in_text_present_in_fact_still_served(self) -> None:
+        # The honest case must not be over-withheld: the prose's number IS the
+        # stored fact's value.
+        ctx = _doc_context(value="2.34")
+        verifier = Verifier(rules=())
+        summary = _summary(_doc_claim("Troponin 2.34 ng/mL on the outside lab.", quote="2.34"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.served
+        assert result.claims[0].value_match is True
+
+
+@pytest.mark.asyncio
+class TestGuidelineNumericFabrication:
+    async def test_fabricated_number_in_text_absent_from_chunk_withheld(self) -> None:
+        # The quote appears verbatim in the chunk (value match passes), but the
+        # claim prose fabricates a dose — "100 units" — the chunk never states.
+        content = "Administer insulin per sliding scale as clinically indicated."
+        ctx = _guideline_context(content)
+        verifier = Verifier(rules=())
+        summary = _summary(
+            _guideline_claim(
+                "Administer 100 units of insulin now.",
+                quote="Administer insulin per sliding scale",
+            )
+        )
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "100" in result.claims[0].reason
+
+    async def test_number_in_text_present_in_chunk_still_served(self) -> None:
+        # Honest case: the prose's number is stated in the cited chunk.
+        content = "Target a mean arterial pressure of at least 65 mmHg in septic shock."
+        ctx = _guideline_context(content)
+        verifier = Verifier(rules=())
+        summary = _summary(
+            _guideline_claim("Target a MAP of 65 mmHg.", quote="at least 65 mmHg")
+        )
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.served
+        assert result.claims[0].value_match is True

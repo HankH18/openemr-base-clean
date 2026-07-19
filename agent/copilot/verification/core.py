@@ -392,6 +392,22 @@ def _verify_document_claim(
             value_match=False,
             reason=f"value mismatch: stored={fact.value!r} claim={citation.quote_or_value!r}",
         )
+    # Numeric literals in the claim text must appear in the stored fact value —
+    # the same claim-text fabrication gate the fhir path applies against its
+    # resource. Grounding the cited value alone leaves the surrounding prose free
+    # to assert a number no document recorded.
+    missing = _numbers_not_in_text(claim.text, fact.value)
+    if missing:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason=(
+                "numeric literal(s) in claim text absent from document fact: "
+                + ", ".join(missing)
+            ),
+        )
     return VerificationClaimResult(
         text=claim.text,
         source_ref=claim.source_ref,
@@ -429,6 +445,21 @@ def _verify_guideline_claim(
             attribution_ok=True,
             value_match=False,
             reason="quoted text does not appear verbatim in the cited guideline chunk",
+        )
+    # Numeric literals in the claim text must appear in the cited chunk content —
+    # a verbatim quote grounds the span it copies, not a dose the surrounding
+    # prose invents ("Administer 100 units" over a quote that names no number).
+    missing = _numbers_not_in_text(claim.text, content)
+    if missing:
+        return VerificationClaimResult(
+            text=claim.text,
+            source_ref=claim.source_ref,
+            attribution_ok=True,
+            value_match=False,
+            reason=(
+                "numeric literal(s) in claim text absent from guideline chunk: "
+                + ", ".join(missing)
+            ),
         )
     return VerificationClaimResult(
         text=claim.text,
@@ -543,7 +574,23 @@ def _numbers_not_in_resource(text: str, resource: Mapping[str, Any]) -> list[str
     numbers = extract_numbers(text)
     if not numbers:
         return []
-    haystack = _flatten_to_text(resource)
+    return _numbers_not_in_text(text, _flatten_to_text(resource))
+
+
+def _numbers_not_in_text(claim_text: str, haystack: str) -> list[str]:
+    """Numeric literals in ``claim_text`` that do not appear in ``haystack``.
+
+    The plain-string analogue of ``_numbers_not_in_resource`` — same
+    float-equality token match (``_number_appears``), so ``128`` matches ``128``
+    or ``128.0`` but not ``1280``. Used to re-check a document fact's stored
+    ``value`` or a guideline chunk's ``content`` for a number fabricated in the
+    surrounding claim prose: the non-fhir grounding gates only the stored value /
+    verbatim quote, so without this a claim of "100 units" against a quote that
+    names no dose would pass.
+    """
+    numbers = extract_numbers(claim_text)
+    if not numbers:
+        return []
     missing: list[str] = []
     for n in numbers:
         # 128 must appear as 128 (or 128.0), but not inside 1280 — use

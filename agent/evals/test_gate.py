@@ -356,6 +356,49 @@ def test_sabotaging_the_real_passed_claims_turns_the_gate_red() -> None:
     assert uncited, "citation_present must go red when the real citation path returns no claims"
 
 
+def test_sabotaging_value_match_turns_the_drift_case_red() -> None:
+    """A drifted-value claim must be WITHHELD; a permissive value gate serving it
+    is the fail-open regression the LIVE tier must catch.
+
+    The live drift case (`live-value-drift-withheld`) builds a claim citing
+    trop-1's value as 9.99 while the fake record holds 2.34, then runs it through
+    the REAL serve-time verifier. Honest code withholds it, so the case is green.
+    Monkeypatching `copilot.verification.core._values_equal` to always return True
+    is the one-line fail-open sabotage: the drifted claim is then served, the case
+    goes red, and the live tier drops below 100. Before this case existed the SAME
+    sabotage still scored 100.0 on the live tier — the coverage gap this closes.
+    """
+    import copilot.verification.core as core
+
+    drift_id = "live-value-drift-withheld"
+
+    # Without the monkeypatch the drift case PASSES (the claim is withheld).
+    live_clean, rate_clean = gate.evaluate_live(inject=False)
+    clean = {c["id"]: c for c in live_clean}
+    assert drift_id in clean, "the value-drift live case must be present in the tier"
+    assert clean[drift_id]["passed"], "healthy code must withhold the drifted claim"
+    assert rate_clean == 100.0
+
+    original = core._values_equal
+    try:
+        core._values_equal = lambda source, claimed: True  # value gate fail-open
+        live, rate = gate.evaluate_live(inject=False)
+    finally:
+        core._values_equal = original
+
+    assert rate < 100.0, "a permissive value gate must not score 100 on the live tier"
+    sabotaged = {c["id"]: c for c in live}[drift_id]
+    assert not sabotaged["passed"], "the drift case must go red when value-match is sabotaged"
+    assert not sabotaged["safe_refusal"], (
+        "a served drifted claim breaks the expected refusal"
+    )
+    # Rule (5) holds the failing live case regardless of the fixture rate / knobs.
+    failures = gate.check_regressions(
+        100.0, dict.fromkeys(RUBRICS, 100.0), gate._load_baseline(None), live_results=live
+    )
+    assert failures, "rule (5) must block the failing drift live case"
+
+
 def test_rule_5_blocks_a_failing_live_case_regardless_of_the_knobs() -> None:
     """A live case is a binary assertion, so no tolerance/floor setting excuses it.
 

@@ -56,10 +56,10 @@ from typing import Any
 import sqlalchemy as sa
 
 import copilot.memory.models  # noqa: F401  (registers the tables on Base.metadata)
-from copilot.chat.service import ChatReply, ChatService, _TurnOutcome
+from copilot.chat.service import ChatReply, ChatService, _TurnOutcome, _passed_claims
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import Claim, VerificationAction
-from copilot.domain.primitives import ClinicianId, PatientId, ResourceType
+from copilot.domain.primitives import ClinicianId, FhirReference, PatientId, ResourceType
 from copilot.memory.db import Base, get_engine, get_session_factory, session_scope
 from copilot.memory.repository import MemoryRepository
 from copilot.rag.deidentify import deidentify
@@ -67,6 +67,7 @@ from copilot.rag.embeddings import StubEmbedder
 from copilot.rag.ingest import ingest_corpus
 from copilot.rag.retriever import GuidelineRetriever, build_retriever
 from copilot.verification.core import extract_field_value
+from copilot.verification.serve import verify_answer
 
 # --- the PHI probe ----------------------------------------------------------
 #
@@ -179,6 +180,48 @@ def _claim_payload(claims: list[Claim]) -> list[dict[str, Any]]:
         }
         for claim in claims
     ]
+
+
+#: A value the fake troponin record does NOT carry (``_TROPONIN`` reads 2.34).
+#: The drift case cites this at ``valueQuantity.value`` so the value-match gate
+#: is the SOLE barrier to a "served" verdict — no unit is grounded (the unit
+#: gate short-circuits) and the claim prose carries no number (the claim-text
+#: fabrication gate is inert). That isolation is what makes the F1 bite-proof
+#: crisp: monkeypatching ``_values_equal`` alone flips this case to served.
+_DRIFTED_VALUE = "9.99"
+_DRIFT_CASE_ID = "live-value-drift-withheld"
+
+
+async def _drift_outcome() -> _TurnOutcome:
+    """Run the REAL serve-time verifier over a claim whose cited value DRIFTS.
+
+    The served/refused turns above go through the agent, which never fabricates
+    a drifted citation — so this case constructs the claim directly and drives it
+    through the production ``verify_answer`` (→ the same ``Verifier`` /
+    ``_values_equal`` / ``_to_result`` the entire gate rests on) against the fake
+    reader. The claim cites trop-1's ``valueQuantity.value`` as 9.99 while the
+    record holds 2.34. Honest code WITHHOLDS it (value mismatch); a permissive
+    value gate would SERVE it — precisely the fail-open regression this case
+    exists to turn red. Returned as a ``_TurnOutcome`` so the record is assembled
+    exactly like the real turns, with ``_passed_claims`` rebuilding the (empty,
+    when healthy) served-claim list the production serve path would.
+    """
+    drifted = Claim(
+        text="Troponin I was drawn for this patient.",
+        source_ref=FhirReference(
+            resource_type=ResourceType.Observation,
+            resource_id="trop-1",
+            field="valueQuantity.value",
+            value=_DRIFTED_VALUE,
+        ),
+    )
+    result = await verify_answer([drifted], _PATIENT, _FakeFhir())
+    return _TurnOutcome(
+        answer="Withheld: the cited troponin value could not be verified against the record.",
+        claims=_passed_claims(result),
+        action=result.action,
+        passed=result.passed,
+    )
 
 
 async def _turn(message: str) -> _TurnOutcome:
@@ -545,6 +588,15 @@ async def _build() -> list[dict[str, Any]]:
             "the fail-closed rule has regressed."
         )
 
+    # The value-drift fail-open pin. A claim citing trop-1 with a value the
+    # record does not carry (9.99 vs 2.34), driven through the REAL serve-time
+    # verifier. Honest code WITHHOLDS it; a permissive value-match gate would
+    # serve it — the fail-open direction no other live case exercised (the served
+    # case has a MATCHING value, the refusal case has NO claim at all). Built as a
+    # graded case, never a guard-and-raise, so a sabotaged value gate turns THIS
+    # case red rather than collapsing the whole tier to a harness error.
+    drift = await _drift_outcome()
+
     clean_log = _scrubbed_log("live-cite-0001")
 
     # The guideline RAG — real ingest + real retrieve over the real corpus.
@@ -598,6 +650,23 @@ async def _build() -> list[dict[str, Any]]:
                 refusal_claims,
                 refusal_action,
                 log=_scrubbed_log("live-refuse-0005"),
+                expect_refusal=True,
+            ),
+        },
+        {
+            # Honest code: withheld → refusal=True, no served claims →
+            # safe_refusal (expect_refusal) and factually_consistent both green.
+            # Sabotaged value gate: served → refusal=False + a served claim whose
+            # cited 9.99 drifts from the source 2.34 → both go red. See
+            # test_gate.py::test_sabotaging_value_match_turns_the_drift_case_red.
+            "id": _DRIFT_CASE_ID,
+            "rubric": "safe_refusal",
+            "live": True,
+            "record": _record(
+                drift.answer,
+                drift.claims,
+                drift.action,
+                log=_scrubbed_log("live-drift-0006"),
                 expect_refusal=True,
             ),
         },
