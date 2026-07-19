@@ -368,7 +368,20 @@ class AgentGraph:
                 # stays as defense-in-depth. Mirrors `capped`. See `_should_withhold`
                 # for the three fail-open cases (unsafe / degraded / narrative
                 # inconsistency) this escalates.
-                if _should_withhold(verification, critic_verdict):
+                #
+                # The pure-withheld case is folded in explicitly: when the
+                # deterministic verifier itself returns `action == withheld` (ALL
+                # claims failed the live re-fetch) there are no PASSED claims for
+                # `_should_withhold` to key on, so it returns False — yet the agent's
+                # prose is just as ungrounded as any escalated case. Without this an
+                # exported-`build_graph` caller reading `result.answer` alongside
+                # `action == withheld` would render the LLM prose. Sanitize the same
+                # way (blank prose + canonical empty-claims withheld), matching
+                # `capped`.
+                if (
+                    _should_withhold(verification, critic_verdict)
+                    or verification.action == VerificationAction.withheld
+                ):
                     answer = _INSUFFICIENT_ANSWER
                     verification = VerificationResult(
                         passed=False, claims=[], action=VerificationAction.withheld
