@@ -9,10 +9,14 @@ trusted. This is the pixel-level evidence a later grounding pass re-checks.
 
 "Matches" is deliberately two-sided, because ``supported=True`` is read as *this
 value is on the page, here is where*. A span must both resemble the value
-(:data:`_MATCH_MIN`, symmetric) and account for essentially all of it
-(:data:`_COVERAGE_MIN`, asymmetric). Similarity alone would bless a span that is
-merely a long enough *prefix* — handing back a box that omits the value's tail,
-which is the invention the gate exists to catch, wearing the costume of evidence.
+(:data:`_MATCH_MIN`, symmetric) and cover it in both directions
+(:data:`_COVERAGE_MIN`, two-sided): the span must account for essentially all of
+the value, and the value for essentially all of the span. Similarity alone would
+bless a span that is merely a long enough *prefix* of the value — handing back a
+box that omits the value's tail — or a span *longer* than the value, when the
+value's characters are a subsequence of a different, longer printed token (a value
+shrunk to ``18`` riding in on the page's ``180``). Both are the invention the gate
+exists to catch, wearing the costume of evidence.
 
 Matching is span-based because OCR emits one token per *word*: a value like
 "Metformin 500 mg PO BID" is never a single token, only a run of adjacent ones.
@@ -47,7 +51,8 @@ from typing import Any
 # so "999.9" — absent from the page — matches nothing.
 _MATCH_MIN = 0.8
 
-# Minimum fraction of the *value's* characters the winning span must account for.
+# Minimum fraction of characters the value and its winning span must share, required
+# in *both* directions (see _coverage_ok).
 #
 # Similarity alone cannot carry the gate's claim. ratio() is 2*matched/(len_a+len_b)
 # — symmetric — so it asks "do these two strings resemble each other", never "is all
@@ -55,10 +60,12 @@ _MATCH_MIN = 0.8
 # 0.8 and passes, and the gate then reports supported=True with a bbox that does not
 # cover the missing tail: the page prints "Metformin 500 mg PO", the model says
 # "Metformin 500 mg PO BID", and a clinician clicking the highlight to check the
-# schedule sees a box that never says BID. Coverage is the asymmetric half — matched
-# characters over the *value's* length — so support means the value was located, not
-# merely resembled. Both must hold: similarity rejects a noisy match, coverage
-# rejects a partial one.
+# schedule sees a box that never says BID. Coverage supplies the two halves similarity
+# omits — matched characters over the *value's* length (a prefix omits the value's
+# tail) and over the *span's* length (a span longer than the value is a different,
+# longer token the value merely hides inside) — so support means the value was
+# located, not merely resembled. Both must hold: similarity rejects a noisy match,
+# coverage rejects a partial or a shrunk one.
 #
 # 0.95 is measured, not chosen: real Tesseract output for the three demo documents
 # (200dpi, ~1180 word boxes) reconciled against their pages' own printed field values
@@ -85,15 +92,16 @@ _MATCH_MIN = 0.8
 # invented word, seen from the other side. Loosening to 0.90 to keep them would
 # readmit a fabricated route.
 #
-# Known limit, measured and left standing: coverage counts *characters*, so an
-# invented word whose letters happen to sit in order in the adjacent text is still
-# blessed — on the real medication page "…06:05 CDT PRN" covers 1.0 because "prn" is
-# a subsequence of the "Printed" that follows, and "…PO BID" covers 0.96 when "bi"
-# hides inside a following "Hemoglobin". Requiring longer matched runs does not close
-# it (that "bi" is itself a run of two). Rejecting these needs word-level alignment,
-# not a stricter number here. They are a narrow residue — the invented word must
-# appear, in order, in the neighbouring text — of what was previously an open door to
-# *any* sufficiently long prefix.
+# The subsequence residue that value-side coverage alone left open is now closed by
+# the span side. An invented word whose letters happen to sit in order in the
+# adjacent text — "…06:05 CDT PRN" where "prn" is a subsequence of the "Printed" that
+# follows, "…PO BID" where "bi" hides inside a following "Hemoglobin" — once covered
+# the *value* 1.0 and was blessed. But reaching those letters means extending the
+# span to include that neighbouring token, which makes the span longer than the
+# value; the span side (matched over the *span's* length) then falls below 0.95 on
+# the characters the neighbour added, and the match is refused. Coverage still counts
+# characters, so an equal-length swap OCR itself made (the demo page's printed "·"
+# read back as "-") stays a located value — which is the point.
 _COVERAGE_MIN = 0.95
 
 # Widest run of adjacent tokens ever joined into one candidate. Extracted values
@@ -115,9 +123,13 @@ _MAX_WINDOW_TOKENS = 12
 # _COVERAGE_MIN * len_value therefore cannot reach _COVERAGE_MIN and provably fails —
 # the same *kind* of exact shortcut, now the binding one, since _COVERAGE_MIN (0.95)
 # exceeds similarity's own floor (0.8/1.2 = 0.667). max() keeps whichever bound is
-# tighter true if either constant is ever retuned. There is no matching upper bound:
-# coverage counts only the value's characters, so it stays 1.0 however long the span
-# grows — past 1.5x it is similarity, unchanged, that rules the span out.
+# tighter true if either constant is ever retuned. The upper bound stays similarity's
+# own. The span side of coverage does imply a tighter one — matched <= len_value, so a
+# span past len_value / _COVERAGE_MIN can never clear matched >= _COVERAGE_MIN*len_span
+# — but that is left to the in-loop gate rather than folded in here: the shortcut only
+# has to skip spans that *provably* fail, and past 1.5x it is similarity that already
+# rules them out. Spans between the two bounds are still scored, then refused by
+# two-sided coverage, so the winner is identical to scoring every span either way.
 _MAX_LEN_RATIO = 2.0 / _MATCH_MIN - 1.0
 _MIN_LEN_RATIO = max(_MATCH_MIN / (2.0 - _MATCH_MIN), _COVERAGE_MIN)
 
@@ -188,20 +200,31 @@ def _normalize(text: str) -> str:
     return text.strip().lower()
 
 
-def _coverage(target: str, text: str) -> float:
-    """Fraction of ``target``'s characters located in ``text``.
+def _coverage_ok(target: str, text: str) -> bool:
+    """Whether ``text`` accounts for essentially all of ``target`` *and vice versa*.
 
-    The asymmetric counterpart to ``ratio()``: it divides by the *value's* length
-    alone, so extra text in the span costs nothing and a missing piece of the value
-    always does. That asymmetry is the whole point — the gate claims the value is on
-    the page, not that the page resembles the value.
+    Two-sided, from one matched-character count. ``get_matching_blocks`` returns
+    disjoint blocks in order, so summing their sizes counts each matched character
+    once — the length of the common subsequence difflib actually aligned, which is
+    what "located" means here. Both fractions must clear :data:`_COVERAGE_MIN`:
 
-    ``get_matching_blocks`` returns disjoint blocks in order, so summing their sizes
-    counts each matched character once — the length of the common subsequence
-    difflib actually aligned, which is what "located" means here.
+    * ``matched / len(target)`` — the *value* side. Divides by the value's length,
+      so a span that is a mere prefix, missing the value's tail, fails: the gate
+      claims the value is on the page, not that the page resembles the value.
+    * ``matched / len(text)`` — the *span* side. Divides by the span's length, so a
+      span much longer than the value fails: the value's characters being a
+      subsequence of a *different, longer* printed token is not the value being on
+      the page. Without it a shrunk value rides in on the correct token — ``180``
+      read as ``18`` (a subsequence of ``180``), ``88mcg`` as ``88mg``, ``-2.5`` as
+      ``2.5`` — scoring value-side coverage 1.0 and getting certified ``supported``
+      against the right box: a wrong value wearing the costume of evidence.
+
+    Written ``matched >= _COVERAGE_MIN * len(...)`` rather than as a division, which
+    is algebraically identical at the gate and sidesteps a zero-length edge.
     """
     matcher = SequenceMatcher(None, target, text)
-    return sum(block.size for block in matcher.get_matching_blocks()) / len(target)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    return matched >= _COVERAGE_MIN * len(target) and matched >= _COVERAGE_MIN * len(text)
 
 
 def _union_bbox(boxes: Sequence[Sequence[float]]) -> list[float]:
@@ -342,7 +365,7 @@ def _best_contiguous_from(
             if (
                 similarity >= _MATCH_MIN
                 and similarity * conf > best_score
-                and _coverage(scan.target, text) >= _COVERAGE_MIN
+                and _coverage_ok(scan.target, text)
             ):
                 best_score = similarity * conf
                 best_chain = list(span)
