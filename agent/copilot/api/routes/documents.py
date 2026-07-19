@@ -22,6 +22,7 @@ Mounted automatically by ``copilot.api.app.register_routers`` (module-level
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 
@@ -42,12 +43,14 @@ from copilot.auth import is_authorized
 from copilot.config import Settings, get_settings
 from copilot.documents import DerivedOnlyUploader, DocumentIngestionService, DocumentUploader
 from copilot.documents.vision import DocumentType
-from copilot.domain.primitives import PatientId
+from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.fhir.provider import build_write_client_for_session
 from copilot.memory.db import session_scope
 from copilot.memory.models import ExtractedFactRow
 from copilot.memory.repository import MemoryRepository
 from copilot.observability import current_correlation_id
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
@@ -99,6 +102,40 @@ def _citation_body(document_id: int, fact: ExtractedFactRow) -> dict[str, Any]:
         "bbox": fact.bbox,
         "confidence": fact.match_confidence,
     }
+
+
+async def _record_read_audit(
+    action: str, clinician_id: ClinicianId, patient_id: PatientId
+) -> None:
+    """Append the HIPAA §164.312(b) access-trail row for a document PHI read.
+
+    The document reads disclose extracted clinical values (``get_document``) and the
+    rendered page image of a scanned clinical document (``get_document_page``) after
+    the rounding-list authorization succeeds — so, like every sibling read
+    (``observations.series``, ``rounds.*``), each leaves an append-only trail row.
+
+    Fail-open, mirroring :func:`observations._record_read_audit`: the PHI is already
+    produced and about to be returned, so a failed audit write must never turn a
+    served read into an error. The write runs in its own transaction; any failure is
+    logged and swallowed.
+    """
+    try:
+        async with session_scope() as session:
+            await MemoryRepository(session).record_audit(
+                correlation_id=current_correlation_id(),
+                action=action,
+                patient_id=patient_id,
+                clinician_id=clinician_id.value,
+            )
+    except Exception:
+        _logger.exception(
+            "failed to write document read audit row",
+            extra={
+                "action": action,
+                "patient_id": patient_id.value,
+                "clinician_id": clinician_id.value,
+            },
+        )
 
 
 @router.post(
@@ -213,6 +250,12 @@ async def get_document(
 
     facts = [_fact_body(f) for f in fact_rows]
     citations = [_citation_body(document_id, f) for f in fact_rows if f.supported]
+
+    # HIPAA §164.312(b): this authorized read is about to disclose the extracted
+    # clinical facts + citations (quote_or_value), so it leaves an append-only trail.
+    # After authz, on the served path only — never on a 404 refusal (no PHI there).
+    await _record_read_audit("document.read", cid, PatientId(value=doc.patient_id))
+
     return {
         "document_id": document_id,
         "patient_id": doc.patient_id,
@@ -274,4 +317,10 @@ async def get_document_page(
 
     if not pages or pages[0].image is None:
         raise HTTPException(status_code=404, detail="Page not found")
+
+    # HIPAA §164.312(b): this authorized read is about to disclose the rendered page
+    # image (PHI), so it leaves an append-only trail — recorded only when the image
+    # is actually returned, never on the missing-page 404 (which discloses nothing).
+    await _record_read_audit("document.page.read", cid, PatientId(value=doc.patient_id))
+
     return Response(content=pages[0].image, media_type="image/png")

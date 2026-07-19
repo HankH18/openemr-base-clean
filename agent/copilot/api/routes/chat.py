@@ -23,13 +23,13 @@ from copilot.api.middleware import resolve_correlation_id
 from copilot.auth import is_authorized
 from copilot.chat.service import ChatReply, ChatService, ConversationAccessError
 from copilot.config import get_settings
-from copilot.domain.primitives import PatientId
+from copilot.domain.primitives import ClinicianId, PatientId
 from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client_for_session
 from copilot.graph.contracts import Handoff
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
-from copilot.observability import Observability
+from copilot.observability import Observability, current_correlation_id
 from copilot.rag import build_retriever
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -199,6 +199,33 @@ async def chat(req: ChatRequest, request: Request) -> dict[str, Any]:
     return body
 
 
+async def _record_conversation_read_audit(
+    clinician_id: ClinicianId, patient_id: PatientId
+) -> None:
+    """Append the HIPAA §164.312(b) access-trail row for a conversation PHI read.
+
+    The read returns a patient's free-text clinical Q&A transcript after the
+    rounding-list authorization succeeds — so, like every sibling read, it leaves an
+    append-only trail row. Fail-open, mirroring
+    :func:`observations._record_read_audit`: the transcript is already served, so a
+    failed audit write must never turn a served read into an error. The write runs in
+    its own transaction; any failure is logged and swallowed.
+    """
+    try:
+        async with session_scope() as session:
+            await MemoryRepository(session).record_audit(
+                correlation_id=current_correlation_id(),
+                action="conversation.read",
+                patient_id=patient_id,
+                clinician_id=clinician_id.value,
+            )
+    except Exception:
+        _logger.exception(
+            "failed to write conversation read audit row",
+            extra={"patient_id": patient_id.value, "clinician_id": clinician_id.value},
+        )
+
+
 @router.get("/conversations/{conversation_id}", summary="Read a conversation's turns in order")
 async def get_conversation(
     conversation_id: Annotated[int, Path(gt=0)],
@@ -219,19 +246,31 @@ async def get_conversation(
         conversation = await repo.get_conversation(conversation_id)
         if conversation is None:
             raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL)
+        patient_id = PatientId(value=conversation.patient_id)
+
+        # Authorization boundary (UC-6), identical to the document reads: the
+        # conversation's patient must be on the acting clinician's rounding list.
+        # Checked BEFORE loading the transcript (get_conversation_messages) so an
+        # unauthorized caller never causes the conversation's PHI to be read from the
+        # store at all — the same PHI-load-before-authz defect already closed on the
+        # document reads. Loading the turns first also made the refusal's latency
+        # scale with the thread's length, which is itself a signal.
+        #
+        # 404 — NOT 403 — and deliberately the *same* 404 as the unknown-id branch
+        # above. An unauthorized caller must not be able to tell "this thread exists
+        # but is not yours" from "no such thread": distinct codes would turn the
+        # autoincrement id space into a clean enumeration oracle (walk 1..N, count the
+        # 403s, learn exactly how many conversations exist and which ids are live).
+        # Existence is itself PHI-adjacent here, so it is withheld from anyone not
+        # already entitled to the contents. The owner still gets a true 200.
+        if not await is_authorized(cid, patient_id):
+            raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL)
+
         messages = await repo.get_conversation_messages(conversation_id)
 
-    # Authorization boundary (UC-6), identical to the document reads: the
-    # conversation's patient must be on the acting clinician's rounding list.
-    #
-    # 404 — NOT 403 — and deliberately the *same* 404 as the unknown-id branch
-    # above. An unauthorized caller must not be able to tell "this thread exists
-    # but is not yours" from "no such thread": distinct codes would turn the
-    # autoincrement id space into a clean enumeration oracle (walk 1..N, count the
-    # 403s, learn exactly how many conversations exist and which ids are live).
-    # Existence is itself PHI-adjacent here, so it is withheld from anyone not
-    # already entitled to the contents. The owner still gets a true 200.
-    if not await is_authorized(cid, PatientId(value=conversation.patient_id)):
-        raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND_DETAIL)
+    # HIPAA §164.312(b): this authorized read disclosed the transcript (PHI), so it
+    # leaves an append-only trail. After authz, on the served path only — never on a
+    # refusal (no PHI returned there).
+    await _record_conversation_read_audit(cid, patient_id)
 
     return {"messages": [{"role": m.role, "content": m.content} for m in messages]}

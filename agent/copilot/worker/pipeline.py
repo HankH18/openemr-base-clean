@@ -127,7 +127,9 @@ class RefreshPipeline:
         # access trail must cover the whole list — mirroring rounds/start and the
         # background poller's per-tick read audit. Fail-open: see
         # ``_record_reads_audit``.
-        await self._record_reads_audit(clinician_id=clinician_id, patient_ids=patient_ids)
+        await self._record_reads_audit(
+            action="rounds.refresh", clinician_id=clinician_id, patient_ids=patient_ids
+        )
         return results
 
     async def alerts(self, clinician_id: ClinicianId) -> list[DeteriorationAlert]:
@@ -159,7 +161,18 @@ class RefreshPipeline:
                         acuity_score=memory.acuity_score,
                     )
                 )
-            return alerts
+
+        # HIPAA §164.312(b): each surfaced alert discloses a patient's identity plus
+        # their persisted acuity (from that patient's memory file) — a PHI read — so
+        # leave one access-trail row per patient this call actually returned, mirroring
+        # the sibling reads. Fail-open (see ``_record_reads_audit``); an empty alert
+        # list discloses nothing and writes nothing.
+        await self._record_reads_audit(
+            action="rounds.alerts",
+            clinician_id=clinician_id,
+            patient_ids=[a.patient_id for a in alerts],
+        )
+        return alerts
 
     # --- per-patient tick -------------------------------------------------
 
@@ -232,15 +245,19 @@ class RefreshPipeline:
     async def _record_reads_audit(
         self,
         *,
+        action: str,
         clinician_id: ClinicianId,
         patient_ids: Sequence[PatientId],
     ) -> None:
-        """Append one HIPAA access-trail row per patient chart this refresh read.
+        """Append one HIPAA access-trail row per patient chart this read touched.
+
+        Shared by :meth:`refresh` (``action="rounds.refresh"``, the whole cursor) and
+        :meth:`alerts` (``action="rounds.alerts"``, the patients actually returned).
 
         Fail-open: the per-patient outcomes are already computed and about to be
-        returned, so a failed audit write must never turn a refresh into a 500.
-        All rows for one refresh share a single transaction; any failure is
-        logged and swallowed — the same discipline as
+        returned, so a failed audit write must never turn a served read into a 500.
+        All rows for one read share a single transaction; any failure is logged and
+        swallowed — the same discipline as
         :meth:`RoundsService._record_reads_audit` and the poller's per-tick read
         audit in ``worker/runtime.py``.
         """
@@ -252,14 +269,14 @@ class RefreshPipeline:
                 for pid in patient_ids:
                     await repo.record_audit(
                         correlation_id=current_correlation_id(),
-                        action="rounds.refresh",
+                        action=action,
                         patient_id=pid,
                         clinician_id=clinician_id.value,
                     )
         except Exception:
             _logger.exception(
-                "failed to write refresh read audit rows",
-                extra={"clinician_id": clinician_id.value},
+                "failed to write read audit rows",
+                extra={"action": action, "clinician_id": clinician_id.value},
             )
 
     async def _fetch_resources(self, fhir: FhirClient, pid: PatientId) -> list[dict[str, Any]]:
