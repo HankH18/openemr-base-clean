@@ -136,7 +136,13 @@ async def test_unmigrated_db_detail_tells_the_operator_what_to_run(tmp_path: Pat
         await engine.dispose()
     assert dep.ok is False
     assert "alembic upgrade head" in dep.detail
-    assert "no such table" in dep.detail, "must name the real error, not just its class"
+    # Names the real cause (the missing alembic_version table / unmigrated DB) — not
+    # just an opaque exception class — WITHOUT leaking the raw SQL query (security).
+    assert "alembic_version" in dep.detail
+    assert "migrated" in dep.detail
+    assert "SELECT" not in dep.detail and "[SQL:" not in dep.detail, (
+        "must not leak the raw SQL query into a public /ready detail"
+    )
 
 
 async def test_migrated_db_is_ready(migrated_db: str) -> None:
@@ -175,8 +181,13 @@ async def test_guideline_corpus_detail_names_the_real_error(tmp_path: Path) -> N
     finally:
         await engine.dispose()
     assert dep.ok is False
-    assert "no such table" in dep.detail
+    # Names the real cause (the missing guideline_chunk table / unmigrated DB) — not
+    # just an opaque exception class — WITHOUT leaking the raw SQL query (security).
     assert "guideline_chunk" in dep.detail
+    assert "migrated" in dep.detail
+    assert "SELECT" not in dep.detail and "[SQL:" not in dep.detail, (
+        "must not leak the raw SQL query into a public /ready detail"
+    )
 
 
 def test_default_probe_set_wires_migrations_as_a_gating_probe() -> None:

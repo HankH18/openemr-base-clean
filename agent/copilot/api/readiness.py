@@ -47,6 +47,44 @@ def script_directory() -> ScriptDirectory:
     return ScriptDirectory.from_config(cfg)
 
 
+# SQLAlchemy/DBAPI exception class names that mean "the queried relation does not
+# exist" — i.e. the schema was never migrated — as opposed to "the database is
+# unreachable". Postgres surfaces a missing table as ProgrammingError wrapping
+# psycopg's UndefinedTable; SQLAlchemy reflection raises NoSuchTableError.
+_MISSING_RELATION_ERROR_NAMES = frozenset({"ProgrammingError", "UndefinedTable", "NoSuchTableError"})
+
+# Driver-message markers for a missing relation, matched case-insensitively
+# against the DBAPI cause ONLY to classify (never emitted). SQLite reports a
+# missing table as a bare OperationalError whose only signal is this text.
+_MISSING_RELATION_MARKERS = ("no such table", "does not exist", "undefined table")
+
+
+def _is_missing_relation_error(exc: BaseException) -> bool:
+    """Whether ``exc`` means a queried table is absent (schema not migrated).
+
+    Distinguishes "the database was never migrated" from a transient connection
+    failure so an operator gets the right remedy — WITHOUT letting the raw error
+    reach the caller. It reads the exception's CLASS NAMES (the SQLAlchemy wrapper
+    and its ``.orig`` DBAPI cause) and, only as a fallback for drivers that carry
+    no distinct class (SQLite), a small set of missing-relation marker substrings
+    in the DBAPI cause's text.
+
+    That text is consulted solely to classify here; it is never placed in a
+    ``ReadinessDependency.detail``. ``/ready`` is anonymous-public and now rendered
+    in a browser, so the raw ``[SQL: ...]``/parameters block SQLAlchemy bakes into
+    ``str(exc)`` must never be emitted (note the ``.orig`` message alone excludes
+    that block, but the detail is hand-written regardless).
+    """
+    names = {type(exc).__name__}
+    orig = getattr(exc, "orig", None)
+    if orig is not None:
+        names.add(type(orig).__name__)
+    if names & _MISSING_RELATION_ERROR_NAMES:
+        return True
+    lowered = str(orig).lower() if orig is not None else ""
+    return any(marker in lowered for marker in _MISSING_RELATION_MARKERS)
+
+
 async def probe_migrations(engine: AsyncEngine) -> ReadinessDependency:
     """Schema version — the DB must be migrated to the head this code expects.
 
@@ -78,13 +116,22 @@ async def probe_migrations(engine: AsyncEngine) -> ReadinessDependency:
             result = await conn.execute(text("SELECT version_num FROM alembic_version"))
             applied = {str(row[0]) for row in result}
     except Exception as exc:
+        # SECURITY: never interpolate str(exc) here. SQLAlchemy fills it with the
+        # raw "[SQL: SELECT version_num FROM alembic_version] [parameters: ...]"
+        # block, and /ready is anonymous-public (and now rendered in a browser),
+        # so emitting it leaks SQL to the world — violating "never expose SQL/paths".
+        # Classify by exception TYPE and hand-write a safe cause instead.
+        if _is_missing_relation_error(exc):
+            cause = "no alembic_version table — the database has not been migrated"
+        else:
+            cause = (
+                f"could not query alembic_version ({type(exc).__name__}) — "
+                f"the database is unreachable or not yet migrated"
+            )
         return ReadinessDependency(
             name="migrations",
             ok=False,
-            detail=(
-                f"alembic_version unreadable — database is not migrated; "
-                f"run 'alembic upgrade head' (DEPLOY.md §18 step 3): {exc}"
-            ),
+            detail=f"{cause}; run 'alembic upgrade head' (DEPLOY.md §18 step 3)",
         )
 
     if not applied:
@@ -216,12 +263,21 @@ async def probe_guideline_corpus(engine: AsyncEngine) -> ReadinessDependency:
             result = await conn.execute(select(func.count()).select_from(GuidelineChunkRow))
             count = int(result.scalar_one() or 0)
     except Exception as exc:
-        # The MESSAGE, not the class. This probe is the only one that touches a
-        # table, so on an unmigrated DB it is the first line to break — and
-        # "OperationalError" is indistinguishable from a transient blip, while
-        # "no such table: guideline_chunk" names the actual rollout mistake.
+        # SECURITY: never interpolate str(exc). This probe is the only one that
+        # queries an application table, so on an unmigrated DB it is the first line
+        # to break — but SQLAlchemy's str(exc) carries the raw "[SQL: ... FROM
+        # guideline_chunk]" block, and /ready is anonymous-public (and now
+        # browser-rendered). Name the actual rollout mistake by classifying the
+        # exception TYPE, not by echoing the raw error.
+        if _is_missing_relation_error(exc):
+            detail = (
+                "guideline_chunk table missing — the database has not been migrated; "
+                "run 'alembic upgrade head' (DEPLOY.md §18 step 3)"
+            )
+        else:
+            detail = f"guideline_chunk unreadable ({type(exc).__name__})"
         return ReadinessDependency(
-            name="guideline_corpus", ok=False, detail=f"{type(exc).__name__}: {exc}", advisory=True
+            name="guideline_corpus", ok=False, detail=detail, advisory=True
         )
     if count == 0:
         return ReadinessDependency(

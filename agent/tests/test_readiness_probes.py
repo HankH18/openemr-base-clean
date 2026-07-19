@@ -297,3 +297,71 @@ def test_keyed_unreachable_rerank_and_embed_never_503_ready() -> None:
     grades = {d["name"]: d["status"] for d in resp.json()["dependencies"]}
     assert grades["embedder"] == "degraded"
     assert grades["reranker"] == "degraded"
+
+
+# --- migrations / guideline_corpus: never leak raw SQL to public /ready --------
+
+
+@pytest.mark.asyncio
+async def test_probe_migrations_unmigrated_db_names_cause_without_leaking_sql() -> None:
+    """THE BITE: an unmigrated DB must surface the missing-migration cause WITHOUT
+    echoing the raw SQL. /ready is anonymous-public and now rendered in a browser,
+    so SQLAlchemy's "[SQL: SELECT version_num FROM alembic_version]" block (which
+    ``str(exc)`` bakes in) must never reach ``detail``.
+
+    A fresh in-memory sqlite engine has no ``alembic_version`` table, so the probe
+    runs its except branch — the exact path that used to interpolate ``str(exc)``.
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        dep = await readiness.probe_migrations(engine)
+    finally:
+        await engine.dispose()
+    assert dep.ok is False
+    # No raw SQL / SQLAlchemy "[SQL: ...]" block leaks to the public endpoint.
+    assert "SELECT" not in dep.detail
+    assert "[SQL:" not in dep.detail
+    assert "version_num" not in dep.detail  # column name from the raw statement
+    # Still actionable: names the missing-migration cause + the documented remedy.
+    assert "migrated" in dep.detail
+    assert "alembic upgrade head" in dep.detail
+
+
+@pytest.mark.asyncio
+async def test_probe_guideline_corpus_unmigrated_db_names_cause_without_leaking_sql() -> None:
+    """THE BITE (advisory sibling): an unmigrated DB must surface as a
+    missing-migration cause, never the raw "[SQL: ... FROM guideline_chunk]" text.
+
+    Before the fix this probe emitted ``f"{type(exc).__name__}: {exc}"`` — the
+    ``{exc}`` carried the count(*) statement into a browser-visible page.
+    """
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        dep = await readiness.probe_guideline_corpus(engine)
+    finally:
+        await engine.dispose()
+    assert dep.ok is False
+    assert dep.advisory is True  # empty/broken corpus never 503s /ready
+    assert "SELECT" not in dep.detail
+    assert "[SQL:" not in dep.detail
+    assert "count(" not in dep.detail.lower()  # the aggregate SQL must not leak
+    # Still actionable: names the missing table + the migration remedy.
+    assert "guideline_chunk" in dep.detail
+    assert "migrated" in dep.detail
+    assert "alembic upgrade head" in dep.detail
+
+
+def test_is_missing_relation_error_distinguishes_missing_table_from_connection() -> None:
+    """The classifier tells "schema never migrated" apart from a dead connection
+    using the exception TYPE (never str(exc)), so the two except branches emit the
+    right remedy for each. Postgres reports a missing table as ProgrammingError; a
+    connection failure as OperationalError.
+    """
+    from sqlalchemy.exc import OperationalError, ProgrammingError
+
+    missing_relation = ProgrammingError(
+        "SELECT 1", {}, Exception('relation "alembic_version" does not exist')
+    )
+    connection_down = OperationalError("SELECT 1", {}, Exception("connection refused"))
+    assert readiness._is_missing_relation_error(missing_relation) is True
+    assert readiness._is_missing_relation_error(connection_down) is False
