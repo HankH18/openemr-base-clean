@@ -378,9 +378,14 @@ class ExtractedFactRow(Base):
     )
     field_path: Mapped[str] = mapped_column(String(255), nullable=False)
     value: Mapped[str | None] = mapped_column(String, nullable=True)
-    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    reference_range: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    abnormal_flag: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # unit / reference_range / abnormal_flag hold free text the VLM extracts
+    # verbatim (a lab flag, but also a medication dose/frequency or an intake
+    # note), so they are unbounded like ``value``. A small varchar cap here only
+    # 500'd the whole ingestion on a longer-than-expected extraction — see
+    # migration 0010.
+    unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    reference_range: Mapped[str | None] = mapped_column(String, nullable=True)
+    abnormal_flag: Mapped[str | None] = mapped_column(String, nullable=True)
     collection_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     page_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bbox: Mapped[list[float] | None] = mapped_column(JSONType, nullable=True)  # normalized [x,y,w,h]
