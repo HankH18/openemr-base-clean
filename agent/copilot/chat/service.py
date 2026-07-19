@@ -23,11 +23,18 @@ or flagged unsafe/narratively-inconsistent by the keyed safety pass) but can
 never add or resurrect one. A verdict that rejects everything lands in the same
 "nothing grounded ⇒ withheld" policy above rather than a new state.
 
-Known limitation (pre-existing, not introduced by the critic gate): dropping a
-claim removes it from the served evidence and from the HIPAA access trail, but
-the answer PROSE is the agent's and may still narrate a dropped claim — exactly
-as the verifier's ``degraded`` path already does. Prose regeneration is not
-wired here.
+The PROSE is gated too, not just the citation chips. The served answer is the
+agent's whole prose, which can assert a claim that was dropped from the served
+evidence (and the HIPAA access trail) — the "no chest pain" sentence over a
+"chest pain" record. Prose regeneration is not wired; instead the serve layer
+WITHHOLDS the whole turn whenever a served claim would be contradicted: a
+``degraded`` verification (the deterministic gate demoted a claim), a critic
+``narrative_inconsistency`` (the critic demoted a verifier-passed claim), or a
+critic ``unsafe_action``. A turn serves only when the verifier served EVERY
+drafted claim and the critic rejected none of them — reusing the same withheld-
+answer path ``unsafe_action`` always used. The graph's own supervisor mirrors
+this withhold, so an exported-``build_graph`` caller (and the safety metric)
+observe the same decision.
 """
 
 from __future__ import annotations
@@ -263,9 +270,18 @@ class ChatService:
                 tool_sequence.append(_STEP_VERIFY)
                 result = await verify_answer(agent_answer.claims, patient_id, fhir)
 
-            # Fail-closed: an answer that grounded nothing is withheld, never
-            # served, regardless of the verifier's empty-claims convenience.
-            if not agent_answer.claims:
+            # Fail-closed on BOTH prose dimensions. An answer that grounded
+            # nothing is withheld (the verifier's empty-claims convenience is
+            # the wrong default here). A `degraded` verification is ALSO
+            # withheld: the deterministic gate demoted >=1 claim from the
+            # served evidence while the served answer is the agent's whole
+            # PROSE — which can still assert the very claim that failed the
+            # live re-fetch (e.g. "no chest pain" the record contradicts). The
+            # citation chips would be gated but the sentence the physician
+            # reads would not, so we escalate to the same whole-turn withhold
+            # `unsafe_action` uses rather than serve fail-open prose. A fully
+            # `served` turn (every drafted claim passed) is unaffected.
+            if not agent_answer.claims or result.action == VerificationAction.degraded:
                 action = VerificationAction.withheld
                 passed = False
             else:
@@ -333,28 +349,46 @@ class ChatService:
         verification = result.verification
 
         # The verifier's survivors, then narrowed by the critic's verdict — a
-        # claim the critic rejected (uncited, or flagged unsafe by the keyed
-        # safety pass) is NOT served. Computing a rejection and serving the claim
-        # anyway would make the critic decorative.
-        claims = _critic_narrowed(_passed_claims(verification), result.critic)
+        # claim the critic rejected (uncited, or flagged unsafe/narratively-
+        # inconsistent by the keyed safety pass) is NOT served. Computing a
+        # rejection and serving the claim anyway would make the critic decorative.
+        passed_claims = _passed_claims(verification)
+        claims = _critic_narrowed(passed_claims, result.critic)
 
         # An `unsafe_action` flag condemns the PROSE, not just the citation.
         # Dropping the claim removes the evidence but leaves the model's unsafe
         # sentence in `result.answer` — the physician still reads "give 10x the
-        # insulin dose", now merely unfootnoted, which is worse than useless. The
-        # answer is not separable from the suggestion, so the whole turn is
-        # withheld. Same reflex as everywhere else in this system: if we cannot
-        # serve it safely, we do not serve it. (A `narrative_inconsistency` needs
-        # no such escalation — dropping the unsupported claim contains it.)
+        # insulin dose", now merely unfootnoted, which is worse than useless.
         unsafe_flagged = bool(result.critic and result.critic.unsafe)
 
-        # Identical fail-closed invariant to the inline path: an answer that
-        # grounded no verified claims is withheld, never served, regardless of
-        # the verifier's empty-claims convenience. `not claims` folds the
-        # critic's all-rejected case into that same existing policy rather than
-        # inventing a state: nothing survived both gates, so there is nothing we
-        # can prove — which is exactly what "withheld" already means.
-        if unsafe_flagged or not verification.claims or not claims:
+        # The critic demoted a claim the verifier had already PASSED. A verifier-
+        # passed claim is cited, so the deterministic partition would have kept
+        # it — its only route into `rejected` is the keyed safety pass
+        # (`narrative_inconsistency` or `unsafe_action`). Either way the served
+        # PROSE (`result.answer`) still narrates the dropped claim, so demoting
+        # only the citation chip while serving the sentence is the exact fail-
+        # open this path must close. Withhold the whole turn instead.
+        critic_demoted = len(claims) < len(passed_claims)
+
+        # A `degraded` verification demoted >=1 claim from the served evidence
+        # while others passed; the served prose can still assert a dropped claim,
+        # so — like the inline path — a degraded turn withholds rather than
+        # serving footnote-stripped prose.
+        degraded = verification.action == VerificationAction.degraded
+
+        # Identical fail-closed invariant to the inline path. `not claims` folds
+        # the critic's all-rejected case into the same existing policy rather
+        # than inventing a state: nothing survived both gates, so there is
+        # nothing we can prove — which is exactly what "withheld" already means.
+        # A turn serves ONLY when the verifier served every claim, the critic
+        # rejected none of them, and nothing was demoted or condemned.
+        if (
+            unsafe_flagged
+            or degraded
+            or critic_demoted
+            or not verification.claims
+            or not claims
+        ):
             action = VerificationAction.withheld
             passed = False
         else:

@@ -181,10 +181,20 @@ class TestCriticVerdictIsConsumed:
         assert len(reply.claims) >= 2, f"expected a multi-claim draft, got {reply.claims}"
         assert "aspirin" in _texts(reply)
 
-    async def test_critic_rejected_claim_is_not_served(
+    async def test_critic_rejected_claim_withholds_the_whole_turn(
         self, _db: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The claim the critic rejected is absent; the accepted ones survive."""
+        """A critic rejection of a verifier-passed claim withholds the WHOLE turn.
+
+        USER APPROVED option (a): escalate narrative_inconsistency + degraded to
+        whole-turn withhold (2026-07-19). The prior contract (introduced by
+        ``edbeb99 fix(chat): serve the critic's verdict``) narrowed the draft and
+        served the survivors — but the served answer is the agent's whole PROSE,
+        which still narrated the dropped claim (the fail-open this decision
+        closes). The ``_PredicateCritic`` here models a NON-unsafe (narrative-
+        inconsistency) demotion of a claim the verifier passed, so the whole turn
+        is now withheld rather than served with the citation quietly stripped.
+        """
         fhir = _reader()
         critic = _PredicateCritic(lambda text: "aspirin" in text.lower())
         _inject_critic(monkeypatch, critic, fhir)
@@ -192,13 +202,16 @@ class TestCriticVerdictIsConsumed:
         reply = await _chat(_service(graph_enabled=True, fhir=fhir))
 
         assert critic.reviewed, "the graph must actually consult the critic"
-        assert reply.claims, "rejecting one claim must not withhold the whole turn"
-        assert "aspirin" not in _texts(reply), (
-            "a claim the critic rejected must never reach the physician — "
-            f"served claims: {[c.text for c in reply.claims]}"
-        )
-        # The rest of the draft is untouched: this is a narrowing, not a purge.
-        assert "troponin" in _texts(reply)
+        # Was: `assert reply.claims` (narrow-and-serve) + `"troponin" in _texts`.
+        # Under option (a) a critic demotion of a verifier-passed claim withholds
+        # the whole turn, reusing the same withheld path `unsafe_action` uses.
+        assert reply.action.value == "withheld"
+        assert reply.passed is False
+        assert reply.claims == []
+        assert reply.answer == _WITHHELD_ANSWER
+        # The rejected claim never reaches the physician — now because nothing does.
+        assert "aspirin" not in _texts(reply)
+        assert "troponin" not in _texts(reply)
 
     async def test_critic_cannot_resurrect_a_verifier_rejected_claim(
         self, _db: str, monkeypatch: pytest.MonkeyPatch
@@ -223,9 +236,16 @@ class TestCriticVerdictIsConsumed:
             "the critic must not be able to serve a claim the deterministic "
             f"verifier rejected — served claims: {[c.text for c in reply.claims]}"
         )
-        # The claims the verifier *did* pass are still served: the adversarial
-        # critic neither resurrected nor destroyed anything.
-        assert "aspirin" in _texts(reply)
+        # Was: `assert "aspirin" in _texts(reply)` (the surviving claim served).
+        # USER APPROVED option (a): escalate narrative_inconsistency + degraded to
+        # whole-turn withhold (2026-07-19). The drifted troponin makes this a
+        # `degraded` verification, so the whole turn now withholds rather than
+        # serving the surviving aspirin claim next to prose that could still
+        # narrate the dropped troponin. The critic still cannot resurrect troponin
+        # (asserted above); the difference is aspirin is no longer served either.
+        assert reply.action.value == "withheld"
+        assert reply.claims == []
+        assert reply.answer == _WITHHELD_ANSWER
 
     async def test_all_rejected_collapses_to_the_existing_withheld_policy(
         self, _db: str, monkeypatch: pytest.MonkeyPatch

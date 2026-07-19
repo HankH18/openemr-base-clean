@@ -41,11 +41,25 @@ NOT catch narrative inversion: a negation ("no chest pain" cited to a
 record that says "chest pain"), a swapped drug NAME that still resolves to
 the cited resource, or a dose written as a WORD ("five milligrams" over a
 50 mg record) all satisfy every gate here, because none of them introduce a
-mismatched number, unit, or timestamp. Catching those is delegated to the
-advisory entailment / critic layer, which is skipped entirely when no API
-key is configured (``entailment=None``) — so this gate is the ONLY line of
-defense in the common case, and its guarantee is exactly its four checks, no
-more. The claim "fabrications fail every time" would be false.
+mismatched number, unit, or timestamp.
+
+The ``entailment`` field below does NOT close that gap at serve time. It is
+dead on the serve path regardless of API key: ``verification.serve.verify_-
+answer`` never constructs a ``Verifier`` with an entailment checker, so the
+per-claim ``entailment`` result is always ``None`` there — this docstring
+used to frame it as the narrative catcher "skipped when no API key", which
+was wrong in both directions (never wired, key or no key). Serve-time
+narrative screening is instead the graph path's CRITIC
+(``copilot.graph.critic``): its keyed safety pass flags a claim whose prose
+contradicts its own citation (``narrative_inconsistency``) or recommends an
+unsafe action (``unsafe_action``). The serve layer
+(``copilot.chat.service`` + ``copilot.graph.supervisor``) then WITHHOLDS the
+whole turn on a ``narrative_inconsistency`` flag OR a ``degraded``
+verification — because the served PROSE the physician reads, not just the
+citation chips, must never assert a claim that was dropped. On the inline
+(no-graph) path there is no critic, so this deterministic gate is the only
+serve-time screen and its guarantee is exactly its four checks: there, the
+claim "fabrications fail every time" would be false.
 
 Domain rules are separate (`rules.py`) — they don't gate the claim,
 they surface findings that must be shown to the user regardless.

@@ -167,6 +167,43 @@ _INSUFFICIENT_ANSWER = (
 _UNLIMITED = 1_000_000_000
 
 
+def _should_withhold(
+    verification: VerificationResult, critic: CriticVerdict | None
+) -> bool:
+    """Whether this graph turn must withhold its WHOLE answer, not just a claim.
+
+    Three fail-open cases share one remedy — the served PROSE (`answer`) can
+    still assert a claim that was dropped from the served evidence, so serving it
+    would strip the citation while keeping the sentence a physician reads:
+
+    - ``degraded``: the deterministic verifier demoted >=1 claim while others
+      passed; the surviving prose can still narrate a demoted one.
+    - critic ``unsafe_action`` (``critic.unsafe`` non-empty): the sentence itself
+      is dangerous, evidence or not.
+    - critic ``narrative_inconsistency``: the critic rejected a claim the verifier
+      had PASSED. A verifier-passed claim is cited, so the deterministic partition
+      would have kept it — its only route into ``rejected`` is the keyed safety
+      pass, and such prose contradicts its own citation.
+
+    A ``None`` critic (the iteration cap stopped the run before finalize) is
+    handled by ``capped`` at the call site, so it contributes no critic case
+    here. A fully-served turn whose verdict accepts every verifier-passed claim
+    returns ``False`` and serves. Keyless runs use ``StubCritic`` (citation gate
+    only, empty ``unsafe``), so this fires there solely on a ``degraded`` verifier
+    verdict — which the honest stub agent does not produce.
+    """
+    if verification.action == VerificationAction.degraded:
+        return True
+    if critic is None:
+        return False
+    if critic.unsafe:
+        return True
+    passed_texts = {
+        r.text for r in verification.claims if r.attribution_ok and r.value_match
+    }
+    return bool(passed_texts & set(critic.rejected))
+
+
 class Supervisor(Protocol):
     """The swappable routing surface (a deterministic router behind this Protocol)."""
 
@@ -318,17 +355,20 @@ class AgentGraph:
                 total_tokens = outcome.total_tokens
                 cost = outcome.cost_usd
 
-                # The critic's unsafe flag condemns the PROSE, not just a citation,
-                # so the graph withholds here rather than trusting a collaborator to
+                # A fail-open turn condemns the PROSE, not just a citation, so the
+                # graph withholds here rather than trusting a collaborator to
                 # notice. Two things were wrong while this lived only in ChatService:
                 # (1) `build_graph` is exported, so any other caller — eval harness,
-                # batch job, CLI — read `action=served, passed=True` off a turn this
-                # very critic called unsafe, and served it; (2) `record_verification`
-                # below fired on the UN-withheld verification, so every unsafe
-                # withhold was logged to the safety dashboard as `served`. The one
-                # metric that proves the safety pass fires reported its opposite.
-                # ChatService's own check stays as defense-in-depth. Mirrors `capped`.
-                if critic_verdict is not None and critic_verdict.unsafe:
+                # batch job, CLI — read `action=served/degraded, passed=True` off a
+                # turn whose served prose asserts a dropped claim, and served it;
+                # (2) `record_verification` below fired on the UN-withheld
+                # verification, so every such withhold was logged to the safety
+                # dashboard as `served`/`degraded`. The one metric that proves the
+                # safety pass fires reported its opposite. ChatService's own check
+                # stays as defense-in-depth. Mirrors `capped`. See `_should_withhold`
+                # for the three fail-open cases (unsafe / degraded / narrative
+                # inconsistency) this escalates.
+                if _should_withhold(verification, critic_verdict):
                     answer = _INSUFFICIENT_ANSWER
                     verification = VerificationResult(
                         passed=False, claims=[], action=VerificationAction.withheld
