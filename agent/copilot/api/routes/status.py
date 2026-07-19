@@ -40,9 +40,10 @@ import logging
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
 from sqlalchemy import func, select
 
+from copilot.api.status_html import status_response
 from copilot.memory.db import session_scope
 from copilot.memory.models import AuditLogRow, ExtractedFactRow, SourceDocumentRow
 
@@ -228,11 +229,29 @@ async def _status_payload() -> dict[str, Any]:
     }
 
 
-@router.get("/status", summary="Agent health aggregates (status page)")
-async def status_page() -> dict[str, Any]:
-    return await _status_payload()
+@router.get(
+    "/status",
+    response_model=dict[str, Any],
+    summary="Agent health aggregates (status page)",
+)
+async def status_page(request: Request) -> Response:
+    # JSON aggregates for machine consumers; an HTML page when a browser asks.
+    # Content-negotiated: the JSON body/content-type are unchanged for every
+    # programmatic client (*/*, application/json, no Accept); only a browser that
+    # ranks text/html above JSON receives the rendered page. Deliberately NOT a
+    # docstring — FastAPI would publish a docstring as the OpenAPI operation
+    # `description`, drifting the committed week2.yaml contract.
+    payload = await _status_payload()
+    return status_response(payload, request.headers.get("accept", ""))
 
 
-@router.get("/v1/status", summary="Agent health aggregates (status page, v1 alias)")
-async def status_page_v1() -> dict[str, Any]:
-    return await _status_payload()
+@router.get(
+    "/v1/status",
+    response_model=dict[str, Any],
+    summary="Agent health aggregates (status page, v1 alias)",
+)
+async def status_page_v1(request: Request) -> Response:
+    # See status_page — identical payload, content-negotiated rendering. Comment,
+    # not docstring, to keep the OpenAPI operation `description` absent (contract).
+    payload = await _status_payload()
+    return status_response(payload, request.headers.get("accept", ""))

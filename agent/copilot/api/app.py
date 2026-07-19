@@ -21,17 +21,17 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 
-from fastapi import APIRouter, FastAPI, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, FastAPI, Request, Response
 
 from copilot import __version__
 from copilot.api import readiness, routes
 from copilot.api.middleware import CorrelationIdMiddleware
+from copilot.api.status_html import ready_response
 from copilot.auth.service import ensure_smart_ready
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import HealthResponse, ReadinessDependency, ReadinessResponse
 from copilot.memory.db import get_engine
-from copilot.observability import build_observability
+from copilot.observability import build_observability, correlation_id_var
 from copilot.observability.logging import configure_logging
 
 ProbeFactory = Callable[[Settings], Callable[[], Awaitable[ReadinessDependency]]]
@@ -193,13 +193,17 @@ def create_app(
         summary="Readiness — all critical dependencies reachable",
         responses={200: {"description": "ready"}, 503: {"description": "not ready"}},
     )
-    async def ready() -> Response:
+    async def ready(request: Request) -> Response:
         probes = [factory(settings) for factory in probe_factories]
         deps = await readiness.run_all(probes)
         payload = ReadinessResponse.from_dependencies(deps)
-        return JSONResponse(
-            status_code=payload.to_status_code(),
-            content=payload.model_dump(mode="json"),
+        # Additive content negotiation: byte-identical JSON for programmatic
+        # consumers (curl / docker HEALTHCHECK / */*), a rendered dashboard only
+        # when a browser explicitly prefers text/html. See copilot.api.status_html.
+        return ready_response(
+            payload,
+            accept=request.headers.get("accept", ""),
+            correlation_id=correlation_id_var.get(None),
         )
 
     # Feature routes (rounds, chat, …) mount themselves without edits here.
