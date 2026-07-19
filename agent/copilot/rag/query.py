@@ -136,7 +136,7 @@ def expand_query(query: str) -> str:
 
 
 def distill_clinical_terms(query: str, *, vocabulary: Collection[str] = ()) -> str:
-    """Reduce a de-identified, expanded query to ONLY recognised clinical terms.
+    """Reduce a de-identified, expanded query to ONLY recognised tokens (corpus + lexicon).
 
     This is a second, complementary PHI guard to
     :func:`~copilot.rag.deidentify.deidentify`, not a replacement for it. The
@@ -151,11 +151,16 @@ def distill_clinical_terms(query: str, *, vocabulary: Collection[str] = ()) -> s
     defense-in-depth — distillation narrows what a scrub missed; it does not
     license removing the scrub.
 
-    A token is kept iff it is a recognised clinical term — a member of the closed
-    clinical lexicon (:data:`_LEXICON_TERMS`: :data:`CLINICAL_ABBREVIATIONS` keys
-    and the tokens of their expansions) OR of ``vocabulary``, the caller's
-    known-clinical-term set. The retriever passes the guideline corpus's own
-    terms, which are public clinical text and never PHI. Tokens are de-duplicated
+    A token is kept iff it is *recognised* — a member of the closed clinical
+    lexicon (:data:`_LEXICON_TERMS`: :data:`CLINICAL_ABBREVIATIONS` keys and the
+    tokens of their expansions) OR of ``vocabulary``, the caller's set of known
+    terms. The retriever passes the guideline corpus's own vocabulary, which is
+    public clinical text and never PHI — but note it is the corpus's PROSE, so
+    ordinary words the prose contains ("should", "about", "may") are recognised
+    too. "Recognised" therefore means "present in the corpus or lexicon", not
+    "clinical" in a curated sense; the PHI guarantee it delivers is narrower and
+    exact — a token neither the corpus nor the lexicon contains (a bare name) is
+    always dropped. Tokens are de-duplicated
     and returned in first-appearance order as one space-joined string; the
     embedder and reranker consume a bag of terms, so order past determinism does
     not matter. Tokenisation uses the SAME
@@ -167,11 +172,14 @@ def distill_clinical_terms(query: str, *, vocabulary: Collection[str] = ()) -> s
     query: that fallback is precisely the leak — a query that is *only* a name
     would then send the name. The remote leg embeds/reranks a smaller (possibly
     empty) bag, accepting reduced recall for that one query in exchange for never
-    leaking an unrecognised token. On the keyless path this costs nothing: the
+    leaking an unrecognised token. On the keyless path this is answer-neutral: the
     stub embedder is lexical over the same tokenizer, and the corpus vocabulary
-    already contains every clinical term the query shares with the corpus, so a
-    dropped token is one no chunk carries — it could not have moved the ranking
-    whether sent or not.
+    already contains every term the query genuinely shares with the corpus, so a
+    dropped token carries no meaning any chunk shares — it cannot change which
+    chunk is the right answer. It is not, however, ranking-identical: the stub is
+    a hashing trick, so a dropped token could still have collided with a corpus
+    token's dimension and nudged the exact cosine order — spurious noise, not
+    signal, but a reason the ordering is not guaranteed byte-for-byte the same.
 
     Empty/whitespace input returns ``""``.
     """
