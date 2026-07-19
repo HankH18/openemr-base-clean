@@ -9,8 +9,19 @@ values are in gitignored `.env` files or handed off separately.
 ## Public demo (droplet)
 
 - **App URL:** https://agentforge.hankholcomb.com (HTTPS via Caddy + automatic
-  Let's Encrypt TLS — a valid cert, no browser warning). The old
+  Let's Encrypt TLS — a valid cert, no TLS/certificate warning). The old
   `http://198.199.68.21` bare-IP URL is retired.
+- **⚠ Chrome "Dangerous site" warning — Google Safe Browsing FALSE POSITIVE (review pending).**
+  Google Safe Browsing has flagged `agentforge.hankholcomb.com` as suspected phishing/social
+  engineering, so Chrome (and Safari/Firefox, which share the list) may show a red **"Dangerous
+  site"** interstitial. It is a **false positive**: the site is a self-hosted OpenEMR SMART login
+  (a password form + clinical branding) on a new personal-domain subdomain with no reputation —
+  the exact shape an automated phishing classifier over-flags. Only **synthetic demo data** is
+  served; nothing malicious. A correction was reported to Google on **2026-07-19** and a review
+  is pending (a clean false positive typically clears in hours–days). **To proceed now:** click
+  **Details → "visit this unsafe site"**, or watch the demo video (a recording sidesteps the
+  interstitial entirely). The flag is per-host, so the retired bare IP `http://198.199.68.21/`
+  is an unflagged fallback if a clickable link is needed.
 - **Access:** **per-physician SMART sign-in** (`COPILOT_AUTH_MODE=smart` on the
   droplet) — there is **no basic-auth guard**. Loading the URL lands on the OpenEMR
   SMART sign-in; sign in with the **OpenEMR admin credentials** (`OE_USER` /

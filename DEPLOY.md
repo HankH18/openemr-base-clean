@@ -226,6 +226,16 @@ docker compose -f docker-compose.deploy.yml --env-file .env down -v
 
 ## 9. Follow-ups explicitly deferred
 
+- **Google Safe Browsing "Dangerous site" flag (false positive; review pending, reported
+  2026-07-19).** Google Safe Browsing flagged `agentforge.hankholcomb.com` as suspected phishing —
+  a false positive triggered by a self-hosted OpenEMR SMART login (password form + clinical
+  branding) on a fresh personal-domain subdomain. Nothing malicious is served (synthetic demo
+  data only). A correction was filed via the Safe Browsing report-error form
+  (`safebrowsing.google.com/safebrowsing/report_error/`); track/expedite via **Google Search
+  Console → Security Issues → Request Review** for `hankholcomb.com`. Until it clears: click
+  Chrome's **Details → "visit this unsafe site"**, use the demo video, or serve on an unflagged
+  host (the flag is per-host). To reduce re-flagging, make the demo nature obvious and avoid
+  mimicking a known brand's login page.
 - **TLS.** Put Caddy or Traefik in front of the container on 443 and
   redirect 80. The compose file leaves 443 unpublished on purpose — a
   self-signed cert on 443 is worse than plain HTTP for a demo.
