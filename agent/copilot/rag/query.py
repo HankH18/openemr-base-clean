@@ -28,6 +28,9 @@ never sees raw PHI in the first place.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
+
+from copilot.rag._lexical import tokenize
 
 #: Inpatient/hospitalist abbreviation lexicon (lower-case key -> full term).
 #: Deliberately limited to abbreviations that are *not* also common English
@@ -88,6 +91,19 @@ _ABBREV_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 
+#: The clinical lexicon flattened into a token whitelist: every abbreviation key
+#: AND every token of every expansion. A distilled query keeps these on the
+#: strength of the closed lexicon alone (``dka``/``diabetic``/``ketoacidosis``),
+#: so :func:`distill_clinical_terms` still recognises them even against an empty
+#: or tiny corpus vocabulary. Built with the SAME
+#: :func:`~copilot.rag._lexical.tokenize` the embedder / sparse leg / reranker
+#: use, so "recognised" is measured in exactly the token space those legs consume.
+_LEXICON_TERMS: frozenset[str] = frozenset(
+    token
+    for key, expansion in CLINICAL_ABBREVIATIONS.items()
+    for token in (*tokenize(key), *tokenize(expansion))
+)
+
 
 def expand_query(query: str) -> str:
     """Return ``query`` with recognised clinical abbreviations expanded inline.
@@ -117,3 +133,54 @@ def expand_query(query: str) -> str:
     if not additions:
         return text
     return f"{text} {' '.join(additions)}"
+
+
+def distill_clinical_terms(query: str, *, vocabulary: Collection[str] = ()) -> str:
+    """Reduce a de-identified, expanded query to ONLY recognised clinical terms.
+
+    This is a second, complementary PHI guard to
+    :func:`~copilot.rag.deidentify.deidentify`, not a replacement for it. The
+    scrubber removes identifiers by SHAPE, but a bare, unlabelled patient name has
+    no shape to match — ``"Should John Doe get a statin?"`` leaves ``John Doe``
+    intact (deidentify's own docstring states this residual), and that name would
+    then egress verbatim to a third-party embedder (Voyage) or reranker (Cohere).
+    This closes the leak from the other side: instead of trying to recognise every
+    PHI shape, it keeps only tokens it can affirmatively recognise as CLINICAL and
+    drops everything else, so an unrecognised token (a name) never egresses,
+    whether or not deidentify caught it. Keep deidentify in front of this as
+    defense-in-depth — distillation narrows what a scrub missed; it does not
+    license removing the scrub.
+
+    A token is kept iff it is a recognised clinical term — a member of the closed
+    clinical lexicon (:data:`_LEXICON_TERMS`: :data:`CLINICAL_ABBREVIATIONS` keys
+    and the tokens of their expansions) OR of ``vocabulary``, the caller's
+    known-clinical-term set. The retriever passes the guideline corpus's own
+    terms, which are public clinical text and never PHI. Tokens are de-duplicated
+    and returned in first-appearance order as one space-joined string; the
+    embedder and reranker consume a bag of terms, so order past determinism does
+    not matter. Tokenisation uses the SAME
+    :func:`~copilot.rag._lexical.tokenize` those legs use, so a token kept here is
+    a token that would have overlapped the corpus in exactly the same form.
+
+    **Recall tradeoff, stated honestly.** If nothing is recognised the result is
+    the empty string. This deliberately does NOT fall back to egressing the raw
+    query: that fallback is precisely the leak — a query that is *only* a name
+    would then send the name. The remote leg embeds/reranks a smaller (possibly
+    empty) bag, accepting reduced recall for that one query in exchange for never
+    leaking an unrecognised token. On the keyless path this costs nothing: the
+    stub embedder is lexical over the same tokenizer, and the corpus vocabulary
+    already contains every clinical term the query shares with the corpus, so a
+    dropped token is one no chunk carries — it could not have moved the ranking
+    whether sent or not.
+
+    Empty/whitespace input returns ``""``.
+    """
+    recognized = _LEXICON_TERMS.union(vocabulary)
+    kept: list[str] = []
+    seen: set[str] = set()
+    for token in tokenize(query):
+        if token in seen or token not in recognized:
+            continue
+        seen.add(token)
+        kept.append(token)
+    return " ".join(kept)

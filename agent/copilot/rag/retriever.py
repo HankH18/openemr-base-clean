@@ -17,9 +17,16 @@ Pinned surface (W2_ARCHITECTURE.md §RAG):
 
 Pipeline: the query is routed through the ``deidentify`` choke point *first*,
 then :func:`~copilot.rag.query.expand_query` rewrites clinical abbreviations
-into the de-identified text (deidentify → expand → retrieve), so every
-downstream egress (embedder, reranker) sees only de-identified — and never
-raw — text, now enriched for recall. A bounded section-heading boost then
+into the de-identified text, and finally
+:func:`~copilot.rag.query.distill_clinical_terms` reduces that to only
+recognised clinical terms before any remote call (deidentify → expand →
+distill → retrieve). ``deidentify`` scrubs identifiers by shape but cannot
+catch a bare, unlabelled name ("Should John Doe get a statin?" leaves "John
+Doe"); the distill step drops any token it cannot recognise as clinical, so the
+remote egress legs (embedder, reranker) receive only a whitelisted bag of
+clinical terms — never raw text, and never a name the regex missed. The
+in-process sparse leg and section boost keep the full expanded text, so local
+recall is unchanged. A bounded section-heading boost then
 re-prioritises hits whose section matches the query's key terms before the
 rerank. Sparse retrieval is BM25 (:func:`~copilot.rag._lexical.bm25_scores`),
 computed in-process over the retrieved rows on **both** backends; dense
@@ -110,7 +117,7 @@ from copilot.observability import NoopObservability, Observability, build_observ
 from copilot.rag._lexical import bm25_scores, tokenize
 from copilot.rag.deidentify import deidentify
 from copilot.rag.embeddings import Embedder, build_embedder
-from copilot.rag.query import expand_query
+from copilot.rag.query import distill_clinical_terms, expand_query
 from copilot.rag.rerank import Reranker, build_reranker
 
 _logger = logging.getLogger(__name__)
@@ -224,10 +231,12 @@ class GuidelineRetriever:
     async def retrieve(self, query: str, top_k: int = 4) -> list[GuidelineEvidence]:
         """Return the top-``k`` guideline-evidence chunks for ``query``.
 
-        The query is de-identified *then* expanded (deidentify → expand →
-        retrieve) before any embedder/reranker call, so egress is both
-        PHI-scrubbed and recall-enriched. An empty corpus returns ``[]`` —
-        explicit no-evidence, never a fabricated cite.
+        The query is de-identified, expanded, then distilled to recognised
+        clinical terms (deidentify → expand → distill → retrieve) before any
+        embedder/reranker call, so egress is PHI-scrubbed, recall-enriched, and
+        stripped of any unrecognised token — a bare name the shape-based scrub
+        could not catch never reaches a remote leg. An empty corpus returns
+        ``[]`` — explicit no-evidence, never a fabricated cite.
 
         Wrapped in the ``guideline.retrieve`` span the OBSERVABILITY.md §7.1
         evidence-retrieval SLO reads its p95 from. The span nests under whatever
@@ -251,10 +260,20 @@ class GuidelineRetriever:
                     span.set_attribute("hits", 0)
                     span.set_output({"hits": 0, "corpus_chunks": 0})
                     return []
-                # Dense: embed the (de-identified, expanded) query at retrieve time.
+                # Distill BEFORE egress. `deidentify` scrubs identifiers by SHAPE,
+                # but a bare, unlabelled patient name has no shape to catch ("Should
+                # John Doe get a statin?" leaves "John Doe"). Reduce the
+                # (de-identified, expanded) query to only recognised clinical terms —
+                # the corpus's own vocabulary plus the closed clinical lexicon — so an
+                # unrecognised token (a name) is dropped from everything that leaves
+                # the process. Only the REMOTE legs (embedder, reranker) receive the
+                # distilled text; the in-process sparse leg and section boost keep the
+                # full expanded text below, for maximum local recall.
+                distilled = distill_clinical_terms(expanded, vocabulary=_corpus_vocabulary(rows))
+                # Dense: embed the distilled clinical terms at retrieve time.
                 dense_ids: list[str] = []
                 try:
-                    query_vec = self._embedder.embed([expanded])[0]
+                    query_vec = self._embedder.embed([distilled])[0]
                 except Exception:  # best-effort dense leg; retrieval never gates on it
                     # An embedder outage (Voyage 5xx, or a 4xx that exhausts the
                     # retry budget) degrades to sparse-only: rrf_scores(sparse, [])
@@ -285,7 +304,10 @@ class GuidelineRetriever:
             # bounded candidate window first, so the rerank stage refines a
             # retrieved set instead of standing in for retrieval.
             window = fused_candidates[: RERANK_WINDOW_MULTIPLIER * top_k]
-            ordered, reranked = self._apply_rerank(expanded, window)
+            # The reranker is the second egress leg — hand it the distilled clinical
+            # terms too, never the raw expanded query (which may still carry a bare
+            # name deidentify could not scrub).
+            ordered, reranked = self._apply_rerank(distilled, window)
             # The served score must be the score of whichever ranker produced the
             # served order — otherwise a citation's number contradicts its own
             # position. Fused order ⇒ fused RRF scores (already sorted by them);
@@ -476,6 +498,27 @@ def _boost_section_matches(
         if matched:
             boosted[chunk_id] += SECTION_MATCH_BOOST * (matched / len(section_terms))
     return boosted
+
+
+def _corpus_vocabulary(rows: list[GuidelineChunkRow]) -> frozenset[str]:
+    """The corpus's own clinical vocabulary — every term in any chunk's content or
+    section heading.
+
+    The guideline corpus is public clinical text and no patient record passes
+    through it, so its terms are a safe whitelist of recognised clinical terms for
+    :func:`~copilot.rag.query.distill_clinical_terms`. Built with the same
+    :func:`~copilot.rag._lexical.tokenize` the embedder uses, so a query token the
+    distiller keeps is exactly a token that could overlap a stored chunk vector —
+    which is why distilling the embedder's input leaves the keyless dense ranking
+    unchanged: a dropped token is one no chunk carries, so it contributed nothing
+    to any cosine whether it was sent or not.
+    """
+    terms: set[str] = set()
+    for row in rows:
+        terms.update(tokenize(row.content))
+        if row.section:
+            terms.update(tokenize(row.section))
+    return frozenset(terms)
 
 
 def _sparse_rank(rows: list[GuidelineChunkRow], query: str) -> list[str]:
