@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import httpx
 import pytest
 import respx
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from copilot.api import readiness
+from copilot.api.app import create_app
 from copilot.config import Settings
+from copilot.domain.contracts import ReadinessDependency
 
 
 @pytest.mark.asyncio
@@ -134,3 +139,161 @@ async def test_probe_langfuse_fail_when_host_unreachable() -> None:
         dep = await readiness.probe_langfuse(settings)
     assert dep.ok is False
     assert dep.advisory is True
+
+
+# --- embedder (Voyage): reachability, advisory ------------------------------
+
+
+class _BoomClient(httpx.AsyncClient):
+    """A client whose every outbound verb raises a transport error.
+
+    Used to prove a KEYED-but-unreachable probe reports ``degraded`` rather than
+    silently reporting ``ok`` on nothing but config presence.
+    """
+
+    async def get(self, *_args, **_kwargs):  # type: ignore[override]
+        raise httpx.ConnectError("boom")
+
+    async def post(self, *_args, **_kwargs):  # type: ignore[override]
+        raise httpx.ConnectError("boom")
+
+
+@pytest.mark.asyncio
+async def test_probe_embedder_keyless_is_ok_stub_and_makes_no_network_call() -> None:
+    """No key => stub reported ok/advisory, and NOT a single network call.
+
+    The deployed config is keyless, so this path must never touch the network.
+    The injected factory raises if anyone opens a client — proving it isn't.
+    """
+
+    def _forbidden_factory() -> httpx.AsyncClient:
+        raise AssertionError("keyless embedder probe must not open an HTTP client")
+
+    dep = await readiness.probe_embedder(
+        Settings(voyage_api_key=""), client_factory=_forbidden_factory
+    )
+    assert dep.ok is True
+    assert dep.advisory is True
+    assert dep.detail == "stub (keyless)"
+    assert dep.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_probe_embedder_keyed_and_reachable_is_ok() -> None:
+    """A set key plus a provider that answers 200 is ready (reachable)."""
+    settings = Settings(voyage_api_key="vk-testing", voyage_embedding_model="voyage-3.5")
+    with respx.mock(base_url="https://api.voyageai.com") as mock:
+        route = mock.post("/v1/embeddings").respond(
+            200, json={"data": [{"index": 0, "embedding": [0.0]}]}
+        )
+        dep = await readiness.probe_embedder(settings)
+    assert route.called, "keyed embedder probe must actually reach out (reachability, not presence)"
+    assert dep.ok is True
+    assert dep.status == "ok"
+    assert "voyage-3.5" in dep.detail
+
+
+@pytest.mark.asyncio
+async def test_probe_embedder_keyed_but_unreachable_is_degraded_not_ok() -> None:
+    """THE BITE: a key set but the backend unreachable must NOT report ok.
+
+    Before the fix ``probe_embedder`` returned ``ok`` on config presence alone;
+    an injected client that raises on the wire now surfaces as ``degraded``.
+    """
+    settings = Settings(voyage_api_key="vk-testing", voyage_embedding_model="voyage-3.5")
+    dep = await readiness.probe_embedder(settings, client_factory=lambda: _BoomClient())
+    assert dep.ok is False, "keyed-but-unreachable embedder must not silently report ok"
+    assert dep.advisory is True, "advisory => it can be degraded but never 503s /ready"
+    assert dep.status == "degraded", "non-gating: degraded, not down"
+    assert "ConnectError" in dep.detail
+
+
+@pytest.mark.asyncio
+async def test_probe_embedder_keyed_but_5xx_is_degraded() -> None:
+    """A reachable-but-erroring endpoint (500) is degraded, not ok."""
+    settings = Settings(voyage_api_key="vk-testing", voyage_embedding_model="voyage-3.5")
+    with respx.mock(base_url="https://api.voyageai.com") as mock:
+        mock.post("/v1/embeddings").respond(500)
+        dep = await readiness.probe_embedder(settings)
+    assert dep.ok is False
+    assert dep.status == "degraded"
+    assert "500" in dep.detail
+
+
+# --- reranker (Cohere): reachability, advisory ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_probe_reranker_keyless_is_ok_stub_and_makes_no_network_call() -> None:
+    """No key => stub ok/advisory with zero network calls (deployed config)."""
+
+    def _forbidden_factory() -> httpx.AsyncClient:
+        raise AssertionError("keyless reranker probe must not open an HTTP client")
+
+    dep = await readiness.probe_reranker(
+        Settings(cohere_api_key=""), client_factory=_forbidden_factory
+    )
+    assert dep.ok is True
+    assert dep.advisory is True
+    assert dep.detail == "stub (keyless)"
+    assert dep.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_probe_reranker_keyed_and_reachable_is_ok() -> None:
+    """A set key plus a Cohere models-list that answers 200 is ready."""
+    settings = Settings(cohere_api_key="ck-testing", cohere_rerank_model="rerank-v3.5")
+    with respx.mock(base_url="https://api.cohere.com") as mock:
+        route = mock.get("/v1/models").respond(200, json={"models": []})
+        dep = await readiness.probe_reranker(settings)
+    assert route.called, "keyed reranker probe must actually reach out (reachability, not presence)"
+    assert dep.ok is True
+    assert dep.status == "ok"
+    assert "rerank-v3.5" in dep.detail
+
+
+@pytest.mark.asyncio
+async def test_probe_reranker_keyed_but_unreachable_is_degraded_not_ok() -> None:
+    """THE BITE: keyed but Cohere unreachable must report degraded, not ok."""
+    settings = Settings(cohere_api_key="ck-testing", cohere_rerank_model="rerank-v3.5")
+    dep = await readiness.probe_reranker(settings, client_factory=lambda: _BoomClient())
+    assert dep.ok is False, "keyed-but-unreachable reranker must not silently report ok"
+    assert dep.advisory is True
+    assert dep.status == "degraded"
+    assert "ConnectError" in dep.detail
+
+
+@pytest.mark.asyncio
+async def test_probe_reranker_keyed_but_5xx_is_degraded() -> None:
+    """A reachable-but-erroring endpoint (503) is degraded, not ok."""
+    settings = Settings(cohere_api_key="ck-testing", cohere_rerank_model="rerank-v3.5")
+    with respx.mock(base_url="https://api.cohere.com") as mock:
+        mock.get("/v1/models").respond(503)
+        dep = await readiness.probe_reranker(settings)
+    assert dep.ok is False
+    assert dep.status == "degraded"
+    assert "503" in dep.detail
+
+
+def test_keyed_unreachable_rerank_and_embed_never_503_ready() -> None:
+    """End-to-end: keyed-but-unreachable embed/rerank degrade /ready, never 503 it.
+
+    Proves the full chain — a degraded advisory probe stays out of the readiness
+    conjunction, so ``/ready`` remains 200 while honestly reporting the degrade.
+    """
+
+    async def _ok_gating() -> ReadinessDependency:
+        return ReadinessDependency(name="document_store", ok=True, detail="reachable")
+
+    settings = Settings(voyage_api_key="vk", cohere_api_key="ck")
+    factories = [
+        lambda _s: _ok_gating,
+        lambda s: partial(readiness.probe_embedder, s, lambda: _BoomClient()),
+        lambda s: partial(readiness.probe_reranker, s, lambda: _BoomClient()),
+    ]
+    client = TestClient(create_app(settings=settings, probe_factories=factories))
+    resp = client.get("/ready")
+    assert resp.status_code == 200, "advisory embed/rerank degrade must NOT pull /ready out of rotation"
+    grades = {d["name"]: d["status"] for d in resp.json()["dependencies"]}
+    assert grades["embedder"] == "degraded"
+    assert grades["reranker"] == "degraded"

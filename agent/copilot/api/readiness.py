@@ -238,31 +238,107 @@ async def probe_guideline_corpus(engine: AsyncEngine) -> ReadinessDependency:
     )
 
 
-async def probe_embedder(settings: Settings) -> ReadinessDependency:
+async def probe_embedder(
+    settings: Settings, client_factory: Callable[[], httpx.AsyncClient] | None = None
+) -> ReadinessDependency:
     """Guideline embedder — Voyage when keyed, the deterministic stub otherwise.
 
-    Keyless is a supported mode (the deterministic stub embeds offline), so the
-    dependency is ready either way; the detail names which backend is active so a
-    dashboard can see when it is running on the stub.
+    Reachability, not mere config presence. A set key pointed at a dead backend is
+    NOT ok — mirroring ``probe_llm``, a configured key triggers a real reachability
+    call. Voyage exposes no cheap models-list GET, so the lightest genuine
+    authenticated primitive is used: a one-token ``POST /v1/embeddings`` with the
+    configured model (short timeout). A well-formed ``200`` reports ``ok``; a
+    keyed-but-unreachable/erroring endpoint reports ``degraded`` (never a silent
+    ``ok``), naming the reason.
+
+    Advisory on EVERY branch, like ``probe_langfuse``: a Voyage outage degrades
+    dense retrieval to the lexical stub — it must never pull the service out of
+    rotation, so this can be ``degraded`` but never turns ``/ready`` into a 503.
+
+    Keyless is a supported mode (the deterministic stub embeds offline) and makes
+    NO network call — there is nothing to ping — reporting the stub as ``ok`` so a
+    dashboard can see it is running keyless.
     """
-    if settings.voyage_api_key:
+    if not settings.voyage_api_key:
         return ReadinessDependency(
-            name="embedder", ok=True, detail=f"voyage:{settings.voyage_embedding_model}"
+            name="embedder", ok=True, detail="stub (keyless)", advisory=True
         )
-    return ReadinessDependency(name="embedder", ok=True, detail="stub (keyless)", advisory=True)
+    backend = f"voyage:{settings.voyage_embedding_model}"
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=2.0))
+    url = "https://api.voyageai.com/v1/embeddings"
+    headers = {"Authorization": f"Bearer {settings.voyage_api_key}"}
+    payload = {"input": ["ping"], "model": settings.voyage_embedding_model}
+    try:
+        async with factory() as client:
+            resp = await client.post(url, json=payload, headers=headers)
+        # As with probe_llm, an empty/opaque 200 does not prove the embedding
+        # backend is up; require a well-formed JSON body.
+        if resp.status_code == 200 and isinstance(resp.json(), dict):
+            return ReadinessDependency(
+                name="embedder", ok=True, detail=f"{backend} reachable", advisory=True
+            )
+        return ReadinessDependency(
+            name="embedder",
+            ok=False,
+            detail=f"{backend} unreachable (status={resp.status_code})",
+            advisory=True,
+        )
+    except Exception as exc:
+        return ReadinessDependency(
+            name="embedder",
+            ok=False,
+            detail=f"{backend} unreachable ({type(exc).__name__})",
+            advisory=True,
+        )
 
 
-async def probe_reranker(settings: Settings) -> ReadinessDependency:
+async def probe_reranker(
+    settings: Settings, client_factory: Callable[[], httpx.AsyncClient] | None = None
+) -> ReadinessDependency:
     """Retrieval reranker — Cohere when keyed, the deterministic stub otherwise.
 
-    Like the embedder, keyless is supported (fused sparse+dense order is served
-    without a rerank), so this never gates readiness; the detail records the mode.
+    Reachability, not mere config presence. Mirroring ``probe_llm``, a configured
+    key triggers a real reachability call: a short authenticated
+    ``GET /v1/models`` — the cheapest real Cohere endpoint, which runs no rerank.
+    A well-formed ``200`` reports ``ok``; a keyed-but-unreachable/erroring endpoint
+    reports ``degraded`` (never a silent ``ok``), naming the reason.
+
+    Advisory on EVERY branch, like ``probe_langfuse``: a Cohere outage costs only a
+    ranking refinement the retriever already falls back from (fused sparse+dense
+    order), never the answer — so this can be ``degraded`` but never 503s
+    ``/ready``.
+
+    Keyless is a supported mode (fused order served without a rerank) and makes NO
+    network call, reporting the stub as ``ok``.
     """
-    if settings.cohere_api_key:
+    if not settings.cohere_api_key:
         return ReadinessDependency(
-            name="reranker", ok=True, detail=f"cohere:{settings.cohere_rerank_model}"
+            name="reranker", ok=True, detail="stub (keyless)", advisory=True
         )
-    return ReadinessDependency(name="reranker", ok=True, detail="stub (keyless)", advisory=True)
+    backend = f"cohere:{settings.cohere_rerank_model}"
+    factory = client_factory or (lambda: httpx.AsyncClient(timeout=2.0))
+    url = "https://api.cohere.com/v1/models"
+    headers = {"Authorization": f"Bearer {settings.cohere_api_key}"}
+    try:
+        async with factory() as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code == 200 and isinstance(resp.json(), dict):
+            return ReadinessDependency(
+                name="reranker", ok=True, detail=f"{backend} reachable", advisory=True
+            )
+        return ReadinessDependency(
+            name="reranker",
+            ok=False,
+            detail=f"{backend} unreachable (status={resp.status_code})",
+            advisory=True,
+        )
+    except Exception as exc:
+        return ReadinessDependency(
+            name="reranker",
+            ok=False,
+            detail=f"{backend} unreachable ({type(exc).__name__})",
+            advisory=True,
+        )
 
 
 async def probe_openemr_fhir(
