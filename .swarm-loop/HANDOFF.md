@@ -86,8 +86,10 @@ event, NOT a stop signal — never stop because context is long.
   not an escalation; and every PHI read already writes a complete append-only `audit_log` row.
   A hard per-patient block was rejected (fights workflow, breaks the demo on empty care-team
   data — the demo DB has 0 care teams / 0 assigned providers). An optional break-glass MARKER
-  (advisory, native FHIR CareTeam, ~1 day incl. seeding demo data) is the documented path IF a
-  future operator wants least-privilege, but it's a feature request, not a bug. **Every auditor
+  (advisory, native FHIR CareTeam) is the least-privilege path IF wanted — the user has captured
+  it as a WEEK-3 roadmap item, fully specced (with the discovery already done) at
+  `agent/research/week3/01-care-team-access-scoping.md`. It is a feature request, not a bug, and
+  it is NOT current work (we are still in Week 2, final submission not yet made). **Every auditor
   packet must list "self-granted authorization / caller-supplied rounds/start patient list" as a
   KNOWN-ACCEPTED design decision to skip.**
 
