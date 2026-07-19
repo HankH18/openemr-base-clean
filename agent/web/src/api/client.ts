@@ -35,10 +35,9 @@ export interface CopilotApi {
   alerts(clinicianId: number): Promise<DeteriorationAlert[]>;
   /**
    * Make `patientId` the current patient without marking anyone done.
-   * The service has no dedicated jump endpoint, so the live adapter
-   * re-starts the round over the not-yet-seen list (the server re-ranks by
-   * acuity, which puts the alerted patient on top); the mock reorders its
-   * session directly.
+   * The live adapter POSTs to the dedicated `/v1/rounds/jump` endpoint, which
+   * lands exactly on the requested patient (not a re-rank). `unseenIds` is
+   * consumed only by the mock adapter, which reorders its session directly.
    */
   jumpTo(clinicianId: number, patientId: number, unseenIds: number[]): Promise<RoundView>;
   chat(req: ChatRequest): Promise<ChatResponse>;
