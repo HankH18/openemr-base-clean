@@ -56,7 +56,7 @@ from typing import Any
 import sqlalchemy as sa
 
 import copilot.memory.models  # noqa: F401  (registers the tables on Base.metadata)
-from copilot.chat.service import ChatReply, ChatService, _TurnOutcome, _passed_claims
+from copilot.chat.service import ChatReply, ChatService, _passed_claims, _TurnOutcome
 from copilot.config import Settings, get_settings
 from copilot.domain.contracts import Claim, VerificationAction
 from copilot.domain.primitives import ClinicianId, FhirReference, PatientId, ResourceType

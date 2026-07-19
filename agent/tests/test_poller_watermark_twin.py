@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 from copilot.worker.poller import _max_last_updated
 
 

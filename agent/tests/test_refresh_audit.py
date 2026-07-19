@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
-from copilot.domain.primitives import ClinicianId, PatientId, ResourceType
+from copilot.domain.primitives import ClinicianId, ResourceType
 from copilot.memory.repository import MemoryRepository
 from copilot.observability.base import correlation_id_var
 from copilot.worker.pipeline import RefreshPipeline

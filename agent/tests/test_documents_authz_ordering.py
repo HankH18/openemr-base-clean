@@ -30,7 +30,6 @@ import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
 
-
 # --- F1: page read authorizes before loading the page image -----------------
 
 
