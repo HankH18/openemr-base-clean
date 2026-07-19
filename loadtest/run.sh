@@ -12,6 +12,21 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AGENT_DIR="$REPO_ROOT/agent"
 VENV_PY="$AGENT_DIR/.venv/bin/python"
+# The load *driver* (smoke_load.py) samples the agent process's CPU%/RSS via
+# psutil, which isn't in the agent venv. Prefer a dedicated loadtest venv that
+# has it (loadtest/requirements.txt); fall back to the agent venv (latency +
+# throughput still captured, but CPU/RSS is left un-sampled with an honest note).
+#   python -m venv loadtest/.venv && loadtest/.venv/bin/pip install -r loadtest/requirements.txt
+LOADTEST_PY="$REPO_ROOT/loadtest/.venv/bin/python"
+if [ -x "$LOADTEST_PY" ]; then
+  DRIVER_PY="$LOADTEST_PY"
+else
+  DRIVER_PY="$VENV_PY"
+  echo ">> WARNING: loadtest/.venv not found — driving with the agent venv."
+  echo ">>          CPU/RSS won't be sampled unless psutil is importable there."
+  echo ">>          Create it: python -m venv loadtest/.venv && \\"
+  echo ">>            loadtest/.venv/bin/pip install -r loadtest/requirements.txt"
+fi
 PORT=8010
 HOST="http://127.0.0.1:$PORT"
 DB="/tmp/copilot_loadtest.db"
@@ -40,7 +55,18 @@ echo ">> seeding DB at $DB"
 echo ">> booting agent on $HOST"
 ( cd "$AGENT_DIR" && "$VENV_PY" -m uvicorn copilot.api.app:app --port "$PORT" --log-level warning ) &
 APP_PID=$!
-trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+cleanup() {
+  # uvicorn runs as a child of the backgrounded subshell, so killing only
+  # APP_PID would orphan it and leave the port bound (and, when this script's
+  # stdout is piped, hold the pipe open). Kill the subshell's children, the
+  # subshell itself, and — belt and suspenders — anything still on the port.
+  pkill -P "$APP_PID" 2>/dev/null || true
+  kill "$APP_PID" 2>/dev/null || true
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 # wait for /health
 for _ in $(seq 1 30); do
@@ -56,10 +82,13 @@ if command -v locust >/dev/null 2>&1; then
     --host "$HOST" --csv "$REPO_ROOT/loadtest/results_50u"
 else
   echo ">> Locust not installed — using httpx smoke_load.py fallback"
-  "$VENV_PY" "$REPO_ROOT/loadtest/smoke_load.py" --host "$HOST" --users 10 --duration 20 \
-    --out "$REPO_ROOT/loadtest/results_10u.json"
-  "$VENV_PY" "$REPO_ROOT/loadtest/smoke_load.py" --host "$HOST" --users 50 --duration 20 \
-    --out "$REPO_ROOT/loadtest/results_50u.json"
+  # --target-pid points the resource sampler at the agent process. APP_PID is the
+  # backgrounded uvicorn (or its subshell parent); the sampler walks the process
+  # tree, so it captures uvicorn either way.
+  "$DRIVER_PY" "$REPO_ROOT/loadtest/smoke_load.py" --host "$HOST" --users 10 --duration 20 \
+    --target-pid "$APP_PID" --out "$REPO_ROOT/loadtest/results_10u.json"
+  "$DRIVER_PY" "$REPO_ROOT/loadtest/smoke_load.py" --host "$HOST" --users 50 --duration 20 \
+    --target-pid "$APP_PID" --out "$REPO_ROOT/loadtest/results_50u.json"
 fi
 
 echo ">> done. See loadtest/RESULTS.md and the results_* files."
