@@ -749,20 +749,30 @@ class MemoryRepository:
         return list(result.scalars().all())
 
     async def get_extracted_fact_by_id(
-        self, fact_id: int, source_document_id: int
+        self, fact_id: int, source_document_id: int, patient_id: int
     ) -> ExtractedFactRow | None:
-        """One extracted fact by id, bound to a source document through its extraction.
+        """One extracted fact by id, scoped to a source document AND its patient.
 
-        The join to ``extraction`` scopes the fact to its cited source document, so a
-        fact id that belongs to a different document does not match. Backs serve-time
-        document grounding (verification re-fetch by ``(source_document, fact)`` id).
+        Two joins fence the fact in. ``extraction`` binds it to its cited source
+        document, so a fact id belonging to a *different document* does not match.
+        ``source_document`` then binds that document to ``patient_id``, so a fact
+        whose document belongs to *another patient* does not match either — the
+        same boundary the intake extractor enforces
+        (``document.patient_id == patient_id``). Backs serve-time document
+        grounding (verification re-fetch by ``(source_document, fact)`` id on the
+        turn's own patient); fail-closed to ``None`` when either scope is wrong.
         """
         result = await self._session.execute(
             select(ExtractedFactRow)
             .join(ExtractionRow, ExtractedFactRow.extraction_id == ExtractionRow.id)
+            .join(
+                SourceDocumentRow,
+                ExtractionRow.source_document_id == SourceDocumentRow.id,
+            )
             .where(
                 ExtractedFactRow.id == fact_id,
                 ExtractionRow.source_document_id == source_document_id,
+                SourceDocumentRow.patient_id == patient_id,
             )
         )
         return result.scalar_one_or_none()

@@ -111,7 +111,7 @@ async def verify_answer(
     settings = get_settings()
     context = build_context_from_resources(
         resources,
-        document_facts=await _materialize_document_facts(doc_citations),
+        document_facts=await _materialize_document_facts(doc_citations, patient_id),
         guideline_chunks=await _materialize_guideline_chunks(guideline_citations),
         doc_confidence_threshold=settings.doc_grounding_confidence_threshold,
     )
@@ -143,31 +143,41 @@ async def _safe_read(
 
 async def _materialize_document_facts(
     citations: list[DocumentCitation],
+    patient_id: PatientId,
 ) -> dict[str, DocumentFact]:
     """Re-fetch each cited ``extracted_fact`` from the agent store, keyed by fact id.
 
     Agent-store authoritative: a document-cited claim is re-checked against the
     stored, schema-validated fact, not a FHIR resource. A citation whose row is
     absent (or unreadable) is simply left out of the map, so the gate drops the
-    claim fail-closed.
+    claim fail-closed. ``patient_id`` (the turn's own patient) scopes every
+    re-fetch, so a fact whose source document belongs to another patient never
+    grounds this turn's claim.
     """
     facts: dict[str, DocumentFact] = {}
     for citation in citations:
         if citation.field_or_chunk_id in facts:
             continue
-        fact = await _read_document_fact(citation.source_id, citation.field_or_chunk_id)
+        fact = await _read_document_fact(
+            citation.source_id, citation.field_or_chunk_id, patient_id
+        )
         if fact is not None:
             facts[citation.field_or_chunk_id] = fact
     return facts
 
 
-async def _read_document_fact(source_id: str, fact_id: str) -> DocumentFact | None:
-    """One ``extracted_fact`` row re-fetched by (source_document id, fact id).
+async def _read_document_fact(
+    source_id: str, fact_id: str, patient_id: PatientId
+) -> DocumentFact | None:
+    """One ``extracted_fact`` row re-fetched by (source_document id, fact id, patient).
 
-    Routed through ``MemoryRepository.get_extracted_fact_by_id``, whose join binds
-    the fact to its cited source document, so a fact id pointing at a different
-    document does not ground the claim. Fail-closed: a bad id or any DB error
-    resolves to ``None`` (source absent → claim dropped).
+    Routed through ``MemoryRepository.get_extracted_fact_by_id``, whose joins bind
+    the fact to its cited source document AND that document to ``patient_id`` — so
+    neither a fact id pointing at a different document nor one whose document
+    belongs to another patient grounds the claim. This mirrors the intake
+    extractor's ``document.patient_id == patient_id`` boundary. Fail-closed: a bad
+    id, a cross-patient document, or any DB error resolves to ``None`` (source
+    absent → claim dropped).
     """
     ids = _as_int_pair(source_id, fact_id)
     if ids is None:
@@ -176,7 +186,7 @@ async def _read_document_fact(source_id: str, fact_id: str) -> DocumentFact | No
     try:
         async with session_scope() as session:
             row = await MemoryRepository(session).get_extracted_fact_by_id(
-                fact_int, source_int
+                fact_int, source_int, patient_id.value
             )
             if row is None:
                 return None
