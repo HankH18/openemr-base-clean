@@ -57,6 +57,13 @@ class LlmSynthesizer(Protocol):
 class _ClaudeClaim(BaseModel):
     """Wire shape we ask Claude to emit — narrower than the domain Claim."""
 
+    # Untrusted LLM output. hide_input_in_errors is honoured from the config of
+    # the model whose validator is entered, so it must live on the NESTED model
+    # too: a caller that validates a single claim directly (rather than the whole
+    # _ClaudeSynthesizerResponse) would otherwise embed the parsed clinical value
+    # into the ValidationError text. Same leak class edf8b24 closed on extraction.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     text: str
     resource_type: str
     resource_id: str
@@ -91,7 +98,12 @@ class StubSynthesizer:
         # so a card reads "Observation Potassium: 5.7 mmol/L", not
         # "Observation/<uuid> → valueQuantity.value=5.7". Falls back to the raw
         # pointer only when a resource has no groundable concept/value.
-        from copilot.agent.grounding import claim_text, describe_resource, extract_unit
+        from copilot.agent.grounding import (
+            claim_text,
+            describe_resource,
+            extract_temporal,
+            extract_unit,
+        )
 
         claims: list[Claim] = []
         for res in inputs.resources:
@@ -121,6 +133,7 @@ class StubSynthesizer:
                         resource_id=str(rid),
                         field=field,
                         value=str(value),
+                        timestamp=extract_temporal(res),
                         unit=unit,
                     ),
                 )

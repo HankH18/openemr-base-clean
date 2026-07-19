@@ -95,6 +95,13 @@ class AgentError(Exception):
 class _ClaudeClaim(BaseModel):
     """Narrow wire shape Claude emits per claim — just a pointer to a resource."""
 
+    # Untrusted LLM output. hide_input_in_errors is honoured from the config of
+    # the model whose validator is entered, so it must live on the NESTED model
+    # too: a caller that validates a single claim directly (rather than the whole
+    # _ClaudeAnswer) would otherwise embed the parsed pointer value into the
+    # ValidationError text. Defense-in-depth, matching _ClaudeAnswer / edf8b24.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     resource_type: str
     resource_id: str
 
