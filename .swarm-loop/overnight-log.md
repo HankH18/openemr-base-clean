@@ -1025,3 +1025,43 @@ key generation, concurrency) is the strongest clean signal yet -- the remaining 
 increasingly latent (not-live, config-gated) rather than live P0s. Two live P0s in cycle 9
 (POST /chat IDOR) but cycle 10 found zero LIVE defects -- only latent/robustness ones. Getting
 close to the clean cycle.
+
+## USER DECISIONS (2026-07-19) — settle these, do not re-litigate
+
+**Langfuse BAA — CLOSED, NOT A CONCERN.** The user checked with administration: a BAA is not
+practically obtainable and is out of scope. Treat the Langfuse pseudonym posture as an ACCEPTED
+operating condition, not an open risk. Do not re-raise it as a blocker. (The pseudonymization
++ query-text-off-spans work already done stands as reasonable-effort mitigation; that is enough.)
+
+**Deidentify residual (bare unlabelled names) — APPROVED TO BUILD.** The user granted permission
+to proceed with the distill-before-egress structural fix: send DISTILLED CLINICAL TERMS to
+Voyage/Cohere at the egress boundary rather than the verbatim clinician question. Scope: the
+retriever / evidence_retriever path (retriever.py ~:240 deidentify call; evidence_retriever.py
+:60 sends task.question verbatim). The regex scrubber stays as defense-in-depth; the distill
+step is the real fix so a bare name never has to be caught by regex in the first place. QUEUED
+for cycle 11.
+
+**Self-granted authorization — EXPLAINED, still the user's architectural call (NOT auto-fixed).**
+The issue: is_authorized(clinician, patient) is true iff the patient is in the clinician's
+rounding cursor, but the cursor is set by POST /v1/rounds/start with a CALLER-SUPPLIED
+patient_ids list that is checked only for ROLE (may-lead-round), never against any assignment.
+No care-team/roster/panel/attending concept exists in the codebase (confirmed: the only
+"panel"/"roster" hits are lab panels). So authorization is SELF-ASSERTING — a session scope, not
+a boundary; authorization.py's own docstring admits "authorized <=> self-established". This caps
+the value of the conversation-IDOR fixes (they stop reading another's THREAD, not adding
+another's PATIENT to your own round). A real fix needs an assignment source of truth — the
+natural one is OpenEMR's own care-team/encounter-provider via FHIR, checked at rounds/start.
+That is a feature with a data-model decision, deferred to the user. NOT to be auto-built.
+
+## THE FREEZE — root cause and standing prevention (READ THIS, next orchestrator)
+
+Every "freeze" this project hit was the SAME thing and it was never an API error: the loop's
+only re-invocation engine is a BACKGROUND AGENT'S COMPLETION NOTIFICATION. When a cycle fully
+closes (commit + push + log) and the orchestrator ends the turn with prose like "cycle N next"
+WITHOUT dispatching the next agent in that same turn, there is ZERO pending background work, so
+nothing wakes the orchestrator and the session goes idle until the user messages.
+
+STANDING RULE: never end a turn that intends to continue autonomously unless (a) at least one
+Agent is already dispatched in that same turn (its completion will re-invoke you), or (b) a
+wakeup is scheduled. "I'll continue" is not continuation. A tool call is. Close cycle N and
+OPEN cycle N+1's first agent in the SAME turn, before writing any closing summary.
