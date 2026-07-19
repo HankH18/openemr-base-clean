@@ -20,7 +20,7 @@ evidence kept visibly separate from patient facts**, and makes **every clinical 
 to its exact source** (a bounding box on the scanned page, a FHIR record, or a guideline chunk).
 Work is routed by a **hand-rolled supervisor** across two workers (intake-extractor,
 evidence-retriever) plus a critic, with logged handoffs and nested traces. Quality is defended by
-a **two-tier eval gate**: a deterministic, CI-blocking suite of 53 boolean-rubric cases that fails
+a **two-tier eval gate**: a deterministic, CI-blocking suite of 62 boolean-rubric cases (53 fixture + 9 live) that fails
 CI on regression, and a separate non-blocking live-model quality run.
 
 The system is intentionally **narrow**: the MVP shipped exactly two document types, one small
@@ -261,7 +261,7 @@ HTTP (new/changed; all under `/v1`, auto-mounted from `copilot/api/routes/`, pro
 - `POST /v1/chat` (extended) — answer claims carry the `Citation` union; guideline evidence is a
   separate, labeled block in the response, never mixed into patient-fact claims.
 
-OpenAPI 3.0 spec committed at `agent/openapi/week2.yaml`, kept in sync; contract tests assert the
+OpenAPI 3.1.0 spec committed at `agent/openapi/week2.yaml`, kept in sync; contract tests assert the
 implementation matches. Bruno/Postman collection updated with document upload, extraction status,
 evidence retrieval, and the full Week 2 flow.
 
@@ -416,8 +416,8 @@ Three layers, each guarding a documented failure mode:
   document/guideline claims pass or are dropped by the extended verifier. Contract tests assert the
   implementation matches `agent/openapi/week2.yaml`. *Guards: ingestion-flow and RAG-pipeline
   wiring regressions; API/spec drift.*
-- **Golden-set evaluation** (agent behavior) — the 53-case boolean-rubric suite (13
-  `gate_dataset.jsonl` + 40 `golden_dataset.jsonl`; rubrics `schema_valid`, `citation_present`,
+- **Golden-set evaluation** (agent behavior) — the 62-case boolean-rubric suite (53 fixture — 13
+  `gate_dataset.jsonl` + 40 `golden_dataset.jsonl` — plus 9 live; rubrics `schema_valid`, `citation_present`,
   `factually_consistent`, `safe_refusal`, `no_phi_in_logs`), stubbed and deterministic, baseline +
   >5% regression. **Enforced by the GitLab CI `agent:tests` job** (`.gitlab-ci.yml`), which is
   path-gated to pushes touching `agent/**/*`. The committed `.githooks/pre-push` hook mirrors it

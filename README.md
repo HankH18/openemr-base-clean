@@ -75,7 +75,7 @@ New this week (authoritative design: [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md))
   a discriminated union `FhirCitation | DocumentCitation | GuidelineCitation`. The UI shows a
   provenance chip per claim; a document claim opens the scanned page with its bounding box
   highlighted (SVG-over-image overlay).
-- **Eval HARD GATE** — a deterministic, PR-blocking rubric gate over a 53-case golden set; see
+- **Eval HARD GATE** — a deterministic, PR-blocking rubric gate over a 62-case golden set (53 fixture + 9 live); see
   [Eval suite](#eval-suite).
 
 ## How to run the Week-2 flow
@@ -153,7 +153,7 @@ Two **distinct** tiers — keep them straight:
 2. **HARD GATE — boolean-rubric golden set (PR-blocking)** — the graded deliverable.
    [`gate.py`](agent/evals/gate.py) scores the **union of
    [`gate_dataset.jsonl`](agent/evals/gate_dataset.jsonl) (13) +
-   [`golden_dataset.jsonl`](agent/evals/golden_dataset.jsonl) (40) = 53 cases** against **5 boolean
+   [`golden_dataset.jsonl`](agent/evals/golden_dataset.jsonl) (40) = 53 fixture cases, + 9 live = 62 cases** against **5 boolean
    rubrics** — `schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`,
    `no_phi_in_logs` — stubbed and deterministic. It **exits nonzero on a >5% relative pass-rate
    regression** vs [`gate_baseline.json`](agent/evals/gate_baseline.json) (baseline 100%).
@@ -191,7 +191,7 @@ Two **distinct** tiers — keep them straight:
 | **Week-2 architecture** | [`W2_ARCHITECTURE.md`](W2_ARCHITECTURE.md) — ingestion flow, worker graph, RAG, eval gate, data model, risks |
 | Audit document | [`AUDIT.md`](AUDIT.md) |
 | User doc + use cases | [`USERS.md`](USERS.md) |
-| **Eval dataset + results** | [`agent/evals/`](agent/evals/) — HARD GATE (53-case golden set + [`gate.py`](agent/evals/gate.py) + [`gate_baseline.json`](agent/evals/gate_baseline.json)) **and** the 11-case grounding tier ([`eval_dataset.jsonl`](agent/evals/eval_dataset.jsonl) → [`EVAL_RESULTS.md`](agent/evals/EVAL_RESULTS.md)); see [Eval suite](#eval-suite) |
+| **Eval dataset + results** | [`agent/evals/`](agent/evals/) — HARD GATE (62-case golden set [53 fixture + 9 live] + [`gate.py`](agent/evals/gate.py) + [`gate_baseline.json`](agent/evals/gate_baseline.json)) **and** the 11-case grounding tier ([`eval_dataset.jsonl`](agent/evals/eval_dataset.jsonl) → [`EVAL_RESULTS.md`](agent/evals/EVAL_RESULTS.md)); see [Eval suite](#eval-suite) |
 | **AI cost analysis** | [`COST_ANALYSIS.md`](COST_ANALYSIS.md) — actual dev spend + 100 / 1K / 10K / 100K projections + per-tier architecture changes |
 | Deploy runbook | [`DEPLOY.md`](DEPLOY.md) — Week-2 ship steps in §18 |
 | Access / run guide | [`ACCESS.md`](ACCESS.md) |

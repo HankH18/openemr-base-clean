@@ -285,7 +285,7 @@ the keyless stubs — reported `degraded` advisory when running on the stub), an
 `openemr_fhir` + `llm` + `langfuse`. A 503 means a **gating** dependency is down
 (advisory ones — `langfuse`, `guideline_corpus`, the keyless stubs — never cause
 a 503). `GET /status` returns the agent health aggregates (ingestion count,
-extraction pass rate, eval-by-rubric over the 53-case golden set, p50/p95
+extraction pass rate, eval-by-rubric over the 62-case golden set (53 fixture + 9 live), p50/p95
 latency, error rate), each labelled `measured:` (live agent-DB) or `recorded:`
 (committed artifact) in its `metric_sources` block. `retrieval_hit_rate` is
 reported **unavailable** — no retrieval telemetry is persisted, so the `0.0` is a
@@ -732,7 +732,7 @@ is installed**, and says so per row.
 | **Derived extractions** (`extraction`, `extracted_fact`, citations, `audit_log`) | **Agent DB** — append-only, agent-authoritative (labs are not API-writable, so these are *not* FHIR resources) | `agent_db` (Postgres) | **No** — output of a paid, non-deterministic vision call |
 | **Derived FHIR records** (physician-**confirmed** write-backs: `medical_problem`, `allergy`, `medication`, vitals, encounters) | **OpenEMR** — written through the propose→confirm gate with the physician's own token, so OpenEMR owns and natively audits them | `db` (MariaDB) | **No** — clinical records |
 | **Page-image render cache** (`document_page.image` bytea) | Agent DB, but explicitly a **re-derivable cache** | `agent_db` | **No, but re-derivable** — rasterize the source PDF again |
-| **Eval golden set** (53 cases) + baseline + guideline corpus | **The git repo** | *none* | **Yes — fully** (see §19.2) |
+| **Eval golden set** (62 cases: 53 fixture + 9 live) + baseline + guideline corpus | **The git repo** | *none* | **Yes — fully** (see §19.2) |
 
 Two consequences worth being blunt about:
 
@@ -766,7 +766,7 @@ dependency on any droplet, volume, or snapshot:
 Verify the claim in one command (from a clean clone, no droplet, no keys, no network):
 
 ```bash
-cd agent && python evals/gate.py     # 53 cases, 5 boolean rubrics → pass_rate 100, exit 0
+cd agent && python evals/gate.py     # 62 cases (53 fixture + 9 live), 5 boolean rubrics → pass_rate 100, exit 0
 ```
 
 The gate is **stubbed and LLM-free**, so it needs no API key and no database — which is
@@ -881,7 +881,7 @@ $CF start openemr agent
 
 ```bash
 git clone <fork-url> && cd openemr-base-clean          # eval set + corpus arrive with the clone
-cd agent && python evals/gate.py                        # prove the gate is intact: 53 cases, exit 0
+cd agent && python evals/gate.py                        # prove the gate is intact: 62 cases (53 fixture + 9 live), exit 0
 
 # Re-seed guideline_chunk. Set VOYAGE_API_KEY in .env BEFORE this runs if you want real
 # voyage-3.5 vectors: the ingest skips a document whose content_hash still matches, and

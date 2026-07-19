@@ -189,7 +189,7 @@ HTTP (new/changed; all under `/v1`, auto-mounted from `copilot/api/routes/`, pro
 - `POST /v1/chat` (extended) — answer claims carry the `Citation` union; guideline evidence is a
   separate, labeled block in the response, never mixed into patient-fact claims.
 
-OpenAPI 3.0 spec committed at `agent/openapi/week2.yaml`, kept in sync; contract tests assert the
+OpenAPI 3.1.0 spec committed at `agent/openapi/week2.yaml`, kept in sync; contract tests assert the
 implementation matches. Bruno/Postman collection updated with document upload, extraction status,
 evidence retrieval, and the full Week 2 flow.
 

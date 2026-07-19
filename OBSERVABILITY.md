@@ -407,7 +407,7 @@ anyone reading the page as evidence — so the payload labels every metric in a
 | Metric | Source |
 |--------|--------|
 | `ingestion_count`, `extraction_field_pass_rate`, `error_rate`, `routing_decisions` | **measured** — agent DB (`source_document`, `extracted_fact.supported`, `audit_log.action`) |
-| `eval_by_category`, `eval_dataset` | **recorded** — `agent/evals/gate_baseline.json`: the **53-case golden set** scored on the five mandated rubrics (`schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`) |
+| `eval_by_category`, `eval_dataset` | **recorded** — `agent/evals/gate_baseline.json`: the **53-case fixture golden set** (the gate also scores 9 baseline-free live cases → 62 total) scored on the five mandated rubrics (`schema_valid`, `citation_present`, `factually_consistent`, `safe_refusal`, `no_phi_in_logs`) |
 | `latency_ms` | **recorded** — `agent/artifacts/latency_report.json`, the committed stubbed LLM-free baseline. **Not** live telemetry; live p95 comes from the §7.1 spans in Langfuse |
 | `retrieval_hit_rate` | **unavailable** — see below |
 
