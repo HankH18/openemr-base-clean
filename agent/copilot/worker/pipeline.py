@@ -34,7 +34,8 @@ serialise).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -46,11 +47,14 @@ from copilot.fhir.client import FhirClient
 from copilot.fhir.provider import build_fhir_client
 from copilot.memory.db import session_scope
 from copilot.memory.repository import MemoryRepository
+from copilot.observability import current_correlation_id
 from copilot.rounds.ranking import assess_patient
 from copilot.verification.core import Verifier, build_context_from_resources
 from copilot.verification.rules import default_rules
 from copilot.worker.poller import DEFAULT_WATCHED_TYPES, Poller, PollerTickOutcome
 from copilot.worker.synthesizer import StubSynthesizer
+
+_logger = logging.getLogger(__name__)
 
 
 class RefreshResult(BaseModel):
@@ -116,7 +120,15 @@ class RefreshPipeline:
                 verifier = Verifier(rules=default_rules())
                 for pid in patient_ids:
                     results.append(await self._refresh_patient(pid, fhir, poller, verifier, repo))
-            return results
+
+        # HIPAA §164.312(b): one access-trail row per patient chart this refresh
+        # read. Every patient in the cursor is disclosed to OpenEMR by the tick's
+        # change-gate count query (and, on change, the resource pulls), so the
+        # access trail must cover the whole list — mirroring rounds/start and the
+        # background poller's per-tick read audit. Fail-open: see
+        # ``_record_reads_audit``.
+        await self._record_reads_audit(clinician_id=clinician_id, patient_ids=patient_ids)
+        return results
 
     async def alerts(self, clinician_id: ClinicianId) -> list[DeteriorationAlert]:
         """Offer deterioration alerts for not-yet-seen critical patients.
@@ -216,6 +228,39 @@ class RefreshPipeline:
         )
 
     # --- collaborators ----------------------------------------------------
+
+    async def _record_reads_audit(
+        self,
+        *,
+        clinician_id: ClinicianId,
+        patient_ids: Sequence[PatientId],
+    ) -> None:
+        """Append one HIPAA access-trail row per patient chart this refresh read.
+
+        Fail-open: the per-patient outcomes are already computed and about to be
+        returned, so a failed audit write must never turn a refresh into a 500.
+        All rows for one refresh share a single transaction; any failure is
+        logged and swallowed — the same discipline as
+        :meth:`RoundsService._record_reads_audit` and the poller's per-tick read
+        audit in ``worker/runtime.py``.
+        """
+        if not patient_ids:
+            return
+        try:
+            async with session_scope() as session:
+                repo = MemoryRepository(session)
+                for pid in patient_ids:
+                    await repo.record_audit(
+                        correlation_id=current_correlation_id(),
+                        action="rounds.refresh",
+                        patient_id=pid,
+                        clinician_id=clinician_id.value,
+                    )
+        except Exception:
+            _logger.exception(
+                "failed to write refresh read audit rows",
+                extra={"clinician_id": clinician_id.value},
+            )
 
     async def _fetch_resources(self, fhir: FhirClient, pid: PatientId) -> list[dict[str, Any]]:
         """Pull the watched resource set for one patient into a flat list.
