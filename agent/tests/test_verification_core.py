@@ -348,3 +348,126 @@ class TestGuidelineNumericFabrication:
         result = await verifier.verify_memory_file(summary, ctx)
         assert result.action == VerificationAction.served
         assert result.claims[0].value_match is True
+
+
+# --- Glued-dose fabrication (P1) -------------------------------------------
+#
+# `_NUM_RE`'s trailing `\b` failed to match when a unit LETTER followed the
+# digits, so a number glued to its unit was invisible to the number extractor:
+# `extract_numbers('500mg')` -> [] (glued integer dropped entirely) and
+# `extract_numbers('2.5mg')` -> ['2'] (decimal truncated to a different value).
+# Only the SPACE-separated form ('500 mg') was seen. Effect: a claim that cites
+# a drug honestly but fabricates a GLUED dose ("500mg" when the record says
+# 50mg — a 10x error) passed all three fabrication gates (fhir
+# `_numbers_not_in_resource`, document + guideline `_numbers_not_in_text`) and
+# was served to the physician. The digit-look-around pattern stops treating a
+# unit letter as a word boundary. These lock the fix at the pattern level and
+# through the full Verifier on every path, and guard the space-separated form
+# against regression.
+
+
+class TestExtractNumbersGlued:
+    def test_glued_integer_extracted(self) -> None:
+        # Previously [] — the number was invisible when glued to its unit.
+        assert extract_numbers("500mg") == ["500"]
+
+    def test_glued_decimal_not_truncated(self) -> None:
+        # Previously ['2'] — the '.5' was silently dropped, turning a 2.5 dose
+        # into a 2 for matching purposes.
+        assert extract_numbers("2.5mg") == ["2.5"]
+
+    def test_date_still_splits(self) -> None:
+        assert extract_numbers("2024-01-15") == ["2024", "01", "15"]
+
+    def test_large_integer_intact(self) -> None:
+        assert extract_numbers("1280") == ["1280"]
+
+    def test_no_merge_across_decimal(self) -> None:
+        assert extract_numbers("2.34 ng/mL") == ["2.34"]
+
+
+def _med_resource(dose_text: str = "50mg PO daily", drug: str = "Metoprolol") -> dict:
+    return {
+        "resourceType": "MedicationRequest",
+        "id": "med-1",
+        "status": "active",
+        "medicationCodeableConcept": {"text": drug},
+        "dosageInstruction": [{"text": dose_text}],
+    }
+
+
+def _med_claim(text: str, drug: str = "Metoprolol") -> Claim:
+    return Claim(
+        text=text,
+        source_ref=FhirReference(
+            resource_type=ResourceType.MedicationRequest,
+            resource_id="med-1",
+            field="medicationCodeableConcept.text",
+            value=drug,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+class TestGluedDoseFabrication:
+    async def test_fhir_glued_dose_fabrication_withheld(self) -> None:
+        # Drug name cited honestly (value match passes); the prose fabricates a
+        # dose glued to its unit — "500mg" — while the record's dose is 50mg.
+        # Pre-fix: extract_numbers saw no number in "500mg", so the fabrication
+        # gate had nothing to check and the claim was SERVED.
+        ctx = build_context_from_resources([_med_resource(dose_text="50mg PO daily")])
+        verifier = Verifier(rules=())
+        summary = _summary(_med_claim("Metoprolol 500mg PO daily."))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "500" in result.claims[0].reason
+
+    async def test_document_glued_dose_fabrication_withheld(self) -> None:
+        # Stored fact "50mg" == cited quote (value match passes); prose says 500mg.
+        ctx = _doc_context(value="50mg")
+        verifier = Verifier(rules=())
+        summary = _summary(_doc_claim("Metformin 500mg twice daily.", quote="50mg"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "500" in result.claims[0].reason
+
+    async def test_guideline_glued_dose_fabrication_withheld(self) -> None:
+        # Quote appears verbatim in the chunk (value match passes); prose says 500mg.
+        content = "Administer metoprolol 50mg orally once daily."
+        ctx = _guideline_context(content)
+        verifier = Verifier(rules=())
+        summary = _summary(
+            _guideline_claim("Give metoprolol 500mg now.", quote="metoprolol 50mg orally")
+        )
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].attribution_ok is True
+        assert result.claims[0].value_match is False
+        assert "500" in result.claims[0].reason
+
+    async def test_document_glued_decimal_truncation_withheld(self) -> None:
+        # Decimal truncation fail-open: '2.5mg' -> '2' (pre-fix) matched the
+        # record's real dose of 2 and SERVED a 2.5 fabrication. Post-fix the
+        # extractor sees '2.5', which is absent from the record.
+        ctx = _doc_context(value="2")
+        verifier = Verifier(rules=())
+        summary = _summary(_doc_claim("warfarin 2.5mg daily.", quote="2"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].value_match is False
+        assert "2.5" in result.claims[0].reason
+
+    async def test_space_separated_fabrication_still_withheld(self) -> None:
+        # R1's F2 space-separated form was already caught; the glued-dose fix
+        # must not regress it. '500 mg' fabricated over a '50 mg' record.
+        ctx = _doc_context(value="50 mg")
+        verifier = Verifier(rules=())
+        summary = _summary(_doc_claim("Metformin 500 mg twice daily.", quote="50 mg"))
+        result = await verifier.verify_memory_file(summary, ctx)
+        assert result.action == VerificationAction.withheld
+        assert result.claims[0].value_match is False
+        assert "500" in result.claims[0].reason

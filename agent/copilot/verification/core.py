@@ -32,7 +32,20 @@ For each claim in the memory-file summary:
 
 The gate is intentionally **not promptable**: a claim injected via a
 free-text note field still has to point at a resource and match a
-value.  Fabrications fail attribution or value match every time.
+value.
+
+**What this gate does and does NOT catch.** It is a set of DETERMINISTIC
+checks — attribution, numeric-value match, unit match, and temporal
+grounding — and it only catches fabrications those checks can see. It does
+NOT catch narrative inversion: a negation ("no chest pain" cited to a
+record that says "chest pain"), a swapped drug NAME that still resolves to
+the cited resource, or a dose written as a WORD ("five milligrams" over a
+50 mg record) all satisfy every gate here, because none of them introduce a
+mismatched number, unit, or timestamp. Catching those is delegated to the
+advisory entailment / critic layer, which is skipped entirely when no API
+key is configured (``entailment=None``) — so this gate is the ONLY line of
+defense in the common case, and its guarantee is exactly its four checks, no
+more. The claim "fabrications fail every time" would be false.
 
 Domain rules are separate (`rules.py`) — they don't gate the claim,
 they surface findings that must be shown to the user regardless.
@@ -61,8 +74,35 @@ from copilot.domain.primitives import (
     ResourceType,
 )
 
-# Match integers or decimals: 42, 0.02, 2.34, 128, 3.375
-_NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
+# Match integers or decimals: 42, 0.02, 2.34, 128, 3.375. The ORIGINAL bug was
+# a TRAILING `\b`, which treats a following unit LETTER as a boundary
+# suppressor: `500mg` matched nothing and `2.5mg` truncated to `2` — a number
+# glued to its unit was invisible to the fabrication gate, only the
+# space-separated `500 mg` form being caught. So the fix is limited to the
+# trailing side; the leading side keeps `\b`-equivalent semantics.
+#
+# Leading `(?<![\w.])`: a number begins only at a non-alphanumeric boundary —
+# NOT preceded by a letter, digit, underscore, or dot. This preserves the old
+# leading-`\b` behavior that a digit EMBEDDED in an identifier is not a number:
+# the `1` in `HbA1c`, the `12` in `B12`, the `2` in `PaO2` are test/analyte
+# names, not doses, and extracting them would withhold every honest claim that
+# names one. (It also guards a preceding decimal point, so `2.34` never yields a
+# stray `34`.)
+#
+# Trailing `(?!\.?\d)`: reject only a decimal-point *continuation* — a following
+# digit, or a dot-then-digit that would be an unconsumed fractional part — NOT a
+# following unit letter (the actual fix) and NOT a sentence period. The tighter
+# `(?![\d.])` (reject ANY following dot) would silently drop a number that ends a
+# sentence: `0.02.` / `2.34.` would extract nothing, reopening the very
+# fail-open this gate exists to close.
+#
+# Net: reads the number out of `500mg`/`2.5mg`, still SPLITS a date
+# (`2024-01-15` -> 2024/01/15), keeps `1280`/`128.0` intact, never merges across
+# a decimal, catches a trailing-period decimal (`0.02.`), and ignores an
+# identifier-embedded digit (`HbA1c`). Scientific notation is not special-cased:
+# `1e3` reads as `1` (the `3`, glued after a letter, is treated as an embedded
+# identifier digit) — acceptable, as clinical doses are not written that way.
+_NUM_RE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?!\.?\d)")
 
 
 @dataclass(frozen=True)
@@ -621,12 +661,19 @@ def _number_appears(needle: str, haystack: str) -> bool:
 
     Numeric equality: '2.34' matches '2.34', '2.340'; also '128' matches
     '128' but not '1280'.  Uses `float()` compare on every numeric token.
+
+    The haystack is tokenized with the SAME ``_NUM_RE`` the claim side uses, so
+    both ends see a number glued to its unit identically: a record's honest
+    ``50mg`` is read as ``50`` and matches an honest ``50mg`` claim. Using the
+    old ``\\b``-delimited pattern here would leave the record's glued number
+    invisible and withhold an honest glued-dose claim once the claim side began
+    extracting it.
     """
     try:
         want = float(needle)
     except ValueError:
         return False
-    for tok in re.findall(r"\b\d+(?:\.\d+)?\b", haystack):
+    for tok in _NUM_RE.findall(haystack):
         try:
             if float(tok) == want:
                 return True
