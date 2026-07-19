@@ -40,6 +40,7 @@ contiguous stream.
 
 from __future__ import annotations
 
+import unicodedata
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -197,7 +198,12 @@ def _token_field(token: Mapping[str, Any], *names: str) -> Any:
 
 
 def _normalize(text: str) -> str:
-    return text.strip().lower()
+    # NFC first, so a composed and a decomposed spelling of the same accented
+    # value ("José" as U+00E9 vs "e"+U+0301) fold to one string before matching.
+    # Without it the two forms are unequal character sequences and the two-sided
+    # coverage gate refuses the pair — the value fails closed and loses its
+    # citation, exactly the invention the gate must not manufacture from noise.
+    return unicodedata.normalize("NFC", text).strip().lower()
 
 
 def _coverage_ok(target: str, text: str) -> bool:

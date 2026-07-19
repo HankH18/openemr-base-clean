@@ -71,7 +71,9 @@ class ExtractedFact(BaseModel):
     silent — via :meth:`missing_lab_fields`.
     """
 
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     field_path: str = Field(min_length=1)
     value: str = Field(description="Verbatim extracted value, as a string — never coerced numeric.")
@@ -146,7 +148,9 @@ class LabReport(BaseModel):
     only enforced after it.
     """
 
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     facts: list[ExtractedFact] = Field(min_length=1)
     ordering_provider: str | None = None
@@ -214,7 +218,9 @@ class IntakeForm(BaseModel):
     form actually yielded is reported by :attr:`categories_present`.
     """
 
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
@@ -259,7 +265,9 @@ class MedicationListDocument(BaseModel):
        misclassified document, and it fails loudly.
     """
 
-    model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, strict=True, extra="forbid", hide_input_in_errors=True
+    )
 
     facts: list[IntakeFact] = Field(min_length=1)
     patient_name: str | None = None
