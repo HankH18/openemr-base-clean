@@ -18,9 +18,10 @@
 >   all five rubrics; `--inject-regression` → exit 1 (blocks).
 > - `phi_check` → 0 leaks across the chat egress **and** all five lifecycle families.
 > - `mypy copilot` clean (99 files); `ruff check` clean.
-> - **Deployed & verified** at **https://agentforge.hankholcomb.com** (HEAD `1fe8f5a`;
->   `/ready` → `ready:true`, 10 deps green, migrations head `0009`; the pretty HTML
+> - **Deployed & verified** at **https://agentforge.hankholcomb.com** (HEAD `0d75648`;
+>   `/ready` → `ready:true`, 10 deps green, migrations head `0010`; the pretty HTML
 >   status page renders live through Caddy/TLS; public root → 200; SMART login on).
+>   See §5a for the 2026‑07‑19 live‑testing pass (an ingestion‑crash fix + dispositions).
 
 ---
 
@@ -335,6 +336,26 @@ tests‑evals‑CI / broad catch‑all) found **0 P0, 3 P1, ~11 P2**, all now fi
 
 Everything else surfaced by two adversarial passes has been fixed and verified.
 
+## 5a. Live‑testing pass (2026‑07‑19) — findings + disposition
+
+Real end‑to‑end testing on the deploy surfaced four items:
+
+- **Uploads intermittently 500'd** (`medication_list`, `intake_form`). Root cause: the extractors put
+  VLM free text (a medication frequency, `"Twice daily (with meals)"`) into `abnormal_flag`, a
+  `varchar(16)` sized for lab `H`/`L` flags; the non‑deterministic VLM made the *same* upload
+  fail‑then‑succeed on retry. **FIXED + deployed** — migration `0010` widens the free‑text columns to
+  `TEXT` (HEAD `0d75648`; verified: columns now `text`, `/ready` at head `0010`).
+- **Langfuse showed few/late traces.** Not a bug — the hobby‑tier SDK batches + ingests with a delay
+  (>15 min observed); the traces appeared. On the deploy a chat turn surfaces as a **`graph.run`** trace
+  (the graph path owns telemetry), a doc upload as **`doc.ingest`**.
+- **Many document values show "NOT FOUND ON PAGE."** The no‑invention gate erring safe — see §6. A
+  recovery is specced as a Week‑3 item (`agent/research/week3/02-ocr-flag-merge-reconcile.md`).
+- **The patient chart doesn't change after an upload.** **By design** — ingestion writes to the agent's
+  append‑only store and surfaces facts in the *"From the uploaded document"* panel (citable in chat);
+  merging them into the OpenEMR chart is the physician‑gated propose→confirm write‑back
+  (`COPILOT_WRITEBACK_ENABLED`, off on the demo). Auto‑writing extracted values into the legal chart
+  would be unsafe.
+
 ---
 
 ## 6. Do‑not‑fix list (settled / by‑design / honestly disclosed)
@@ -357,6 +378,13 @@ Everything else surfaced by two adversarial passes has been fixed and verified.
   RPO/RTO.
 - **`reconcile_value` over‑withholds a literal zero‑confidence OCR token even at threshold 0.0** —
   safe direction, documented; the deployed default is 0.01.
+- **Some document values show "NOT FOUND ON PAGE" — the no‑invention gate erring safe, not a bug.**
+  Tesseract merges an adjacent abnormal‑flag letter into the value token (`38 H` → `38H`) or misreads a
+  faint value (`4.2` → `4.24` @ conf 0.20); two‑sided coverage then refuses a citation because the OCR
+  text doesn't cleanly confirm the extracted value. The value is still shown — just marked *unverified*
+  rather than given fabricated provenance (the safety feature working). A targeted OCR‑merge recovery is
+  queued for **Week 3** (`agent/research/week3/02-ocr-flag-merge-reconcile.md`). Root‑caused from the
+  live‑deploy OCR, 2026‑07‑19.
 - **`loadtest/RESULTS.md` 07‑19 latencies are FHIR‑absent‑retry‑inflated** — documented in the file's
   own provenance note; the meaningful serve‑layer floor is the archived 2026‑07‑10 capture.
 

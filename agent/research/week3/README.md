@@ -13,5 +13,6 @@ pick up, with the discovery already done where possible.
 | # | Item | Status | Owner |
 |---|------|--------|-------|
 | 01 | [Care-team access scoping (break-glass)](01-care-team-access-scoping.md) | Planned — user-owned data work first | User + build agent |
+| 02 | [OCR flag-merge reconcile recovery](02-ocr-flag-merge-reconcile.md) | Planned — root-caused 2026-07-19 (live-deploy OCR); deferred from W2 final | Build agent |
 
 > Add further week-3 items here as they are decided. Each gets its own numbered spec file.
