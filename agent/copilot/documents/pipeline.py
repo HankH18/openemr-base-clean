@@ -210,7 +210,7 @@ class DocumentIngestionService:
                 )
                 await _persist_pages(document_id, pages, tokens_by_page)
 
-            facts = await self._extract(document_id, pages, kind)
+            facts = await self._extract(document_id, pages, kind, reused=reused)
             reconciled = _reconcile_facts(facts, tokens_by_page, self._settings)
             extraction_id, fact_count = await _persist_extraction(
                 pid, document_id, self._vision.model_name, reconciled, correlation
@@ -318,13 +318,29 @@ class DocumentIngestionService:
         return pages, tokens_by_page
 
     async def _extract(
-        self, document_id: int, pages: Sequence[RasterizedPage], kind: DocumentType
+        self,
+        document_id: int,
+        pages: Sequence[RasterizedPage],
+        kind: DocumentType,
+        *,
+        reused: bool,
     ) -> list[ExtractedFact]:
         """Run structured extraction; fail closed on extraction/validation error.
 
         Opened inside ``doc.ingest``, so ``extraction.run`` is its child — the
         vision call is what dominates the ingestion SLO, and separating it lets
         a breach be attributed to the model call rather than to raster/OCR.
+
+        ``reused`` gates the ``failed`` downgrade. A genuinely NEW ``document_id``
+        that never extracted must record ``status='failed'`` on error (the
+        fail-closed transition the module docstring promises). But on the dedupe
+        REUSE path the ``document_id`` already holds a prior *successful*
+        extraction — that success still stands. Marking it ``failed`` here would
+        (a) corrupt a good document's status on a merely transient re-extract
+        failure and (b) evict it from ``_find_reusable_document`` (which excludes
+        ``failed``), so the next identical-bytes ingest would mint a DUPLICATE
+        ``source_document`` row. On reuse the error therefore propagates WITHOUT
+        touching status, leaving the prior ``extracted`` state intact.
         """
         async with self._obs.span(
             "extraction.run", doc_type=kind.value, page_count=len(pages)
@@ -334,7 +350,8 @@ class DocumentIngestionService:
                 report: ExtractionResult = await self._vision.extract(pages, kind)
             except Exception:
                 span.set_attribute("failed", True)
-                await _mark_status(document_id, IngestionStatus.failed)
+                if not reused:
+                    await _mark_status(document_id, IngestionStatus.failed)
                 raise
             facts = list(report.facts)
             span.set_attribute("fact_count", len(facts))
