@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -266,7 +266,15 @@ class Poller:
 
 
 def _max_last_updated(resources: Sequence[dict[str, Any]]) -> datetime | None:
-    """Highest `meta.lastUpdated` across the pulled set — the new watermark."""
+    """Highest `meta.lastUpdated` across the pulled set — the new watermark.
+
+    Real FHIR data mixes tz-aware stamps (``...Z``) with naive ones; comparing
+    the two raises ``TypeError`` (not ``ValueError``, which the parse ``try``
+    guards). Each parsed stamp is normalized to UTC when naive before
+    comparison — the twin of :func:`copilot.rounds.service._watermark` /
+    :func:`copilot.rounds.summary._parse` — so a naive stamp beside an aware one
+    can never crash :meth:`Poller.tick` for that patient.
+    """
     best: datetime | None = None
     for res in resources:
         meta = res.get("meta") or {}
@@ -277,6 +285,7 @@ def _max_last_updated(resources: Sequence[dict[str, Any]]) -> datetime | None:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             continue
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
         if best is None or dt > best:
             best = dt
     return best

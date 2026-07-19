@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from copilot.domain.primitives import Citation, FhirReference, PatientId
 
@@ -211,6 +211,30 @@ class ReferenceRange(BaseModel):
 
     low: float | None = None
     high: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _order_bounds(cls, data: Any) -> Any:
+        """Swap an inverted band so ``low <= high`` always holds.
+
+        Defense-in-depth beside :func:`copilot.rounds.ranges.reference_bounds`:
+        an inverted structured ``referenceRange`` (``low > high``) must never
+        reach the chart or ``_distance_to_range`` as a backwards band. Runs
+        ``before`` field validation on the raw input so the frozen instance is
+        built already-ordered — no post-construction mutation.
+        """
+        if isinstance(data, dict):
+            low = data.get("low")
+            high = data.get("high")
+            if (
+                isinstance(low, (int, float))
+                and not isinstance(low, bool)
+                and isinstance(high, (int, float))
+                and not isinstance(high, bool)
+                and low > high
+            ):
+                return {**data, "low": high, "high": low}
+        return data
 
 
 class ObservationSeriesPoint(BaseModel):

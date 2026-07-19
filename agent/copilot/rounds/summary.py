@@ -20,6 +20,7 @@ story holds.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -513,7 +514,12 @@ def _numeric(res: Mapping[str, Any]) -> tuple[float, str] | None:
     q = res.get("valueQuantity")
     if isinstance(q, Mapping):
         v = q.get("value")
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        # ``math.isfinite`` fails a NaN/Infinity value closed: JSON forbids them,
+        # but ``json.loads``/``httpx`` parse them if a server emits them, and a
+        # non-finite float reaches ``_fmt_num``'s ``int(x)`` (``int(nan)`` raises
+        # ``ValueError``, ``int(inf)`` raises ``OverflowError``). Dropping it here
+        # makes it behave like any other non-numeric reading — no crash.
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
             return (float(v), _unit(res))
     return None
 

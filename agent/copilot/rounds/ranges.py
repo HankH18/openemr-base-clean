@@ -116,6 +116,11 @@ def reference_bounds(res: Mapping[str, Any]) -> tuple[float | None, float | None
     low = _bound_value(first.get("low"))
     high = _bound_value(first.get("high"))
     if low is not None or high is not None:
+        # Order a reversed structured band, mirroring parse_range_text's swap of a
+        # reversed text range: an inverted referenceRange (low > high) would else
+        # propagate a backwards band to the chart and _distance_to_range.
+        if low is not None and high is not None and low > high:
+            low, high = high, low
         return (low, high)
     text = first.get("text")
     if isinstance(text, str):
