@@ -188,13 +188,20 @@ async def get_document(
         if doc is None:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Authorization boundary (UC-6), identical to upload/chat/observations: the
-        # document's patient must be on the clinician's rounding list. Checked BEFORE
-        # reading the extraction and its facts — an unauthorized caller must not cause
-        # PHI to be loaded at all, and doing the work first made the refusal's latency
-        # scale with how many facts the document has, which is itself a signal.
+        # Authorization boundary (UC-6): the document's patient must be on the
+        # clinician's rounding list. Checked BEFORE reading the extraction and its
+        # facts — an unauthorized caller must not cause PHI to be loaded at all, and
+        # doing the work first made the refusal's latency scale with how many facts
+        # the document has, which is itself a signal.
+        #
+        # Refuse with the SAME 404 (same detail) as the missing-document branch, NOT
+        # a 403. A 403-vs-404 split turns the guessable autoincrement id space into an
+        # existence oracle: walk 1..N and read "403 => this id exists, 404 => it does
+        # not". The sibling conversation read route (GET /v1/conversations/{id}) and
+        # the chat route deliberately unify both on 404 for exactly this reason;
+        # mirror them so an off-round caller cannot even learn a document id is real.
         if not await is_authorized(cid, PatientId(value=doc.patient_id)):
-            raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
+            raise HTTPException(status_code=404, detail="Document not found")
 
         latest = await repo.get_latest_extraction(document_id)
         fact_rows = await repo.get_extracted_facts(latest.id) if latest is not None else []
@@ -243,9 +250,12 @@ async def get_document_page(
         pages = await repo.get_document_pages(document_id, page_no=page_no)
 
     # Authorization boundary (UC-6): the document's patient must be on the
-    # clinician's rounding list before any page bytes are returned.
+    # clinician's rounding list before any page bytes are returned. Refuse with the
+    # SAME 404 as the missing-document branch (not a 403) so a 403-vs-404 split can
+    # never turn the guessable autoincrement id space into an existence oracle —
+    # identical to the get_document / conversation read contract above.
     if not await is_authorized(cid, PatientId(value=doc.patient_id)):
-        raise HTTPException(status_code=403, detail=_UNAUTHORIZED_DETAIL)
+        raise HTTPException(status_code=404, detail="Document not found")
 
     if not pages or pages[0].image is None:
         raise HTTPException(status_code=404, detail="Page not found")

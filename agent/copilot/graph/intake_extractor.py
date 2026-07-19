@@ -78,13 +78,23 @@ def _to_fact(row: ExtractedFactRow) -> ExtractedFact | None:
     )
 
 
-async def _read_extractions(document_ids: list[str]) -> IntakeReport:
+async def _read_extractions(document_ids: list[str], patient_id: int) -> IntakeReport:
     """Latest extraction confidence + the supported facts for ingested docs.
 
     Read-only, deterministic: for each document id, the newest ``extraction``
     row's ``confidence_overall`` is averaged and its supported facts collected.
     An unparseable or unknown id is skipped (contributes nothing), so an empty /
     bogus id set yields ``0.0`` confidence and no facts — never an error.
+
+    PATIENT-SCOPED. The chat route authorizes only the turn's own patient
+    (``req.patient_id``); the ``document_ids`` ride in UNAUTHORIZED, so a
+    document naming any OTHER patient must contribute nothing. Each id is
+    resolved to its source document and skipped unless it belongs to
+    ``patient_id`` — the SAME boundary the document read route enforces with
+    ``is_authorized(cid, doc.patient_id)``. Without this a clinician on patient
+    A's turn could pass patient B's document id and read B's facts with no
+    authorization for B (the facts would egress as A's turn and be absent from
+    B's audit).
 
     The facts are sorted by ``(field_path, value)`` because the repository query
     imposes no ordering: the graph feeds them to the answering agent, so a
@@ -99,6 +109,12 @@ async def _read_extractions(document_ids: list[str]) -> IntakeReport:
             try:
                 document_id = int(raw)
             except (TypeError, ValueError):
+                continue
+            # Patient-scope the read before any fact is touched: an id belonging
+            # to a different patient (or to no document at all) contributes
+            # nothing. Mirrors the document route's authorization boundary.
+            document = await repo.get_source_document(document_id)
+            if document is None or document.patient_id != patient_id:
                 continue
             extraction = await repo.get_latest_extraction(document_id)
             if extraction is None:
@@ -132,7 +148,7 @@ class DocumentIntakeExtractor:
         self._settings = settings
 
     async def run(self, task: AgentTask) -> IntakeReport:
-        return await _read_extractions(task.document_ids)
+        return await _read_extractions(task.document_ids, task.patient_id)
 
     async def ingest_content(
         self,

@@ -100,8 +100,15 @@ class TestDocumentReadAuthorization:
         client = _client()
         # Clinician 7 never started a round on patient 4242.
         r = client.get(f"/v1/documents/{document_id}", params={"clinician_id": 7})
-        assert r.status_code == 403, (
-            f"an off-round clinician must not read a document's facts/citations, got {r.status_code}"
+        # Round-2 audit (P3): the refusal must be an indistinguishable 404, NOT a
+        # 403. A 403-for-exists vs 404-for-missing split lets a caller enumerate
+        # which document ids exist by walking the autoincrement id space. The
+        # sibling conversation read route already unifies both on 404 for this
+        # reason (copilot/api/routes/chat.py get_conversation); the document read
+        # route must match. The prior `== 403` here encoded that existence oracle
+        # as the contract, which is the defect P3 removes.
+        assert r.status_code == 404, (
+            f"an off-round clinician must get an existence-hiding 404, got {r.status_code}"
         )
 
     def test_get_document_page_refuses_a_clinician_without_the_round(self, _db_file: str) -> None:
@@ -110,8 +117,10 @@ class TestDocumentReadAuthorization:
         document_id = anyio.run(_seed_document, 4242)
         client = _client()
         r = client.get(f"/v1/documents/{document_id}/pages/1", params={"clinician_id": 7})
-        assert r.status_code == 403, (
-            f"an off-round clinician must not read a scanned page image, got {r.status_code}"
+        # Round-2 audit (P3): existence-hiding 404, not 403 — see the rationale on
+        # test_get_document_refuses_a_clinician_without_the_round above.
+        assert r.status_code == 404, (
+            f"an off-round clinician must get an existence-hiding 404, got {r.status_code}"
         )
 
     def test_read_routes_declare_the_auth_dependency(self) -> None:
@@ -154,5 +163,59 @@ def test_an_unauthorized_read_loads_no_phi_at_all(_db_file: str, monkeypatch: ob
     client = _client()
     r = client.get(f"/v1/documents/{document_id}", params={"clinician_id": 7})
 
-    assert r.status_code == 403
+    # Round-2 audit (P3): the refusal is an existence-hiding 404 (was 403); the
+    # fail-closed-before-loading-PHI property this test guards is unchanged.
+    assert r.status_code == 404
     assert loaded == [], "an off-round caller must not cause a single fact to be loaded"
+
+
+class TestNoExistenceOracle:
+    """P3: an existing-but-unauthorized document must be INDISTINGUISHABLE from a
+    missing one — same status AND same body. A 403-for-exists vs 404-for-missing
+    split turns the guessable autoincrement id space into an existence oracle (walk
+    1..N: 403 => this id exists, 404 => it does not). The sibling conversation read
+    route already unifies both on 404 for exactly this reason; the document read
+    routes must match.
+    """
+
+    def test_get_document_unauthorized_matches_missing_404(self, _db_file: str) -> None:
+        import anyio
+
+        document_id = anyio.run(_seed_document, 4242)
+        client = _client()
+
+        # Clinician 7 is off-round for patient 4242 (this id EXISTS but is forbidden)...
+        forbidden = client.get(f"/v1/documents/{document_id}", params={"clinician_id": 7})
+        # ...vs a document id that does not exist at all.
+        missing = client.get(
+            f"/v1/documents/{document_id + 10_000}", params={"clinician_id": 7}
+        )
+
+        assert missing.status_code == 404
+        assert forbidden.status_code == 404, (
+            f"an existing-but-forbidden document must not be distinguishable from a "
+            f"missing one, got forbidden={forbidden.status_code} vs missing={missing.status_code}"
+        )
+        assert forbidden.json() == missing.json(), (
+            "the forbidden and missing bodies must be identical, else the body leaks existence"
+        )
+
+    def test_get_document_page_unauthorized_matches_missing_404(self, _db_file: str) -> None:
+        import anyio
+
+        document_id = anyio.run(_seed_document, 4242)
+        client = _client()
+
+        forbidden = client.get(
+            f"/v1/documents/{document_id}/pages/1", params={"clinician_id": 7}
+        )
+        missing = client.get(
+            f"/v1/documents/{document_id + 10_000}/pages/1", params={"clinician_id": 7}
+        )
+
+        assert missing.status_code == 404
+        assert forbidden.status_code == 404, (
+            f"an existing-but-forbidden page must be indistinguishable from a missing "
+            f"document, got forbidden={forbidden.status_code} vs missing={missing.status_code}"
+        )
+        assert forbidden.json() == missing.json()
