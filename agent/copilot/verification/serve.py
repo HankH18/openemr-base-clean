@@ -113,7 +113,7 @@ async def verify_answer(
         resources,
         document_facts=await _materialize_document_facts(doc_citations),
         guideline_chunks=await _materialize_guideline_chunks(guideline_citations),
-        doc_confidence_threshold=settings.doc_extraction_confidence_threshold,
+        doc_confidence_threshold=settings.doc_grounding_confidence_threshold,
     )
     verifier = Verifier(rules=default_rules(), entailment=entailment)
     # The Verifier's only public entry point takes a MemoryFileSummary; at

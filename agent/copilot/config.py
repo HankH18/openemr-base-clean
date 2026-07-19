@@ -381,25 +381,51 @@ class Settings(BaseSettings):
         ),
     )
     doc_extraction_confidence_threshold: float = Field(
+        default=0.01,
+        description=(
+            "Minimum OCR LEGIBILITY confidence for an extracted value to KEEP its "
+            "document citation (bbox anchor): the weakest per-token OCR confidence "
+            "(min_conf) across the LOCATED span must be >= this floor. It gates OCR "
+            "legibility ALONE — whether the value is actually ON THE PAGE is decided "
+            "separately and confidence-independently by two-sided coverage + "
+            "similarity in documents/reconcile.py, and THOSE are the real gate. "
+            "MEASURED (2026-07-19, R4): OCR confidence is NOT a reliable legibility "
+            "signal for the digits a lab value is made of. Real Tesseract@200dpi on "
+            "demo/sample_docs/sample_lab_report.pdf reads CORRECT numeric values at "
+            "very low confidence — '15.8' at min_conf 0.03, '4.24' at 0.08, '1.88' "
+            "at 0.27 — because numeric/glyph tokens score roughly 0.03-0.44 even "
+            "when read exactly right. A high floor therefore withholds the citation "
+            "from correctly-read numbers: the earlier 0.5 default (whose comment "
+            "wrongly claimed a ~0.53-0.55 real-OCR-noise band that these three "
+            "measured values fall straight through) stripped the bbox from every one "
+            "of them, degrading the pixel-level evidence that is this gate's whole "
+            "point. The floor is now a MINIMAL GUARD, not a legibility test: 0.01 "
+            "sits below the measured real-token band so every correctly-read value "
+            "keeps its citation, while a token OCR marked with LITERAL zero "
+            "confidence (its own 'I could not read this') is still withheld. Set to "
+            "0.0 to drop the guard entirely and match reconcile_value's own default "
+            "(coverage + similarity alone then decide, which is defensible — they "
+            "are the real proof the value is on the page). Values below the floor "
+            "are flagged unsupported — never silently trusted. Tune via the eval "
+            "rubrics."
+        ),
+    )
+    doc_grounding_confidence_threshold: float = Field(
         default=0.5,
         description=(
-            "Minimum OCR LEGIBILITY confidence for an extracted value to count as "
-            "document-grounded (bbox-anchored): the weakest per-token OCR "
-            "confidence (min_conf) across the located span must be >= this floor. "
-            "SEMANTIC CHANGE (2026-07-19, decouple located from legible): this is "
-            "now a floor on OCR legibility ALONE. It is NO LONGER multiplied into a "
-            "similarity*confidence product — whether the value is actually on the "
-            "page is gated separately and confidence-independently by two-sided "
-            "coverage + similarity in documents/reconcile.py. The old product gate "
-            "(default 0.7) stripped the citation from a correctly located value "
-            "carrying a single faintly-read glyph: min_conf 0.55 at similarity 1.0 "
-            "scored a 0.55 product and failed the 0.7 bar — a false negative on a "
-            "correctly extracted value. Default 0.5 sits BELOW the real-OCR-noise "
-            "band (a genuine misread glyph on a crisp demo page scores min_conf "
-            "~0.53-0.55) so such values stay supported, while a genuinely illegible "
-            "read (min_conf well under 0.5) is still withheld. Values below the "
-            "floor are flagged low-confidence/unsupported — never silently trusted. "
-            "Tune via the eval rubrics."
+            "Minimum document-fact match_confidence for a DOCUMENT fact to GROUND a "
+            "verified clinical CLAIM (verification/serve.py -> core.py). DISTINCT from "
+            "doc_extraction_confidence_threshold, which only gates whether a value "
+            "keeps its citation bbox: a low-confidence document fact may still be "
+            "shown-with-citation but must clear this higher bar before it is asserted "
+            "in a verified claim. Kept at 0.5 (the pre-R4 shared value) so the "
+            "claim-grounding safety threshold is UNCHANGED by the R4 citation-floor "
+            "recalibration; the frozen acceptance goal (a fact at match_confidence "
+            "0.05 must never ground a claim) depends on it. NOTE: whether this floor "
+            "is itself mis-calibrated for real Tesseract numeric confidence is a "
+            "separate deliberate question — the document-fact-grounds-a-claim path is "
+            "latent today (served claims cite FHIR resources; document facts inform "
+            "prose only)."
         ),
     )
     document_ingestion_enabled: bool = Field(

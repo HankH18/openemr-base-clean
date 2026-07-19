@@ -746,15 +746,24 @@ class TestLegibilityFloorIsDecoupledFromLocation:
         assert result.match_confidence == pytest.approx(0.55)
 
     def test_a_genuinely_illegible_value_is_still_withheld(self) -> None:
-        """Decoupling is not softening: a read too faint to trust stays unsupported.
+        """Decoupling is not softening: a read OCR could not make out stays unsupported.
 
-        The same fully-located value, but the glyph read at conf 0.20 — well below
-        the deployed legibility floor. The floor exists to withhold exactly this: a
-        read OCR was not confident of, even though the characters line up.
+        UPDATED 2026-07-19 (R4/P2), justify-test-edit verdict TEST IS WRONG. This
+        case previously used conf 0.20 as its exemplar of "genuinely illegible".
+        MEASUREMENT falsified that premise: real Tesseract@200dpi reads CORRECT lab
+        numbers at min_conf 0.03-0.27 (see config.py / documents/reconcile.py), so
+        0.20 is a LEGIBLE read that must KEEP its citation, not an illegible one to
+        withhold — a 0.5-era floor stripped exactly such values, the P2 defect. The
+        deployed floor is now a small positive minimal guard, and the ONE read it
+        withholds is a token OCR marked with LITERAL zero confidence — its own "I
+        could not read this". The test's INTENT (a genuinely illegible read stays
+        withheld) is unchanged; only the exemplar is corrected to the read that is
+        in fact illegible under the calibrated floor.
         """
         deployed = Settings().doc_extraction_confidence_threshold
+        assert deployed > 0.0, "the minimal guard must be a positive floor for this to bite"
 
-        result = reconcile_value("abcde", self._one_token("abcde", 0.20), threshold=deployed)
+        result = reconcile_value("abcde", self._one_token("abcde", 0.0), threshold=deployed)
 
         assert result.supported is False
         assert result.bbox is None

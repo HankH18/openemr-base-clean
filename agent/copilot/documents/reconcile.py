@@ -438,9 +438,13 @@ def reconcile_value(
 
     A value is ``supported`` only when it clears BOTH — located AND legible. The
     pipeline passes ``Settings.doc_extraction_confidence_threshold`` as the
-    legibility floor; the default 0.0 means "any real token match is enough".
-    ``match_confidence`` is still reported as ``similarity * min_conf`` (a useful
-    quality score for ranking), but it no longer decides support.
+    legibility floor. This function's own default ``threshold=0.0`` means "any real
+    token match is enough" (no legibility floor at all); the DEPLOYED default is a
+    small positive MINIMAL GUARD (see config.py) that withholds only a token OCR
+    marked with literal zero confidence, because measured OCR reads correct numeric
+    values as low as ~0.03 and confidence is not a reliable legibility signal for
+    them. ``match_confidence`` is still reported as ``similarity * min_conf`` (a
+    useful quality score for ranking), but it no longer decides support.
     """
     target = _normalize(value)
     best_score = 0.0
@@ -509,11 +513,24 @@ def reconcile_value(
     # (min_conf >= threshold). Re-comparing best_score (the similarity*conf product)
     # to threshold would reintroduce the coupling this decoupling removed.
     if best_chain is not None:
-        boxes = [[float(v) for v in _token_field(tokens[i], "bbox", "box")] for i in best_chain]
-        return Reconciliation(
-            supported=True,
-            bbox=_union_bbox(boxes),
-            match_confidence=best_score,
-            page_no=page_no,
-        )
+        # The winning span's boxes are read only here — the rest of reconciliation
+        # never needs a bbox (see _page_layout) — so they are also VALIDATED only
+        # here. A winning token whose box is missing, non-numeric, or not exactly
+        # [x, y, w, h] (len != 4) fails CLOSED: unsupported, no bbox, mirroring
+        # _page_layout's defensive None. Emitting a corrupt <4-element box would
+        # hand EvidenceOverlay.tsx a highlight it cannot draw, and letting
+        # _union_bbox index box[2]/box[3] on a short box raises IndexError
+        # mid-pipeline. A located-but-unciteable value is surfaced as unverified —
+        # the safe direction for a no-invention gate — rather than mis-cited or crashed.
+        try:
+            boxes = [[float(v) for v in _token_field(tokens[i], "bbox", "box")] for i in best_chain]
+        except (KeyError, TypeError, ValueError):
+            boxes = None
+        if boxes is not None and all(len(box) == 4 for box in boxes):
+            return Reconciliation(
+                supported=True,
+                bbox=_union_bbox(boxes),
+                match_confidence=best_score,
+                page_no=page_no,
+            )
     return Reconciliation(supported=False, bbox=None, match_confidence=0.0, page_no=page_no)
