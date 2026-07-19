@@ -66,7 +66,7 @@ needed, whether evidence retrieval is needed, and when the final answer is ready
 logged `Handoff` objects; opens the parent span.
 
 > **As built.** The graph is wired into `POST /v1/chat` behind the `chat_graph_enabled` flag
-> (env `COPILOT_CHAT_GRAPH_ENABLED`, **default off**): with the flag off the endpoint uses the
+> (env `COPILOT_CHAT_GRAPH_ENABLED`, **default off** in code, **on in the deployed demo**): with the flag off the endpoint uses the
 > inline verify path (byte-for-byte the Week-1 behavior); with it on, the turn is routed through
 > the graph (supervisor → workers → critic → deterministic verifier), threading conversation
 > history and the smart-mode delegated FHIR client through unchanged. The "no grounded claims →

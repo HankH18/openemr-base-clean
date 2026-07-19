@@ -80,10 +80,12 @@ signals in §1.
 
 ### Row B — Model economics
 - **Tokens** — input + output **tokens** per trace, summed per minute and per
-  model. Today all LLM tokens are `claude-sonnet-5` on the `chat` path; the
-  `claude-haiku-4-5-20251001` gating tier and LLM synthesis are configured but
-  not wired, so they contribute nothing until switched on. Split cache-read vs.
-  uncached input tokens.
+  model. In the keyless default build all LLM tokens are `claude-sonnet-5` on the
+  `chat` path. The `claude-haiku-4-5-20251001` **gating tier** IS wired — on the
+  multi-agent graph's critic — so the **deployed demo** (`chat_graph_enabled` on +
+  an Anthropic key) emits haiku tokens per graph chat turn, though it stays dormant
+  in the keyless default build; LLM synthesis + the `LlmEntailment` tier are
+  configured but wired into no live path. Split cache-read vs. uncached input tokens.
 - **Cost** — from the `cost_usd` already on the `chat` span / `llm.usage` event
   (see `COST_ANALYSIS.md`), tiled as $/hour and $/chat-turn.
 - **Tool-call count** — `tool_calls` per chat turn (the `get_labs` /

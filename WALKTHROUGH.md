@@ -134,6 +134,12 @@ RRF‑fused, section‑boosted**: genuinely hybrid + grounded, but **lexical, no
 **In one line:** a deterministic supervisor routes an `AgentTask` to intake‑extractor and/or
 evidence‑retriever via **typed, logged handoffs**, then finalizes through the critic + verifier.
 
+**Where it runs.** The graph is wired into `POST /v1/chat` behind `chat_graph_enabled` — **default
+off** in the code build (a keyless clone + the deterministic eval gate use the simpler inline verify
+path), **on in the deployed demo** (`COPILOT_CHAT_GRAPH_ENABLED=true`, verified in the running
+container). The fail‑closed reply invariant is identical either way; the flag adds the
+supervisor→worker→critic routing (and, with a key, the real haiku critic).
+
 **Full flow.** `AgentGraph.run` (`graph/supervisor.py`): (1) **route** — a pure signal test
 (`document_ids` → intake; guideline intent → evidence; both → both; neither → chart‑only), logged as
 `route_plan`; (2) **dispatch intake** — logs a typed `Handoff{payload={document_ids}}`, opens child
