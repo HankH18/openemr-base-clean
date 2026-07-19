@@ -1,7 +1,7 @@
 # Demo Video — AgentForge Clinical Co-Pilot (Week 2)
 
-**▶ Watch the walkthrough: https://www.loom.com/share/ef4fc41b32f345bab2d9a21e0dd7ebf7**
-*"Document Upload MVP, OCR, and RAG Update"*
+**▶ Watch the walkthrough: https://www.loom.com/share/c996666c975248c2a9de2b9f2262799e**
+*"Week 2 — Agent Forge Medical RAG Submission" (the final Week-2 walkthrough)*
 
 A walkthrough of the Week-2 multimodal flow on the deployed app (live at
 **https://agentforge.hankholcomb.com**, per-physician SMART login):

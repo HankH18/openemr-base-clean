@@ -44,11 +44,11 @@
 | R4 | API collection (Bruno + Postman, Week‑2 flow) | **BUILT** |
 | A1–A3 | Repo/setup/env docs · `W2_ARCHITECTURE.md` · README W1‑vs‑W2 split | **BUILT** |
 | S1–S3 | Stretch: medication‑list doc type · lab‑trend chart · contextual retrieval | **BUILT** |
-| **A4** | **Demo video (3–5 min)** | **OUTSTANDING — operator artifact (the only remaining item)** |
+| **A4** | **Demo video (3–5 min)** | **DELIVERED** — [Loom walkthrough](https://www.loom.com/share/c996666c975248c2a9de2b9f2262799e) (`demo/VIDEO.md`) |
 
 **Net:** every core feature, engineering requirement, report, and stretch item is built and
-verified against running code. **The single outstanding deliverable is the demo video (A4)** —
-an operator artifact nothing in the code blocks.
+verified against running code, and **the demo video (A4) is now recorded and linked**
+(`demo/VIDEO.md`) — so all Week‑2 deliverables are complete.
 
 ---
 
@@ -326,15 +326,14 @@ tests‑evals‑CI / broad catch‑all) found **0 P0, 3 P1, ~11 P2**, all now fi
 
 ---
 
-## 5. Gap memo — what's still needed for final
+## 5. Gap memo — status
 
-**The only outstanding deliverable:**
-- **A4 — Demo video (3–5 min).** Operator artifact, not in the repo. Should show: upload → extraction →
-  evidence retrieval → citations → eval results → observability. Nothing in the code blocks it. The
-  deployed demo at **https://agentforge.hankholcomb.com** already runs the full Week‑2 flow to record
-  against.
+**All Week‑2 deliverables are complete.**
+- **A4 — Demo video (3–5 min): DELIVERED** — [Loom walkthrough](https://www.loom.com/share/c996666c975248c2a9de2b9f2262799e)
+  (`demo/VIDEO.md`), a walkthrough of upload → extraction → citations → hybrid‑RAG evidence on the
+  deployed demo at **https://agentforge.hankholcomb.com**.
 
-Everything else surfaced by two adversarial passes has been fixed and verified.
+Everything surfaced by two adversarial passes has been fixed and verified.
 
 ## 5a. Live‑testing pass (2026‑07‑19) — findings + disposition
 
